@@ -30,16 +30,29 @@ public:
     GpuRenderer(const GpuRenderer&) = delete;
     GpuRenderer& operator=(const GpuRenderer&) = delete;
 
-    [[nodiscard]] bool isValid() const { return device_ != nullptr; }
+    // Valid only once the device AND the triangle pipeline are ready, so the
+    // Engine aborts with a clear message if (e.g.) the compiled shaders are
+    // missing rather than running with nothing to draw.
+    [[nodiscard]] bool isValid() const {
+        return device_ != nullptr && trianglePipeline_ != nullptr;
+    }
 
     // Render exactly one frame: acquire an image from the window's swapchain,
-    // clear it to `clearColor`, and present it. In Step 1 this single call will
-    // be split into begin/draw/end once we actually have geometry to draw.
+    // clear it to `clearColor`, draw the triangle, and present it.
     void renderFrame(const SDL_FColor& clearColor);
 
 private:
+    // Build the graphics pipeline for the triangle (loads + compiles shaders into
+    // an immutable pipeline object). Called once from the constructor.
+    bool createTrianglePipeline();
+
     SDL_Window*    window_ = nullptr;  // not owned — the Engine owns the Window
     SDL_GPUDevice* device_ = nullptr;  // owned — released in the destructor
+
+    // The graphics pipeline that draws our triangle: it bundles the vertex +
+    // fragment shaders together with fixed-function state (primitive type, the
+    // color target's format, etc.) into one object the GPU can switch to quickly.
+    SDL_GPUGraphicsPipeline* trianglePipeline_ = nullptr;  // owned
 };
 
 }  // namespace koi

@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The First Triangle · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html" aria-current="page">First Triangle</a>
+  </div>
+</nav>
+
+<main>
+  <h1>The First Triangle</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 1:</strong> draw the iconic red/green/blue gradient
+    triangle, using shaders we wrote ourselves.</p>
+    <p>The triangle is the "hello world" of 3D graphics. Getting one on screen
+    means we've stood up the three pillars everything else needs: <strong>shaders</strong>,
+    a <strong>graphics pipeline</strong>, and a <strong>shader-compilation
+    toolchain</strong>. After this, drawing a spinning textured cube is "the same
+    thing, with more data."</p>
+  </blockquote>
+
+  <p>We keep the exact frame structure from
+  <a href="01-window-and-render-loop.html">Step 0</a> (command buffer → render
+  pass → submit) and add two things inside the render pass: <em>bind a pipeline</em>
+  and <em>draw 3 vertices</em>. The interesting part is everything that has to
+  exist for those two calls to mean something.</p>
+
+  <h2>1. What is a shader?</h2>
+
+  <p>A <strong>shader</strong> is a small program that runs <em>on the GPU</em>,
+  in parallel, on lots of data at once. Drawing a triangle uses two of them, run
+  at two different stages of a fixed assembly line called the <strong>graphics
+  pipeline</strong>:</p>
+
+  <pre class="diagram">  3 vertices
+      │
+      ▼
+┌──────────────┐   runs once PER VERTEX — outputs each
+│ Vertex shader│   vertex's position (and extra data like color)
+└──────────────┘
+      │
+      ▼
+┌──────────────┐   fixed-function: figures out which pixels the
+│  Rasterizer  │   triangle covers, and INTERPOLATES the vertex
+└──────────────┘   outputs across them
+      │
+      ▼
+┌──────────────┐   runs once PER PIXEL ("fragment") — outputs
+│Fragment shad.│   that pixel's final color
+└──────────────┘
+      │
+      ▼
+  the image</pre>
+
+  <p>So the <strong>vertex shader</strong> answers "where does each corner go?"
+  and the <strong>fragment shader</strong> answers "what color is each pixel?"
+  The rasterizer in between is not programmable — it's the GPU's hardwired job to
+  turn triangles into pixels.</p>
+
+  <h2>2. Clip space: where do vertices "go"?</h2>
+
+  <p>A vertex shader must output a position in <strong>clip space</strong>. After
+  the GPU divides by the <code>w</code> component you get <strong>Normalized
+  Device Coordinates (NDC)</strong>: a fixed box where <code>x</code> and
+  <code>y</code> both run from <strong>−1 to +1</strong>, with <code>(0,0)</code>
+  at the center of the window. Anything outside that box is clipped away.</p>
+
+  <pre class="diagram">         +1  (top)
+          │
+   -1 ────┼──── +1     ← (0,0) is the center of the window
+          │
+         -1  (bottom)</pre>
+
+  <p>Our triangle's three corners are written directly in NDC
+  (<code>(0, 0.5)</code>, <code>(0.5, -0.5)</code>, <code>(-0.5, -0.5)</code>),
+  so no math is needed yet. In Step 3, when we want real 3D, the vertex shader
+  will <em>multiply</em> incoming positions by matrices to <em>produce</em> clip
+  space — but the GPU's expectation (output clip space) never changes.</p>
+
+  <h2>3. Why the triangle has a gradient</h2>
+
+  <p>We give each corner a color — red, green, blue. But a triangle is mostly
+  <em>not</em> its corners. What color is a pixel in the middle?</p>
+
+  <p>The vertex shader's extra outputs (here, a <code>vec3</code> color) are called
+  <strong>varyings</strong>. The rasterizer <strong>interpolates</strong> them:
+  a pixel halfway between the red and green corners receives a 50/50 blend; a pixel
+  in the dead center receives an even mix of all three. The fragment shader just
+  reads whatever blended color it's handed. That automatic interpolation <em>is</em>
+  the gradient — we never compute it ourselves.</p>
+
+  <h2>4. The shader toolchain (the tricky part)</h2>
+
+  <p>Here's the catch that makes graphics feel different from normal programming:
+  <strong>GPUs don't run shader source code.</strong> They run compiled bytecode,
+  and every backend wants a <em>different</em> bytecode dialect:</p>
+
+  <table>
+    <thead>
+      <tr><th>Backend</th><th>Shader format it consumes</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Vulkan</td><td>SPIR-V</td></tr>
+      <tr><td>Metal (macOS)</td><td>MSL (Metal Shading Language)</td></tr>
+      <tr><td>Direct3D 12</td><td>DXIL</td></tr>
+    </tbody>
+  </table>
+
+  <p>So we author <strong>once</strong> and compile to each target ahead of time.
+  Koi Engine authors in <strong>GLSL</strong> (the language every graphics tutorial
+  teaches) and runs a two-step compile at build time:</p>
+
+  <pre class="diagram">  triangle.vert (GLSL)
+        │   glslc        (compile GLSL  →  SPIR-V)
+        ▼
+  triangle.vert.spv  ──────────────►  used directly on Vulkan
+        │   spirv-cross  (translate SPIR-V  →  MSL)
+        ▼
+  triangle.vert.msl  ──────────────►  used on Metal (this Mac)</pre>
+
+  <ul>
+    <li><strong><code>glslc</code></strong> (from Google's shaderc) compiles GLSL
+    to SPIR-V, the Vulkan-standard intermediate format.</li>
+    <li><strong><code>spirv-cross</code></strong> translates that SPIR-V into MSL
+    so the Metal backend can use it.</li>
+  </ul>
+
+  <blockquote>
+    <p><strong>One quirk to remember:</strong> spirv-cross renames the entry point
+    from <code>main</code> to <code>main0</code> when it emits MSL. So when we load
+    the <code>.msl</code> variant we must tell SDL the entry point is
+    <code>main0</code>, not <code>main</code>. Our loader handles this
+    automatically.</p>
+  </blockquote>
+
+  <p>(The original plan was to use SDL's <code>shadercross</code> tool for this,
+  but its install is broken on this machine, and <code>glslc</code> +
+  <code>spirv-cross</code> are already present and work cleanly — plus GLSL is
+  friendlier to learn than HLSL.)</p>
+
+  <h2>5. The graphics pipeline object</h2>
+
+  <p>You can't just hand the GPU two shaders and say "go." Modern GPUs want all the
+  state for a draw bundled into one immutable <strong>pipeline</strong> object,
+  created up front. Ours bundles:</p>
+
+  <ul>
+    <li>the vertex + fragment shaders,</li>
+    <li>the <strong>primitive type</strong> (<code>TRIANGLELIST</code> — every 3
+    vertices make one triangle),</li>
+    <li>the <strong>color target format</strong> (must match the swapchain we draw
+    into), and</li>
+    <li>fixed-function state we leave at defaults for now (no blending, no face
+    culling, no depth test).</li>
+  </ul>
+
+  <p>Why immutable? Because switching pipelines is the expensive operation, the GPU
+  wants them pre-validated. We build ours once at startup and just
+  <em>bind</em> it each frame — cheap.</p>
+
+  <h2>6. The code</h2>
+
+  <h3>The shaders — <a href="../shaders/triangle.vert">shaders/triangle.vert</a> &amp; <a href="../shaders/triangle.frag">.frag</a></h3>
+
+  <p>The vertex shader bakes the 3 positions and colors into arrays and selects one
+  with <code>gl_VertexIndex</code> (the 0/1/2 index of the vertex being processed —
+  no vertex buffer needed yet):</p>
+
+  <pre><code>// triangle.vert  (GLSL 450)
+layout(location = 0) out vec3 vColor;          // varying → fragment shader
+vec2 positions[3] = vec2[](
+    vec2( 0.0,  0.5), vec2( 0.5, -0.5), vec2(-0.5, -0.5));
+vec3 colors[3]    = vec3[](
+    vec3(1,0,0),      vec3(0,1,0),       vec3(0,0,1));
+void main() {
+    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
+    vColor      = colors[gl_VertexIndex];
+}</code></pre>
+
+  <pre><code>// triangle.frag  (GLSL 450)
+layout(location = 0) in  vec3 vColor;          // interpolated by the rasterizer
+layout(location = 0) out vec4 outColor;        // the pixel's final color
+void main() { outColor = vec4(vColor, 1.0); }</code></pre>
+
+  <p>The <code>location = 0</code> on the vertex output and the fragment input must
+  match — that's the wire connecting the two stages.</p>
+
+  <h3>The build step — <a href="../CMakeLists.txt">CMakeLists.txt</a></h3>
+
+  <p>A <code>koi_add_shader()</code> function registers the two compile commands per
+  shader (<code>glslc</code> then <code>spirv-cross</code>), and a
+  <code>koi_shaders</code> target builds them into <code>build/shaders/</code> — the
+  folder the executable looks in at runtime. The app depends on it, so the shaders
+  are always up to date.</p>
+
+  <h3>Loading the right variant — <a href="../src/renderer/Shader.cpp">src/renderer/Shader.cpp</a></h3>
+
+  <p><code>selectShaderVariant()</code> asks the device which format it supports and
+  returns the matching file extension + entry point (<code>.spv</code>/<code>main</code>
+  on Vulkan, <code>.msl</code>/<code>main0</code> on Metal). <code>loadShader()</code>
+  then reads <code>shaders/&lt;name&gt;&lt;ext&gt;</code> from beside the executable
+  and creates the <code>SDL_GPUShader</code>. (That variant logic is a pure function,
+  so it's covered by unit tests in <code>tests/test_shader.cpp</code>.)</p>
+
+  <h3>Pipeline + draw — <a href="../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a></h3>
+
+  <p>At startup we load both shaders and build the pipeline (then release the shader
+  objects — the pipeline keeps what it needs). Each frame, inside the render pass,
+  the draw is just two calls:</p>
+
+  <pre><code>SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
+SDL_DrawGPUPrimitives(pass, /*vertices=*/3, /*instances=*/1, 0, 0);</code></pre>
+
+  <p>No vertex buffer is bound — the 3 vertices are conjured by the vertex shader
+  from <code>gl_VertexIndex</code>. The GPU runs the vertex shader 3 times, the
+  rasterizer fills the triangle, and the fragment shader colors each pixel.</p>
+
+  <h2>7. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Recolor the corners.</strong> Change the <code>colors[3]</code>
+    array in <a href="../shaders/triangle.vert">triangle.vert</a> and rebuild —
+    the gradient follows. (The build recompiles shaders automatically.)</li>
+    <li><strong>Move a corner.</strong> Edit a <code>positions[3]</code> entry;
+    push one past <code>±1</code> and watch it get clipped at the window edge.</li>
+    <li><strong>Inspect the compiled output.</strong> Open
+    <code>build/shaders/triangle.vert.msl</code> to see the Metal code spirv-cross
+    generated from your GLSL — note the <code>main0</code> entry point.</li>
+  </ol>
+
+  <h2>8. What's next</h2>
+
+  <p>➡️ <strong>Step 2 — Vertex Buffers.</strong> Right now the triangle's data is
+  hardcoded in the shader, which doesn't scale past a few vertices. Next we'll put
+  positions and colors into a <strong>vertex buffer</strong> in GPU memory and feed
+  it to the pipeline — the standard way real meshes get drawn, and the groundwork
+  for loading actual models later.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

@@ -91,6 +91,7 @@ add_library(koi_core STATIC
     src/core/Engine.cpp
     src/core/Window.cpp
     src/renderer/GpuRenderer.cpp
+    src/renderer/Shader.cpp
 )
 
 # PUBLIC include dir: anything linking koi_core (the app, the tests) can
@@ -115,6 +116,67 @@ target_link_libraries(koi-engine PRIVATE koi_core koi_warnings)
 #  this proves the test target links the engine and runs under ctest.
 # ----------------------------------------------------------------------------
 enable_testing()
-add_executable(koi-tests tests/test_core.cpp)
+add_executable(koi-tests
+    tests/test_core.cpp
+    tests/test_shader.cpp
+)
 target_link_libraries(koi-tests PRIVATE koi_core doctest::doctest koi_warnings)
 add_test(NAME koi-tests COMMAND koi-tests)
+
+# ----------------------------------------------------------------------------
+#  Shaders — compiled offline, once per backend format.
+#  GPUs run compiled bytecode, and each backend wants a different dialect
+#  (SPIR-V for Vulkan, MSL for Metal). We author our shaders once in GLSL and
+#  compile them at build time:
+#       GLSL --(glslc)--> SPIR-V --(spirv-cross)--> MSL
+#  The runtime loader (src/renderer/Shader.cpp) then loads whichever the active
+#  backend supports. Compiled output lands next to the executable so it can be
+#  found via SDL_GetBasePath() at runtime.
+# ----------------------------------------------------------------------------
+find_program(GLSLC glslc)
+find_program(SPIRV_CROSS spirv-cross)
+if(NOT GLSLC OR NOT SPIRV_CROSS)
+    message(FATAL_ERROR
+        "Shader tools not found (glslc and/or spirv-cross).\n"
+        "Install them with:  brew install shaderc spirv-cross")
+endif()
+
+set(SHADER_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
+set(SHADER_OUT_DIR ${CMAKE_BINARY_DIR}/shaders)
+file(MAKE_DIRECTORY ${SHADER_OUT_DIR})
+
+# koi_add_shader(<relative-source>) registers the two-stage compile for one
+# shader and appends its outputs to KOI_SHADER_OUTPUTS (in the parent scope).
+function(koi_add_shader SHADER_SRC)
+    get_filename_component(name ${SHADER_SRC} NAME)   # e.g. triangle.vert
+    set(spv ${SHADER_OUT_DIR}/${name}.spv)
+    set(msl ${SHADER_OUT_DIR}/${name}.msl)
+
+    # Stage 1: GLSL -> SPIR-V. glslc infers the shader stage from the .vert/.frag
+    # extension. -g keeps debug info; --target-env=vulkan1.0 is glslc's default.
+    add_custom_command(
+        OUTPUT  ${spv}
+        COMMAND ${GLSLC} ${SHADER_SRC_DIR}/${SHADER_SRC} -o ${spv}
+        DEPENDS ${SHADER_SRC_DIR}/${SHADER_SRC}
+        COMMENT "glslc  ${name} -> SPIR-V"
+        VERBATIM)
+
+    # Stage 2: SPIR-V -> MSL (Metal Shading Language) for the Metal backend.
+    add_custom_command(
+        OUTPUT  ${msl}
+        COMMAND ${SPIRV_CROSS} ${spv} --msl --output ${msl}
+        DEPENDS ${spv}
+        COMMENT "spirv-cross  ${name} -> MSL"
+        VERBATIM)
+
+    list(APPEND KOI_SHADER_OUTPUTS ${spv} ${msl})
+    set(KOI_SHADER_OUTPUTS ${KOI_SHADER_OUTPUTS} PARENT_SCOPE)
+endfunction()
+
+koi_add_shader(triangle.vert)
+koi_add_shader(triangle.frag)
+
+# A target that builds all shader outputs, and a dependency so the app always has
+# up-to-date compiled shaders next to it.
+add_custom_target(koi_shaders ALL DEPENDS ${KOI_SHADER_OUTPUTS})
+add_dependencies(koi-engine koi_shaders)

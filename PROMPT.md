@@ -22,3 +22,15 @@ A running record of the prompts that shaped this project, for context.
 - Rendering backend: **SDL3 GPU API** (over OpenGL).
 - 3D math: **hand-rolled** (over GLM).
 - First step scope: **window + clear screen** (over also rendering a triangle).
+
+**Docs format request:**
+> The docs should be in HTML without requiring a build step.
+> ... The html does not have to be dark aware.
+
+**Next milestone request:**
+> Okay, work on the next milestone.
+
+**Decisions made (Step 1 — first triangle):**
+- Shader language + toolchain: **GLSL via `glslc` + `spirv-cross`** (over HLSL +
+  `shadercross`, whose install is broken locally).
+- Triangle data: **baked into the vertex shader** (no vertex buffer until Step 2).

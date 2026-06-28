@@ -9,18 +9,18 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 0:** opens a window and clears the screen to a solid
-> color each frame through the SDL3 GPU API. This establishes the full GPU
-> pipeline (device → swapchain → command buffer → render pass → submit) that
-> every later feature builds on.
+> **Current status — Step 1:** draws the classic RGB-gradient triangle with our
+> own GLSL shaders, on top of the Step 0 render loop. This adds the three pillars
+> everything else needs: shaders, a graphics pipeline, and a shader-compilation
+> toolchain (GLSL → SPIR-V → MSL, run automatically by the build).
 
 ## Quick start
 
 ```sh
-brew install sdl3 cmake      # prerequisites (macOS)
-cmake --preset debug         # configure
-cmake --build build          # compile
-./build/koi-engine           # run — Esc or close the window to quit
+brew install sdl3 cmake shaderc spirv-cross   # prerequisites (macOS)
+cmake --preset debug                          # configure
+cmake --build build                           # compile (also compiles shaders)
+./build/koi-engine                            # run — Esc or close to quit
 ```
 
 Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-getting-started.html).
@@ -41,6 +41,8 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - [docs/00-getting-started.html](docs/00-getting-started.html) — build, run, test, layout.
 - [docs/01-window-and-render-loop.html](docs/01-window-and-render-loop.html) — GPUs,
   swapchains, command buffers & render passes explained, mapped to the Step 0 code.
+- [docs/02-first-triangle.html](docs/02-first-triangle.html) — shaders, the graphics
+  pipeline, clip space, and the GLSL→SPIR-V→MSL toolchain, mapped to the Step 1 code.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -48,7 +50,7 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 | Step | Milestone | New concepts |
 |------|-----------|--------------|
 | ✅ **0** | **Window + clear screen** | GPU device, swapchain, command buffer, render pass |
-| 1 | First triangle | Shaders, graphics pipeline, shader toolchain (`shadercross`) |
+| ✅ **1** | **First triangle** | Shaders, graphics pipeline, shader toolchain (`glslc` + `spirv-cross`) |
 | 2 | Vertex/index buffers | GPU buffers, transfer buffers, vertex layouts |
 | 3 | 3D cube + MVP + depth | hand-rolled `vec`/`mat4`, projection, depth testing |
 | 4 | Camera + input movement | view matrix, delta-time, fly camera |
@@ -61,6 +63,7 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - macOS (the current target; the GPU API is portable, so other platforms are
   feasible later)
 - SDL3 ≥ 3.4, CMake ≥ 3.28, a C++20 compiler
+- `glslc` (from `shaderc`) and `spirv-cross` for compiling shaders at build time
 
 ## License
 

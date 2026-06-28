@@ -43,6 +43,11 @@ project-specific preferences stated by the project owner; global preferences in
   OpenGL is deprecated on macOS and we want to learn modern GPU concepts.
 - **Math:** **hand-rolled** (vectors, matrices, quaternions written ourselves) —
   arriving in Step 3. No GLM; the point is to understand the math.
+- **Shaders:** authored once in **GLSL** under `shaders/`, compiled at build time
+  via `glslc` (GLSL→SPIR-V) then `spirv-cross` (SPIR-V→MSL). Never hand-write
+  MSL/SPIR-V. (We chose this over SDL's `shadercross`/HLSL because the local
+  `shadercross` install is broken and GLSL is more beginner-friendly.) Remember the
+  MSL entry point is `main0`, not `main`.
 
 ## Workflow
 

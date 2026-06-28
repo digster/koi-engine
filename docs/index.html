@@ -14,6 +14,7 @@
     <a class="navlink" href="index.html" aria-current="page">Home</a>
     <a class="navlink" href="00-getting-started.html">Getting Started</a>
     <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
   </div>
 </nav>
 
@@ -37,6 +38,11 @@
       <p>GPUs, swapchains, command buffers and render passes explained from first
       principles — then mapped onto the Step 0 code.</p>
     </a>
+    <a class="card" href="02-first-triangle.html">
+      <h3>The First Triangle →</h3>
+      <p>Shaders, the graphics pipeline, clip space, and the GLSL→SPIR-V→MSL
+      shader toolchain — then the Step 1 code that draws the gradient triangle.</p>
+    </a>
   </div>
 
   <h2>Roadmap</h2>
@@ -50,7 +56,7 @@
     </thead>
     <tbody>
       <tr><td>✅ <strong>0</strong></td><td><strong>Window + clear screen</strong></td><td>GPU device, swapchain, command buffer, render pass</td></tr>
-      <tr><td>1</td><td>First triangle</td><td>Shaders, graphics pipeline, shader toolchain (<code>shadercross</code>)</td></tr>
+      <tr><td>✅ <strong>1</strong></td><td><strong>First triangle</strong></td><td>Shaders, graphics pipeline, shader toolchain (<code>glslc</code> + <code>spirv-cross</code>)</td></tr>
       <tr><td>2</td><td>Vertex/index buffers</td><td>GPU buffers, transfer buffers, vertex layouts</td></tr>
       <tr><td>3</td><td>3D cube + MVP + depth</td><td>hand-rolled <code>vec</code>/<code>mat4</code>, projection, depth testing</td></tr>
       <tr><td>4</td><td>Camera + input movement</td><td>view matrix, delta-time, fly camera</td></tr>
