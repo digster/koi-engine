@@ -8,8 +8,9 @@ foundation.
 ## Guiding principles
 
 1. **Learn by building.** Every subsystem is introduced when a milestone needs
-   it, never speculatively. Code is heavily commented; the [`docs/`](docs/)
-   tutorials explain the underlying graphics *concepts* for newcomers.
+   it, never speculatively. Code is heavily commented; the
+   [`docs/`](docs/index.html) tutorials explain the underlying graphics
+   *concepts* for newcomers.
 2. **Modern, explicit graphics.** We use the SDL3 **GPU API** (Metal/Vulkan/D3D12
    behind one interface) rather than the deprecated OpenGL, so the concepts we
    learn are the ones in use today.
@@ -60,8 +61,8 @@ renderFrame()    → in GpuRenderer:
                      6. submit command buffer (queues present)
 ```
 
-See [docs/01-window-and-render-loop.md](docs/01-window-and-render-loop.md) for the
-concept-by-concept explanation.
+See [docs/01-window-and-render-loop.html](docs/01-window-and-render-loop.html) for
+the concept-by-concept explanation.
 
 ## Lifecycle & ownership
 

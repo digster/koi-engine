@@ -5,8 +5,9 @@ top of **SDL3** and its cross-platform **GPU API** (Metal / Vulkan / Direct3D 12
 
 This is a *learning* project. The priority is understanding, not shipping a
 product — so the code is heavily commented and every step has a matching tutorial
-in [`docs/`](docs/) that explains the underlying graphics concepts from first
-principles, for readers new to graphics programming.
+in [`docs/`](docs/index.html) that explains the underlying graphics concepts from
+first principles, for readers new to graphics programming. The docs are plain HTML
+(no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
 > **Current status — Step 0:** opens a window and clears the screen to a solid
 > color each frame through the SDL3 GPU API. This establishes the full GPU
@@ -22,7 +23,7 @@ cmake --build build          # compile
 ./build/koi-engine           # run — Esc or close the window to quit
 ```
 
-Full instructions, controls, and tests: [docs/00-getting-started.md](docs/00-getting-started.md).
+Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-getting-started.html).
 
 ## Why these choices?
 
@@ -32,12 +33,13 @@ Full instructions, controls, and tests: [docs/00-getting-started.md](docs/00-get
 - **Hand-rolled math** (arriving in Step 3): we write our own vectors, matrices,
   and transforms so nothing stays a black box.
 - **Heavily commented code + concept-first docs**: the code shows *how*; the
-  [docs](docs/) teach *why*.
+  [docs](docs/index.html) teach *why*.
 
 ## Documentation
 
-- [docs/00-getting-started.md](docs/00-getting-started.md) — build, run, test, layout.
-- [docs/01-window-and-render-loop.md](docs/01-window-and-render-loop.md) — GPUs,
+- [docs/index.html](docs/index.html) — documentation home (open in a browser).
+- [docs/00-getting-started.html](docs/00-getting-started.html) — build, run, test, layout.
+- [docs/01-window-and-render-loop.html](docs/01-window-and-render-loop.html) — GPUs,
   swapchains, command buffers & render passes explained, mapped to the Step 0 code.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 

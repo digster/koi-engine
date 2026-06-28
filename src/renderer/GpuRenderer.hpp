@@ -7,7 +7,7 @@
 //  pipeline (device -> swapchain -> command buffer -> render pass -> submit),
 //  which is exactly the plumbing every later feature builds on.
 //
-//  See docs/01-window-and-render-loop.md for a from-first-principles tour of
+//  See docs/01-window-and-render-loop.html for a from-first-principles tour of
 //  every concept named below (device, swapchain, command buffer, render pass).
 // ============================================================================
 #pragma once

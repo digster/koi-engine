@@ -24,6 +24,11 @@ project-specific preferences stated by the project owner; global preferences in
 ## Documentation (`docs/`)
 
 - Every step has a tutorial in `docs/`.
+- **Format: standalone HTML, no build step.** Docs are plain `.html` files that
+  open directly in a browser (`file://`) — no static-site generator, Markdown
+  compiler, or bundler. Share one relatively-linked `docs/style.css`; keep it
+  **offline-friendly** (no CDNs, web fonts, or JavaScript). New tutorials are
+  authored as HTML following the existing pages, and `docs/index.html` links them.
 - **Crucial:** the docs are written **as a guide for a graphics-programming
   beginner**, not merely as code commentary. Wherever a graphics concept appears
   (swapchain, command buffer, render pass, present, depth buffer, MVP matrix,

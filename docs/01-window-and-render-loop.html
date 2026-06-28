@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Window &amp; the Render Loop · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html" aria-current="page">Window &amp; Render Loop</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Window &amp; the Render Loop</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 0:</strong> open a window and clear it to a solid color,
+    every frame, using SDL3's modern GPU API.</p>
+    <p>That sounds almost too simple to bother with — but "clear the screen" already
+    drives the <em>entire</em> modern GPU pipeline. Once you understand the machinery
+    here, everything later (triangles, textures, 3D, lighting) is just <em>adding draw
+    commands</em> inside a structure you already know.</p>
+  </blockquote>
+
+  <p>This page is written for someone new to graphics programming. We'll build up the
+  concepts first, then walk through the actual Koi Engine code line by line.</p>
+
+  <h2>1. The mental model: you don't draw, you <em>describe</em> and <em>submit</em></h2>
+
+  <p>If you've done any 2D drawing before (HTML canvas, old-school OpenGL), you're used
+  to "imperative" drawing: you call <code>drawRectangle(...)</code> and a rectangle
+  appears <em>right now</em>.</p>
+
+  <p>Modern GPUs don't work like that, and for a good reason: the <strong>CPU</strong>
+  (your program) and the <strong>GPU</strong> (the graphics chip) are two separate
+  processors running at the same time. If the CPU had to wait for the GPU to finish each
+  little command, both would spend most of their time idle.</p>
+
+  <p>So the modern model is:</p>
+
+  <ol>
+    <li>The CPU <strong>records</strong> a list of commands ("clear this image", "draw
+    these triangles") into a <strong>command buffer</strong>.</li>
+    <li>The CPU <strong>submits</strong> the whole buffer to the GPU.</li>
+    <li>The GPU executes it <strong>on its own time</strong>, while the CPU is already
+    busy building the <em>next</em> frame.</li>
+  </ol>
+
+  <p>Think of it like a chef (CPU) writing a full ticket of orders and handing it to the
+  kitchen (GPU), rather than standing over the stove for each dish.</p>
+
+  <p>Keep this picture in mind — every API call below is part of "write the ticket, hand
+  it over."</p>
+
+  <h2>2. The cast of characters</h2>
+
+  <h3>The GPU device</h3>
+
+  <p>The <strong>device</strong> is your program's handle to the graphics card. Creating
+  it makes SDL pick a <strong>backend</strong> — the actual low-level graphics API for
+  your platform:</p>
+
+  <table>
+    <thead>
+      <tr><th>Platform</th><th>Backend the device uses</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>macOS</td><td><strong>Metal</strong></td></tr>
+      <tr><td>Windows</td><td>Direct3D 12</td></tr>
+      <tr><td>Linux</td><td>Vulkan</td></tr>
+    </tbody>
+  </table>
+
+  <p>The whole point of SDL's GPU API is that <strong>we write our engine once</strong>
+  and SDL maps it onto whichever backend is available. When you run Koi Engine on this
+  Mac, the logs say <code>GPU device ready (backend: metal)</code> — that's SDL choosing
+  Metal for you, with no Metal-specific code on our side.</p>
+
+  <h3>The window and its swapchain</h3>
+
+  <p>A <strong>window</strong> is just a rectangle of pixels the OS gives us. But we
+  don't draw to the window <em>directly</em>. Instead, when we "claim" the window for the
+  GPU device, SDL creates a <strong>swapchain</strong> for it.</p>
+
+  <p>A swapchain is a small set of images (usually 2 or 3) that we cycle through:</p>
+
+  <pre class="diagram">        ┌─────────────┐        ┌─────────────┐
+        │  Image A    │        │  Image B    │
+        │ (on screen) │        │ (we draw    │
+        │             │        │  into this) │
+        └─────────────┘        └─────────────┘
+              ▲                       │
+              │   when we're done,    │
+              └───  they swap  ◄──────┘</pre>
+
+  <p>While the monitor displays image A, we draw the next frame into image B. When we're
+  done, they <strong>swap</strong> (hence "swap-chain"): B goes on screen, and we start
+  drawing into A. This is <strong>double buffering</strong>, and it's why you never see a
+  half-drawn frame flicker on screen.</p>
+
+  <p>"Acquiring" a swapchain image each frame can also <strong>wait</strong> until the
+  display is ready for a new one — that's <strong>vsync</strong>, and it naturally paces
+  our loop to the monitor's refresh rate (≈60 frames per second) instead of spinning at
+  thousands of useless frames per second. (You can see this in our logs: 120 frames take
+  about 2 seconds.)</p>
+
+  <h3>The command buffer</h3>
+
+  <p>As described in §1, the <strong>command buffer</strong> is the to-do list we record
+  GPU commands into and submit as a batch. We get a fresh one each frame.</p>
+
+  <h3>The render pass</h3>
+
+  <p>A <strong>render pass</strong> is a bracket — <code>Begin ... End</code> — that
+  declares:</p>
+
+  <ul>
+    <li><strong>Which image(s)</strong> we're rendering into (this frame's swapchain
+    image), and</li>
+    <li><strong>What to do with the existing contents</strong> before and after we draw:
+      <ul>
+        <li><code>load_op = CLEAR</code> — wipe the image to a chosen color
+        <em>before</em> drawing. (This is the "clear the screen" everything sits on top
+        of.)</li>
+        <li><code>store_op = STORE</code> — <em>keep</em> the result afterward so it can
+        be displayed.</li>
+      </ul>
+    </li>
+  </ul>
+
+  <p>In Step 0 the render pass contains <strong>no draw calls</strong> — the clear
+  <em>is</em> the whole frame. In Step 1 we'll start issuing draw commands between
+  <code>Begin</code> and <code>End</code>.</p>
+
+  <h3>Present</h3>
+
+  <p>After we submit the command buffer, SDL queues the finished image to be shown on
+  screen at the next swap. We don't call a separate "present" function — submitting a
+  command buffer that rendered to the swapchain image takes care of it.</p>
+
+  <h2>3. The frame, end to end</h2>
+
+  <p>Putting the cast together, <strong>one frame</strong> of Koi Engine looks like
+  this:</p>
+
+  <pre class="diagram">  acquire command buffer        ← get a fresh to-do list
+        │
+  acquire swapchain image       ← (may wait for vsync) the image we draw into
+        │
+  begin render pass             ← target = that image, load_op = CLEAR
+        │
+   (Step 1+: draw calls here)
+        │
+  end render pass
+        │
+  submit command buffer         ← hand the list to the GPU; queues the present</pre>
+
+  <p>The CPU then loops straight back to the top and starts the next frame while the GPU
+  is still working on this one.</p>
+
+  <h2>4. The code</h2>
+
+  <p>Now let's map those concepts onto the actual source. Three files matter here.</p>
+
+  <h3><code>Engine</code> — the loop (<a href="../src/core/Engine.cpp">src/core/Engine.cpp</a>)</h3>
+
+  <p>The engine runs the <strong>game loop</strong>: handle input, render a frame,
+  repeat.</p>
+
+  <pre><code>while (running_) {
+    processEvents();                    // drain OS/input events
+    renderer_-&gt;renderFrame(kClearColor); // record + submit one frame
+}</code></pre>
+
+  <p><code>processEvents()</code> pulls every queued event with <code>SDL_PollEvent</code>
+  and reacts: <code>SDL_EVENT_QUIT</code> (close button) and <code>Esc</code> stop the
+  loop; <code>SDL_EVENT_WINDOW_RESIZED</code> is just logged for now (the swapchain
+  resizes itself).</p>
+
+  <h3><code>GpuRenderer</code> — device setup (<a href="../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a>)</h3>
+
+  <p>The constructor builds the two long-lived GPU objects from §2:</p>
+
+  <pre><code>// 1. Create the device, declaring which shader formats we may supply later.
+device_ = SDL_CreateGPUDevice(
+    SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL | SDL_GPU_SHADERFORMAT_DXIL,
+    /*debug_mode=*/true, nullptr);
+
+// 2. Claim the window — this creates its swapchain.
+SDL_ClaimWindowForGPUDevice(device_, window_);</code></pre>
+
+  <p>The shader-format flags are a <em>promise</em> for later (we have no shaders yet in
+  Step 0); listing all three keeps the engine cross-platform. <code>debug_mode = true</code>
+  turns on the backend's validation layer — extra checks and error messages that are
+  invaluable while learning, which we'll switch off in Release builds.</p>
+
+  <h3><code>GpuRenderer::renderFrame</code> — one frame</h3>
+
+  <p>This is §3 in code. Read it next to the diagram above:</p>
+
+  <pre><code>// (1) Fresh command buffer — our to-do list for this frame.
+SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
+
+// (2) The image to draw into. May block until vsync hands one back.
+SDL_GPUTexture* swapchainTexture = nullptr;
+SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window_, &amp;swapchainTexture, nullptr, nullptr);
+
+if (swapchainTexture != nullptr) {       // null when minimized — just skip
+    // (3) Describe the render pass: clear this image to clearColor, keep result.
+    SDL_GPUColorTargetInfo colorTarget = {};
+    colorTarget.texture     = swapchainTexture;
+    colorTarget.clear_color = clearColor;
+    colorTarget.load_op     = SDL_GPU_LOADOP_CLEAR;
+    colorTarget.store_op    = SDL_GPU_STOREOP_STORE;
+
+    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &amp;colorTarget, 1, nullptr);
+    // (Step 1+: bind a pipeline and draw here.)
+    SDL_EndGPURenderPass(pass);
+}
+
+// (4) Submit — execute on the GPU and queue the image for display.
+SDL_SubmitGPUCommandBuffer(cmd);</code></pre>
+
+  <p>A couple of details worth noticing, because they're easy to get wrong:</p>
+
+  <ul>
+    <li><strong>The minimized-window case.</strong> When the window is minimized there's
+    no image to draw into, so <code>swapchainTexture</code> comes back <code>null</code>.
+    That is <em>not</em> an error — we skip the render pass but <strong>still submit</strong>
+    the command buffer, otherwise it would leak. (A command buffer must always be
+    submitted or cancelled.)</li>
+    <li><strong>Teardown order.</strong> In the destructor we
+    <code>SDL_ReleaseWindowFromGPUDevice</code> <em>before</em>
+    <code>SDL_DestroyGPUDevice</code>. Releasing the window first detaches the swapchain;
+    destroying the device also waits for the GPU to finish any in-flight frame, so
+    nothing is torn down while still in use.</li>
+  </ul>
+
+  <h2>5. Try it yourself</h2>
+
+  <p>The fastest way to build intuition is to poke at it:</p>
+
+  <ol>
+    <li><strong>Change the clear color.</strong> Edit <code>kClearColor</code> in
+    <a href="../src/core/Engine.cpp">src/core/Engine.cpp</a> (RGBA floats in
+    <code>0..1</code>) and rebuild. Make it animate over time as an extra challenge
+    (hint: feed <code>SDL_GetTicks()</code> into a sine wave).</li>
+    <li><strong>Watch the backend.</strong> Run with the GPU debug layer on (it already
+    is in debug builds) and read the startup logs — confirm it says <code>metal</code>.</li>
+    <li><strong>Cap the frames.</strong> <code>KOI_MAX_FRAMES=300 ./build/koi-engine</code>
+    and time it — you should see it tied to your refresh rate via vsync.</li>
+  </ol>
+
+  <h2>6. What's next</h2>
+
+  <p>➡️ <strong>Step 1 — First Triangle.</strong> We keep this exact frame structure but
+  add a <strong>graphics pipeline</strong> and our first <strong>shaders</strong> (small
+  programs that run on the GPU). That introduces the shader toolchain: we'll author
+  shaders once and compile them to the format each backend needs (SPIR-V for Vulkan, MSL
+  for Metal) using <code>SDL_shadercross</code>. The triangle is the "hello world" of 3D
+  graphics — and the moment the screen stops being a single flat color.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

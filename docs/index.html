@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Koi Engine · Documentation</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html" aria-current="page">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Koi Engine Documentation</h1>
+
+  <p class="lede">A 3D engine built from scratch, step by step, in modern C++ on top of
+  SDL3 and its cross-platform GPU API. These docs are written for readers new to graphics
+  programming — concepts first, then the code.</p>
+
+  <p>Open any page straight from disk — these docs are plain HTML with no build step.
+  Start here:</p>
+
+  <div class="card-grid">
+    <a class="card" href="00-getting-started.html">
+      <h3>Getting Started →</h3>
+      <p>Prerequisites, building, running, testing, and a tour of the project layout.</p>
+    </a>
+    <a class="card" href="01-window-and-render-loop.html">
+      <h3>Window &amp; the Render Loop →</h3>
+      <p>GPUs, swapchains, command buffers and render passes explained from first
+      principles — then mapped onto the Step 0 code.</p>
+    </a>
+  </div>
+
+  <h2>Roadmap</h2>
+
+  <p>The engine grows one runnable milestone at a time. Each step adds a small set of new
+  concepts on top of the last.</p>
+
+  <table>
+    <thead>
+      <tr><th>Step</th><th>Milestone</th><th>New concepts</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>✅ <strong>0</strong></td><td><strong>Window + clear screen</strong></td><td>GPU device, swapchain, command buffer, render pass</td></tr>
+      <tr><td>1</td><td>First triangle</td><td>Shaders, graphics pipeline, shader toolchain (<code>shadercross</code>)</td></tr>
+      <tr><td>2</td><td>Vertex/index buffers</td><td>GPU buffers, transfer buffers, vertex layouts</td></tr>
+      <tr><td>3</td><td>3D cube + MVP + depth</td><td>hand-rolled <code>vec</code>/<code>mat4</code>, projection, depth testing</td></tr>
+      <tr><td>4</td><td>Camera + input movement</td><td>view matrix, delta-time, fly camera</td></tr>
+      <tr><td>5</td><td>Meshes &amp; scene graph</td><td>model abstraction, node hierarchy</td></tr>
+      <tr><td>6</td><td>Textures + Phong lighting</td><td>samplers, normals, uniform buffers</td></tr>
+      <tr><td>7+</td><td>Models, shadows, post-fx</td><td>glTF loading, shadow maps, post-processing</td></tr>
+    </tbody>
+  </table>
+
+  <h2>More</h2>
+
+  <ul>
+    <li><a href="../README.md">README</a> — project overview and quick start.</li>
+    <li><a href="../ARCHITECTURE.md">ARCHITECTURE</a> — the big-picture design and the
+    <em>why</em> behind it.</li>
+  </ul>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine · MIT licensed
+</footer>
+
+</body>
+</html>

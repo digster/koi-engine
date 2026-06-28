@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting Started · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html" aria-current="page">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Getting Started</h1>
+
+  <p>Welcome to <strong>Koi Engine</strong> — a 3D engine we build from scratch, one
+  small step at a time, to actually <em>understand</em> how real-time graphics works.
+  This page gets the project building and running on your machine. If you want to
+  understand <em>what</em> the code is doing and <em>why</em>, read
+  <a href="01-window-and-render-loop.html">01 — Window &amp; the Render Loop</a> next;
+  it explains every graphics concept from first principles.</p>
+
+  <h2>Prerequisites</h2>
+
+  <p>You need three things:</p>
+
+  <table>
+    <thead>
+      <tr><th>Tool</th><th>What it is</th><th>Install (macOS)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>SDL3</strong></td><td>Cross-platform library for windows, input, and the GPU</td><td><code>brew install sdl3</code></td></tr>
+      <tr><td><strong>CMake</strong> &ge; 3.28</td><td>Generates the build files our compiler uses</td><td><code>brew install cmake</code></td></tr>
+      <tr><td>A <strong>C++20</strong> compiler</td><td>Apple Clang (ships with Xcode Command Line Tools)</td><td><code>xcode-select --install</code></td></tr>
+    </tbody>
+  </table>
+
+  <blockquote>
+    <p>Optional: <code>brew install ninja</code> for faster builds. The presets use
+    <code>make</code> (always available) so Ninja isn't required.</p>
+  </blockquote>
+
+  <p>Verify SDL3 is discoverable:</p>
+
+  <pre><code>pkg-config --modversion sdl3   # prints e.g. 3.4.8</code></pre>
+
+  <h2>Build</h2>
+
+  <p>The repo ships a <code>CMakePresets.json</code>, so building is two commands — no
+  flags to memorize:</p>
+
+  <pre><code>cmake --preset debug      # configure: generates build files into build/
+cmake --build build       # compile everything</code></pre>
+
+  <p>This produces two executables in <code>build/</code>:</p>
+
+  <ul>
+    <li><code>koi-engine</code> — the application (opens the window).</li>
+    <li><code>koi-tests</code>  — the test runner.</li>
+  </ul>
+
+  <h2>Run</h2>
+
+  <pre><code>./build/koi-engine</code></pre>
+
+  <p>A 1280×720 window opens, cleared to a calm dark teal every frame.</p>
+
+  <p><strong>Controls</strong></p>
+
+  <ul>
+    <li><code>Esc</code> — quit</li>
+    <li>Close button — quit</li>
+    <li>Resize the window — handled automatically (logged in debug builds)</li>
+  </ul>
+
+  <p><strong>Headless / automated runs.</strong> Set <code>KOI_MAX_FRAMES</code> to
+  render a fixed number of frames and then exit cleanly — handy for smoke tests or CI
+  where nobody is there to press a key:</p>
+
+  <pre><code>KOI_MAX_FRAMES=120 ./build/koi-engine</code></pre>
+
+  <h2>Test</h2>
+
+  <pre><code>ctest --preset debug          # via CTest
+# or run the binary directly:
+./build/koi-tests</code></pre>
+
+  <p>In Step 0 the test suite is small on purpose — it proves the test target links
+  against the engine and runs green. It fills out substantially in Step 3 when we add
+  the hand-rolled math library (vectors and matrices are perfect for unit tests).</p>
+
+  <h2>Project layout</h2>
+
+  <pre class="diagram">koi-engine/
+├── CMakeLists.txt        # build description (targets, dependencies, warnings)
+├── CMakePresets.json     # named build configs (debug/release)
+├── docs/                 # these tutorials — read them alongside the code
+├── src/
+│   ├── main.cpp          # entry point — builds config, runs the Engine
+│   ├── core/
+│   │   ├── Log.hpp       # leveled logging (KOI_INFO/WARN/ERROR/DEBUG)
+│   │   ├── Engine.*      # owns subsystems + the main loop
+│   │   └── Window.*      # RAII wrapper around the OS window
+│   └── renderer/
+│       └── GpuRenderer.* # the GPU device + per-frame rendering
+└── tests/
+    └── test_core.cpp     # doctest-based tests</pre>
+
+  <p>For the big-picture design and the <em>why</em> behind this structure, see
+  <a href="../ARCHITECTURE.md">ARCHITECTURE.md</a>.</p>
+
+  <h2>Where to next</h2>
+
+  <p>➡️ <a href="01-window-and-render-loop.html">01 — Window &amp; the Render Loop</a>:
+  a from-scratch explanation of GPUs, swapchains, command buffers, and render passes —
+  and how the Step 0 code maps onto them.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>
