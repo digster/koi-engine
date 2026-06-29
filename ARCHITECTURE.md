@@ -136,6 +136,9 @@ builds if you like.
   paths are rooted at `src/` (e.g. `#include "core/Engine.hpp"`).
 - **Testing hook:** `KOI_MAX_FRAMES` env var runs a fixed number of frames then
   exits cleanly — used for headless smoke tests.
+- **Visual debugging:** `KOI_CAPTURE=<path.bmp>` renders one frame to an off-screen
+  texture, downloads it, and saves a BMP, then exits (`GpuRenderer::captureFrame`).
+  This is the preferred way to verify rendering output — no screen capture needed.
 - **Shaders:** authored in GLSL under `shaders/`; never hand-write MSL/SPIR-V —
   the build generates those. Compiled output is loaded relative to the executable
   (`SDL_GetBasePath()` + `shaders/`).

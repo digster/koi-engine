@@ -56,3 +56,14 @@ project-specific preferences stated by the project owner; global preferences in
 - Tests live in `tests/` (doctest). Add tests with new features and run them.
 - Append each prompt to `PROMPT.md`; write a session summary to `memory/YYYY-MM-DD.md`.
 - Generate a commit message after each change; **do not commit automatically.**
+
+## Visual debugging (render-to-image)
+
+- To verify what the engine actually renders **without** screen-recording access
+  or a visible window, use the built-in capture: `KOI_CAPTURE=<path.bmp>
+  ./build/koi-engine` renders a single frame into an off-screen texture, downloads
+  the pixels, and saves them as a BMP (implemented in `GpuRenderer::captureFrame`,
+  triggered from `Engine::run`). Prefer this over taking screen screenshots.
+- View it / convert to PNG with macOS `sips`: `sips -s format png out.bmp --out out.png`.
+- As the renderer gains features, capturing a frame is the quickest way to confirm
+  output (and produces a shareable image for the user).

@@ -59,6 +59,20 @@ bool Engine::init(const Config& config) {
 }
 
 void Engine::run() {
+    // Headless capture mode: if KOI_CAPTURE=<path> is set, render a single frame
+    // into an image file and exit immediately, without entering the live loop.
+    // This is our visual-debugging tool — it saves exactly what the engine draws
+    // without needing screen-recording access. (See CLAUDE.md / docs.)
+    if (const char* capturePath = SDL_getenv("KOI_CAPTURE")) {
+        if (renderer_->captureFrame(capturePath, kClearColor)) {
+            KOI_INFO("Captured frame to '%s'.", capturePath);
+        } else {
+            KOI_ERROR("Frame capture failed.");
+        }
+        running_ = false;
+        return;
+    }
+
     // Optional frame cap for automated/headless smoke tests. If the environment
     // variable KOI_MAX_FRAMES is set to a positive number, we render exactly
     // that many frames and then quit through the normal shutdown path. When it

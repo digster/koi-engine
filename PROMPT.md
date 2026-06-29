@@ -34,3 +34,10 @@ A running record of the prompts that shaped this project, for context.
 - Shader language + toolchain: **GLSL via `glslc` + `spirv-cross`** (over HLSL +
   `shadercross`, whose install is broken locally).
 - Triangle data: **baked into the vertex shader** (no vertex buffer until Step 2).
+
+**Visual-debugging request:**
+> For debugging visually, you can output the app's output to an image or texture
+> and use that. Also add that as a reference in the project CLAUDE file.
+
+Added `KOI_CAPTURE` (render one frame to a BMP via `GpuRenderer::captureFrame`);
+referenced in `CLAUDE.md`.

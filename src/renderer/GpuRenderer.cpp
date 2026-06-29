@@ -5,6 +5,16 @@
 
 namespace koi {
 
+SDL_PixelFormat gpuColorFormatToPixelFormat(SDL_GPUTextureFormat format) {
+    // SDL's *_32 pixel formats are byte-order-defined aliases, so they line up
+    // directly with the GPU formats' channel byte order regardless of endianness.
+    switch (format) {
+        case SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM: return SDL_PIXELFORMAT_BGRA32;
+        case SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM: return SDL_PIXELFORMAT_RGBA32;
+        default:                                   return SDL_PIXELFORMAT_UNKNOWN;
+    }
+}
+
 GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     // ------------------------------------------------------------------------
     //  1. Create the GPU device.
@@ -194,6 +204,107 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor) {
     //     the CPU is free to start building the next frame immediately.
     // ------------------------------------------------------------------------
     SDL_SubmitGPUCommandBuffer(cmd);
+}
+
+bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor) {
+    // Fixed capture resolution. Our triangle is defined in NDC, so it looks the
+    // same at any size; a fixed size keeps the output deterministic and small.
+    constexpr Uint32 kWidth  = 1280;
+    constexpr Uint32 kHeight = 720;
+
+    // Render into the same format as the swapchain so the existing pipeline (which
+    // was built for the swapchain format) is compatible with our off-screen target.
+    const SDL_GPUTextureFormat texFormat = SDL_GetGPUSwapchainTextureFormat(device_, window_);
+    const SDL_PixelFormat pixelFormat = gpuColorFormatToPixelFormat(texFormat);
+    if (pixelFormat == SDL_PIXELFORMAT_UNKNOWN) {
+        KOI_ERROR("captureFrame: unsupported swapchain format %d", static_cast<int>(texFormat));
+        return false;
+    }
+
+    // 1. Off-screen color target we render into (instead of the window).
+    SDL_GPUTextureCreateInfo texInfo = {};
+    texInfo.type                 = SDL_GPU_TEXTURETYPE_2D;
+    texInfo.format               = texFormat;
+    texInfo.usage                = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    texInfo.width                = kWidth;
+    texInfo.height               = kHeight;
+    texInfo.layer_count_or_depth = 1;
+    texInfo.num_levels           = 1;
+    SDL_GPUTexture* target = SDL_CreateGPUTexture(device_, &texInfo);
+    if (target == nullptr) {
+        KOI_ERROR("captureFrame: failed to create target texture: %s", SDL_GetError());
+        return false;
+    }
+
+    // 2. A "download" transfer buffer: CPU-visible memory the GPU copies into, so
+    //    we can read the rendered pixels back.
+    SDL_GPUTransferBufferCreateInfo tbInfo = {};
+    tbInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+    tbInfo.size  = kWidth * kHeight * 4;  // 4 bytes per pixel (8-bit RGBA/BGRA)
+    SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device_, &tbInfo);
+    if (transfer == nullptr) {
+        KOI_ERROR("captureFrame: failed to create transfer buffer: %s", SDL_GetError());
+        SDL_ReleaseGPUTexture(device_, target);
+        return false;
+    }
+
+    // 3. Record: draw the triangle into the off-screen texture, then a copy pass
+    //    that downloads that texture into the transfer buffer.
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
+
+    SDL_GPUColorTargetInfo colorTarget = {};
+    colorTarget.texture     = target;
+    colorTarget.clear_color = clearColor;
+    colorTarget.load_op     = SDL_GPU_LOADOP_CLEAR;
+    colorTarget.store_op    = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
+    SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(pass);
+
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureRegion region = {};
+    region.texture = target;
+    region.w = kWidth;
+    region.h = kHeight;
+    region.d = 1;
+    SDL_GPUTextureTransferInfo dst = {};
+    dst.transfer_buffer = transfer;
+    dst.offset          = 0;
+    dst.pixels_per_row  = kWidth;   // tightly packed: pitch = width * 4
+    dst.rows_per_layer  = kHeight;
+    SDL_DownloadFromGPUTexture(copy, &region, &dst);
+    SDL_EndGPUCopyPass(copy);
+
+    // 4. Submit and BLOCK until the GPU finishes — unlike a live frame, we need
+    //    the result on the CPU right now. A fence lets us wait for completion.
+    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+    if (fence != nullptr) {
+        SDL_WaitForGPUFences(device_, /*wait_all=*/true, &fence, 1);
+        SDL_ReleaseGPUFence(device_, fence);
+    }
+
+    // 5. Map the downloaded pixels, wrap them in a surface, and save as BMP.
+    bool ok = false;
+    void* pixels = SDL_MapGPUTransferBuffer(device_, transfer, /*cycle=*/false);
+    if (pixels != nullptr) {
+        SDL_Surface* surface = SDL_CreateSurfaceFrom(
+            static_cast<int>(kWidth), static_cast<int>(kHeight),
+            pixelFormat, pixels, static_cast<int>(kWidth * 4));
+        if (surface != nullptr) {
+            ok = SDL_SaveBMP(surface, path);
+            if (!ok) KOI_ERROR("captureFrame: SDL_SaveBMP failed: %s", SDL_GetError());
+            SDL_DestroySurface(surface);
+        }
+        SDL_UnmapGPUTransferBuffer(device_, transfer);
+    } else {
+        KOI_ERROR("captureFrame: failed to map transfer buffer: %s", SDL_GetError());
+    }
+
+    // 6. Release the GPU resources we created just for this capture.
+    SDL_ReleaseGPUTransferBuffer(device_, transfer);
+    SDL_ReleaseGPUTexture(device_, target);
+    return ok;
 }
 
 }  // namespace koi

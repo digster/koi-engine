@@ -87,6 +87,15 @@ cmake --build build       # compile everything</code></pre>
 
   <pre><code>KOI_MAX_FRAMES=120 ./build/koi-engine</code></pre>
 
+  <p><strong>Capture a frame to an image.</strong> To see exactly what the engine
+  renders — without screen-recording or even a visible window — set
+  <code>KOI_CAPTURE</code> to an output path. The engine renders one frame into an
+  off-screen texture, saves it as a BMP, and exits. Great for visual debugging and
+  for sharing a result:</p>
+
+  <pre><code>KOI_CAPTURE=/tmp/frame.bmp ./build/koi-engine
+sips -s format png /tmp/frame.bmp --out /tmp/frame.png   # optional: BMP -> PNG (macOS)</code></pre>
+
   <h2>Test</h2>
 
   <pre><code>ctest --preset debug          # via CTest

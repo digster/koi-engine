@@ -16,6 +16,12 @@
 
 namespace koi {
 
+// Map a GPU color-target format to the equivalent SDL surface pixel format, so
+// downloaded pixels can be wrapped in an SDL_Surface and saved. Pure function
+// (no GPU/IO) → unit-testable. Returns SDL_PIXELFORMAT_UNKNOWN for formats we
+// don't handle. Used by GpuRenderer::captureFrame.
+[[nodiscard]] SDL_PixelFormat gpuColorFormatToPixelFormat(SDL_GPUTextureFormat format);
+
 class GpuRenderer {
 public:
     // Construction creates a GPU "device" (our handle to the graphics card)
@@ -40,6 +46,13 @@ public:
     // Render exactly one frame: acquire an image from the window's swapchain,
     // clear it to `clearColor`, draw the triangle, and present it.
     void renderFrame(const SDL_FColor& clearColor);
+
+    // Render one frame into an OFF-SCREEN texture (not the window), download the
+    // pixels back to the CPU, and save them to `path` as a BMP. This is our
+    // headless visual-debugging tool: it captures exactly what the engine draws
+    // without needing screen-recording access or a visible window. Returns false
+    // (after logging) on failure. See docs / CLAUDE.md.
+    [[nodiscard]] bool captureFrame(const char* path, const SDL_FColor& clearColor);
 
 private:
     // Build the graphics pipeline for the triangle (loads + compiles shaders into

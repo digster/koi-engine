@@ -18,6 +18,7 @@
 #include <doctest/doctest.h>
 
 #include "core/Engine.hpp"
+#include "renderer/GpuRenderer.hpp"
 
 TEST_CASE("Engine::Config has sensible defaults") {
     const koi::Engine::Config config{};
@@ -32,4 +33,15 @@ TEST_CASE("Engine::Config is overridable via designated initializers") {
 
     CHECK(config.width  == 640);
     CHECK(config.height == 480);
+}
+
+TEST_CASE("gpuColorFormatToPixelFormat maps the formats we download") {
+    // The two 8-bit RGBA-ish color formats backends actually use map to byte-order
+    // SDL pixel formats; anything else is reported as UNKNOWN so capture bails out.
+    CHECK(koi::gpuColorFormatToPixelFormat(SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM)
+          == SDL_PIXELFORMAT_BGRA32);
+    CHECK(koi::gpuColorFormatToPixelFormat(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)
+          == SDL_PIXELFORMAT_RGBA32);
+    CHECK(koi::gpuColorFormatToPixelFormat(SDL_GPU_TEXTUREFORMAT_D16_UNORM)
+          == SDL_PIXELFORMAT_UNKNOWN);
 }
