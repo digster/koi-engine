@@ -3,11 +3,11 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 6 (window & render loop, the first triangle, geometry in GPU
+through Step 7 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
-abstraction drawn through a **scene graph** of parent/child transforms, and
-**textures** sampled onto those surfaces).
+abstraction drawn through a **scene graph** of parent/child transforms,
+**textures** sampled onto those surfaces, and **Phong lighting** that shades them).
 
 ## Guiding principles
 
@@ -53,7 +53,7 @@ abstraction drawn through a **scene graph** of parent/child transforms, and
 | `Transform` | [src/scene/Transform.hpp](src/scene/Transform.hpp) | Header-only, SDL-free: position / Euler rotation / scale, plus `localMatrix()` returning `T·R·S` (scale → rotate → translate). Unit-tested in `tests/test_transform.cpp`. |
 | `Node` | [src/scene/Node.*](src/scene/) | One element of the scene graph: a local `Transform`, an optional shared `Mesh`, owned children (`unique_ptr`), and a cached world matrix. `updateWorldTransforms` walks the tree computing `world = parentWorld · local`. Scene-graph composition unit-tested in `tests/test_node.cpp`. |
 | `Camera` | [src/scene/Camera.*](src/scene/) | A yaw/pitch fly camera (position + angles). Produces a `view` matrix via `lookAt`; `processKeyboard`/`addMouseLook` update it from input. Lives above the renderer and knows nothing about the GPU; its header is SDL-free. Logic unit-tested in `tests/test_camera.cpp`. |
-| `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color + uv). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
+| `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color + uv + normal). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
 | `math` (`Vec`, `Mat4`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`) and column-major 4×4 matrix math (translate/rotate/**scale**/perspective/`lookAt`). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp`. |
 | `Shader` | [src/renderer/Shader.*](src/renderer/) | Loads a compiled shader for the active backend: `selectShaderVariant` (pure, unit-tested) picks the format/extension/entry point; `loadShader` reads the file and creates the `SDL_GPUShader` (with the right uniform-buffer and sampler counts). |
 | `Log` | [src/core/Log.hpp](src/core/Log.hpp) | Leveled logging macros over SDL's logger; one place to control verbosity. |
@@ -72,12 +72,12 @@ animate + update → spin a couple of nodes (rotationEuler += rate·dt);
        │
 renderFrame(view, → in GpuRenderer (view = camera.viewMatrix()):
   sceneRoot,           1. acquire command buffer
-  texture)             2. acquire swapchain image (waits for vsync) + its size
-                     3. ensure the depth texture matches that size
+  texture,             2. acquire swapchain image (waits for vsync) + its size
+  cameraPos)           3. ensure the depth texture matches that size
                      4. begin render pass (color CLEAR + depth CLEAR to 1.0)
-                     5. recordScene: bind pipeline + texture/sampler once, then walk the
-                        tree — per node with a mesh, bind its buffers + push proj·view·world
-                        + indexed draw
+                     5. recordScene: bind pipeline + texture/sampler, push the light
+                        uniform (set=3) once, then walk the tree — per node with a mesh,
+                        bind its buffers + push {mvp, model} (set=1) + indexed draw
                      6. end render pass
                      7. submit command buffer (queues present)
 ```
@@ -236,6 +236,34 @@ copied next to the binary by CMake's `koi_assets` target and loaded at runtime v
 `SDL_GetBasePath()`, mirroring the shader pipeline. Same lifetime rule as meshes: the
 `Texture` is released before the renderer's device in `shutdown()`.
 
+### Lighting & normals (Step 7)
+
+Surfaces now respond to light. `Vertex` gained a **normal** (the direction it faces);
+the cube's 24-vertex split from Step 6 already lets each face carry its own flat
+normal. Lighting is computed **in world space**, which forces one structural change:
+the vertex shader needs the **model matrix on its own** (not just the combined MVP) to
+output each fragment's world position + world normal. So the vertex uniform grew to
+`{ mvp, model }`, pushed per node (`model` is the node's `worldMatrix()`). World normal
+= `mat3(model) * normal` — correct for the scene's **uniform** scale; non-uniform scale
+would need the inverse-transpose normal matrix (a noted future refinement).
+
+```
+   vertex shader (set=1)            fragment shader
+   uniform { mvp, model }   ──►     ambient + diffuse(N·L) + specular(N·H)  over
+   outputs world pos+normal         albedo = texture(set=2) · vColor
+                                    light params: uniform LightUBO (set=3)
+```
+
+The fragment shader implements **Blinn-Phong**: ambient (constant fill) + diffuse
+(`max(dot(N,L),0)`, a directional "sun") + specular (halfway vector `H=normalize(L+V)`,
+needing the camera position), all modulating the textured albedo. The light is
+frame-constant, so its parameters live in a **fragment uniform buffer at `set=3`**
+(`loadShader` now declares the fragment shader's uniform-buffer count too), pushed once
+per frame in `recordScene` via `SDL_PushGPUFragmentUniformData`. The camera position is
+threaded through `renderFrame`/`captureFrame` (from `Camera::position()`) for the
+specular term. Light parameters are constants for now — a per-object **material** is the
+natural next refinement.
+
 ## Lifecycle & ownership
 
 Startup builds bottom-up, shutdown tears down top-down — the standard RAII
@@ -326,7 +354,11 @@ Future milestones slot into this structure without reshaping it:
   `loadTexture`/`uploadToGpuTexture` and a shared sampler joined `renderer/`; the fragment
   shader samples a texture (bound at `set=2`); CMake's `koi_assets` copies the image asset.
   The cube split to 24 vertices for per-face UVs.
-- **Step 7+:** `Vertex` grows **normals**; shaders gain per-fragment **lighting** (a
-  directional light: ambient/diffuse/specular), pulling in a fragment uniform buffer and a
-  normal matrix — the first shader change since this step. The 24-vertex cube already
-  supports the per-face normals it needs.
+- **Step 7 (done):** `Vertex` grew a **normal**; the vertex shader gained the `model`
+  matrix (to light in world space) and the fragment shader a **Blinn-Phong** light at a
+  fragment uniform buffer (`set=3`), pushed per frame with the camera position. Per-face
+  normals fell out of the Step 6 24-vertex cube for free.
+- **Step 8+:** a per-object **material** (its own texture + shininess) lifts the single
+  global texture/light into the scene; then real **model loading** (glTF), **shadows**
+  (depth from the light's view), and **post-processing** (render to an offscreen target,
+  then a fullscreen pass).

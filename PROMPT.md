@@ -100,3 +100,17 @@ referenced in `CLAUDE.md`.
 - Image: load a committed `assets/uv_grid.bmp` via `SDL_LoadBMP` (no SDL_image dep), copied
   next to the binary by a new CMake `koi_assets` target; sampler uses REPEAT so the floor
   tiles. Cube split 8→24 verts for per-face UVs.
+
+**Next milestone request (Step 7):**
+> Ok, work on the next step.
+
+**Decisions made (no clarifying question — scope set by the Step 6 roadmap split):**
+- Step 7 = **Phong lighting** (the second half of the split). A single fixed
+  **directional** light (sun) with **Blinn-Phong** ambient + diffuse + specular, modulating
+  the Step 6 texture as albedo. Point/multiple lights, attenuation, and per-object materials
+  deferred to Step 8+.
+- Structural consequence: lighting is in **world space**, so the vertex UBO grew to
+  `{ mvp, model }` and the fragment shader got a light UBO at **`set=3`**; the camera
+  position threads through `renderFrame`/`captureFrame` for specular. World normal uses
+  `mat3(model)` (correct for the scene's uniform scale; inverse-transpose normal matrix
+  deferred). The Step 6 24-vertex cube already supplied per-face normals.

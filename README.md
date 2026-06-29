@@ -9,12 +9,11 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 6:** adds **textures**. Each vertex gains a **texture
-> coordinate (UV)**, an image is **loaded** and **uploaded** into a GPU **texture**, and a
-> **sampler** (linear filtering, REPEAT wrap) reads it in the fragment shader — tinted by
-> the existing per-vertex color. The cubes are now checkered and the ground plane tiles the
-> texture across the floor. (The roadmap's "Textures + Phong lighting" is split into two
-> steps; **lighting is Step 7**.)
+> **Current status — Step 7:** adds **Phong lighting**. Each vertex gains a **normal**, a
+> single **directional light** ("sun") shades every fragment with **ambient + diffuse +
+> specular** (Blinn-Phong), and the lighting modulates the Step 6 texture as the surface's
+> base color. Faces toward the light are bright, faces away are dim (but not black, thanks
+> to ambient) — so the spinning cubes now read as solid, lit form.
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 
@@ -62,6 +61,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - [docs/07-textures-and-samplers.html](docs/07-textures-and-samplers.html) — texture
   coordinates, uploading an image to the GPU, samplers (filtering & wrap), and the
   descriptor-set binding model, mapped to the Step 6 code that textures the scene.
+- [docs/08-lighting-and-normals.html](docs/08-lighting-and-normals.html) — surface normals,
+  a directional light, and the Phong terms (ambient/diffuse/specular) in world space,
+  mapped to the Step 7 code that shades the textured scene.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -75,7 +77,7 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 | ✅ **4** | **Camera + input movement** | view matrix, delta-time, fly camera |
 | ✅ **5** | **Meshes & scene graph** | mesh abstraction, Transform (TRS), node hierarchy |
 | ✅ **6** | **Textures** | UV coordinates, GPU textures, samplers (filtering & wrap) |
-| 7 | Phong lighting | normals, a directional light, ambient/diffuse/specular |
+| ✅ **7** | **Phong lighting** | normals, a directional light, ambient/diffuse/specular |
 | 8+ | Models, shadows, post-fx | glTF loading, shadow maps, post-processing |
 
 ## Requirements

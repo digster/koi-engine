@@ -146,7 +146,8 @@ void Engine::run() {
         // Resolve the scene's world matrices once (the animation hasn't run, so
         // this captures the deterministic t = 0 pose) before drawing it off-screen.
         sceneRoot_->updateWorldTransforms();
-        if (renderer_->captureFrame(capturePath, kClearColor, camera_.viewMatrix(), *sceneRoot_, *texture_)) {
+        if (renderer_->captureFrame(capturePath, kClearColor, camera_.viewMatrix(),
+                                    *sceneRoot_, *texture_, camera_.position())) {
             KOI_INFO("Captured frame to '%s'.", capturePath);
         } else {
             KOI_ERROR("Frame capture failed.");
@@ -205,7 +206,8 @@ void Engine::run() {
         // Propagate transforms down the tree (parent → child → grandchild) so every
         // node's cached world matrix is current, THEN draw.
         sceneRoot_->updateWorldTransforms();
-        renderer_->renderFrame(kClearColor, camera_.viewMatrix(), *sceneRoot_, *texture_);
+        renderer_->renderFrame(kClearColor, camera_.viewMatrix(), *sceneRoot_, *texture_,
+                               camera_.position());
 
         if (maxFrames != 0 && ++frame >= maxFrames) {
             KOI_INFO("Reached KOI_MAX_FRAMES=%llu — exiting.",

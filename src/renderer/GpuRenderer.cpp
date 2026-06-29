@@ -120,7 +120,7 @@ bool GpuRenderer::createTrianglePipeline() {
     // The vertex shader declares one uniform buffer (the MVP matrix); the
     // fragment shader declares none.
     SDL_GPUShader* vertexShader   = loadShader(device_, "triangle.vert", SDL_GPU_SHADERSTAGE_VERTEX, /*numUniformBuffers=*/1);
-    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/0, /*numSamplers=*/1);
+    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/1, /*numSamplers=*/1);
     if (vertexShader == nullptr || fragmentShader == nullptr) {
         // loadShader already logged the cause. Clean up whichever did load.
         if (vertexShader != nullptr)   SDL_ReleaseGPUShader(device_, vertexShader);
@@ -161,7 +161,7 @@ bool GpuRenderer::createTrianglePipeline() {
     vertexBufferDesc.pitch      = static_cast<Uint32>(sizeof(Vertex));
     vertexBufferDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
 
-    const SDL_GPUVertexAttribute vertexAttributes[3] = {
+    const SDL_GPUVertexAttribute vertexAttributes[4] = {
         // location 0: inPosition (vec3) at the start of the vertex.
         { /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
           offsetof(Vertex, position) },
@@ -171,6 +171,9 @@ bool GpuRenderer::createTrianglePipeline() {
         // location 2: inUV (vec2) right after the color — Step 6's texture coords.
         { /*location=*/2, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
           offsetof(Vertex, uv) },
+        // location 3: inNormal (vec3) right after the uv — Step 7's surface normal.
+        { /*location=*/3, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+          offsetof(Vertex, normal) },
     };
 
     SDL_GPUGraphicsPipelineCreateInfo pipelineInfo = {};
@@ -179,7 +182,7 @@ bool GpuRenderer::createTrianglePipeline() {
     pipelineInfo.vertex_input_state.vertex_buffer_descriptions = &vertexBufferDesc;
     pipelineInfo.vertex_input_state.num_vertex_buffers         = 1;
     pipelineInfo.vertex_input_state.vertex_attributes          = vertexAttributes;
-    pipelineInfo.vertex_input_state.num_vertex_attributes      = 3;
+    pipelineInfo.vertex_input_state.num_vertex_attributes      = 4;
     // TRIANGLELIST = every 3 vertices form one independent triangle.
     pipelineInfo.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
 
@@ -484,7 +487,7 @@ bool GpuRenderer::ensureDepthTexture(Uint32 width, Uint32 height) {
 
 void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                               const Node& root, const Mat4& view, float aspect,
-                              const Texture& texture) const {
+                              const Texture& texture, const Vec3& cameraPos) const {
     // Bind the one pipeline every mesh shares. Per-mesh vertex/index buffers are
     // bound inside recordNode, just before each node's draw.
     SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
@@ -496,6 +499,25 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
     samplerBinding.texture = texture.handle();
     samplerBinding.sampler = sampler_;
     SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, &samplerBinding, /*num_bindings=*/1);
+
+    // Push the per-frame lighting uniform (fragment set=3): one fixed directional
+    // "sun" plus the camera position (for specular). It's constant across the whole
+    // frame, so we push it ONCE here rather than per node. We use vec4s to match the
+    // shader's std140 layout (a vec3 there pads to 16 bytes anyway).
+    struct LightUniform {
+        float lightDir[4];
+        float lightColor[4];
+        float ambient[4];
+        float cameraPos[4];
+    };
+    const Vec3 sun = normalize(Vec3{-0.4f, -1.0f, -0.3f});  // direction the light travels
+    const LightUniform light = {
+        { sun.x, sun.y, sun.z, 0.0f },
+        { 1.0f, 1.0f, 1.0f, 0.0f },              // white light
+        { 0.15f, 0.15f, 0.18f, 0.0f },           // soft ambient fill
+        { cameraPos.x, cameraPos.y, cameraPos.z, 0.0f },
+    };
+    SDL_PushGPUFragmentUniformData(cmd, /*slot=*/0, &light, sizeof(light));
 
     // The projection depends only on the viewport, and the view only on the
     // camera, so combine them ONCE here. Each node then only adds one multiply by
@@ -524,11 +546,15 @@ void GpuRenderer::recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
         indexBinding.buffer = mesh->indexBuffer();
         SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
-        // Push this node's full MVP (proj·view·world) and draw. Because world
-        // already folds in every ancestor's transform, parented objects move as a
-        // group with no special handling here.
-        const Mat4 mvp = projView * node.worldMatrix();
-        SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &mvp, sizeof(mvp));
+        // Push the two matrices the vertex shader needs: the full MVP (proj·view·
+        // world, to clip space) AND the model/world matrix on its own (so the
+        // fragment shader can light in world space). `model` is the node's world
+        // matrix, already computed by updateWorldTransforms — world already folds in
+        // every ancestor's transform, so parented objects move as a group for free.
+        struct VertexUniform { Mat4 mvp; Mat4 model; };
+        const Mat4 model = node.worldMatrix();
+        const VertexUniform u = { projView * model, model };
+        SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &u, sizeof(u));
         SDL_DrawGPUIndexedPrimitives(pass, mesh->indexCount(), /*num_instances=*/1,
                                      /*first_index=*/0, /*vertex_offset=*/0,
                                      /*first_instance=*/0);
@@ -570,7 +596,8 @@ GpuRenderer::~GpuRenderer() {
 }
 
 void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
-                              const Node& sceneRoot, const Texture& texture) {
+                              const Node& sceneRoot, const Texture& texture,
+                              const Vec3& cameraPos) {
     // ------------------------------------------------------------------------
     //  1. Acquire a command buffer.
     //     We don't command the GPU directly; we *record* commands into a buffer
@@ -639,7 +666,7 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
         // from the actual swapchain size, so the image is never stretched and
         // adapts automatically when the window is resized.
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-        recordScene(cmd, pass, sceneRoot, view, aspect, texture);
+        recordScene(cmd, pass, sceneRoot, view, aspect, texture, cameraPos);
 
         SDL_EndGPURenderPass(pass);
     }
@@ -655,7 +682,7 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
 
 bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
                                const Mat4& view, const Node& sceneRoot,
-                               const Texture& texture) {
+                               const Texture& texture, const Vec3& cameraPos) {
     // Fixed capture resolution: keeps the output deterministic and small. The
     // aspect ratio (1280/720) feeds the projection so the cube isn't distorted.
     constexpr Uint32 kWidth  = 1280;
@@ -728,7 +755,7 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
     // Draw the same scene the live path does, through the supplied `view` (the
     // camera's default pose) — deterministic because nothing here is time-based.
     constexpr float kCaptureAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
-    recordScene(cmd, pass, sceneRoot, view, kCaptureAspect, texture);
+    recordScene(cmd, pass, sceneRoot, view, kCaptureAspect, texture, cameraPos);
     SDL_EndGPURenderPass(pass);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);

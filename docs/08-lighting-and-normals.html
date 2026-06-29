@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lighting &amp; Normals · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html" aria-current="page">Lighting &amp; Normals</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Lighting &amp; Normals</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 7:</strong> make surfaces respond to <strong>light</strong>.
+    Give each vertex a <strong>normal</strong> (the direction it faces), add a single
+    directional light, and shade every fragment with the classic <strong>Phong</strong>
+    terms — <strong>ambient + diffuse + specular</strong> — over the Step 6 texture.</p>
+    <p>This is the second half of the roadmap's "Textures + Phong lighting," done as its
+    own step. The spinning cubes now brighten and darken as their faces turn toward and
+    away from the sun.</p>
+  </blockquote>
+
+  <p>Through Step 6 every fragment was <strong>fullbright</strong>: a face pointing at you
+  and a face pointing away were drawn at the exact same brightness. That's why the cubes
+  read as 3D only because they spin. Real surfaces look solid because they
+  <strong>catch light</strong> — bright where they face a light, dark where they don't.
+  Step 7 adds exactly that.</p>
+
+  <h2>1. Normals: which way a surface faces</h2>
+
+  <p>To know how much light a surface catches, we need to know which way it
+  <strong>faces</strong>. That direction is the surface <strong>normal</strong>: a unit
+  vector perpendicular to the surface. We store one per vertex (a new <code>normal</code>
+  attribute), and the rasterizer interpolates it across each triangle, just like color and
+  UVs.</p>
+
+  <p>For a cube we want <strong>flat</strong> faces, so all four corners of a face share
+  that face's single outward normal (front = −Z, top = +Y, and so on). This is why the cube
+  is <strong>24 vertices</strong>: a shared corner couldn't hold three different face
+  normals — the very same reason it couldn't hold three UVs in
+  <a href="07-textures-and-samplers.html">Step 6</a>. That split already did the work; Step
+  7 just fills in the normals.</p>
+
+  <h2>2. Lighting happens in world space</h2>
+
+  <p>Here's the subtlety that drives the code change. To compare a surface's normal against
+  the direction to the light and the direction to the eye, all three must be in the
+  <strong>same</strong> coordinate space — and the natural one is <strong>world
+  space</strong>, where the light and camera actually sit. But our vertex shader only had
+  the combined <code>mvp</code>, which jumps straight to clip space and throws world space
+  away.</p>
+
+  <p>So the vertex shader now also gets the <strong>model (world) matrix</strong> on its
+  own, and outputs the vertex's <strong>world position</strong> and <strong>world
+  normal</strong> for the fragment shader to light with:</p>
+
+  <pre><code>// triangle.vert
+vWorldPos    = vec3(model * vec4(inPosition, 1.0));
+vWorldNormal = mat3(model) * inNormal;   // rotate the normal into world space</code></pre>
+
+  <p>The vertex uniform therefore grew from one matrix to two — <code>{ mvp, model }</code>
+  — and the renderer pushes both (the <code>model</code> is just the node's world matrix
+  from the <a href="06-meshes-and-scene-graph.html">Step 5</a> scene graph). One caveat:
+  <code>mat3(model)</code> is the correct normal transform only for <strong>uniform</strong>
+  scale (all our objects). Non-uniform scale would skew normals and needs the
+  inverse-transpose "normal matrix" — a noted future refinement.</p>
+
+  <h2>3. Diffuse light (Lambert)</h2>
+
+  <p>The core term. A surface is brightest when it faces the light head-on and fades to
+  zero as it turns side-on. That falloff is exactly the cosine of the angle between the
+  normal <strong>N</strong> and the direction to the light <strong>L</strong> — and for
+  unit vectors, cosine <em>is</em> the dot product:</p>
+
+  <pre class="diagram">  diffuse = max( dot(N, L), 0 )
+
+     light
+       ↓    N (full)        N (grazing)        N (back)
+       ↓    │                 ╱                  │
+    ───┴────┴───          ───╱────           ────┴──── (faces away)
+       dot = 1            dot ≈ 0.3          dot &lt; 0 → clamped to 0</pre>
+
+  <p>The <code>max(…, 0)</code> stops surfaces facing away from the light from going
+  negative (which would be "negative light"). A single <strong>directional light</strong> —
+  a sun infinitely far away — means <strong>L</strong> is the same everywhere: just the
+  opposite of the direction the light travels.</p>
+
+  <h2>4. Specular light (Blinn-Phong)</h2>
+
+  <p>Diffuse alone looks matte. Shiny surfaces also show a <strong>highlight</strong> — a
+  bright spot where the surface is angled to bounce the light straight at your eye. Phong
+  models this with how closely the surface mirrors the light toward the viewer; the
+  <strong>Blinn-Phong</strong> shortcut uses the <strong>halfway vector</strong>
+  <strong>H</strong> between the light direction and the view direction:</p>
+
+  <pre><code>V = normalize(cameraPos - worldPos);   // toward the eye
+H = normalize(L + V);                  // halfway between light and eye
+specular = pow( max(dot(N, H), 0), shininess );</code></pre>
+
+  <p>When <strong>N</strong> lines up with <strong>H</strong>, the highlight is at its
+  peak; the <code>shininess</code> power controls how tight it is (higher = smaller, sharper
+  glint). This is the one term that needs the <strong>camera position</strong> — which is
+  why the renderer now threads it through to the shader.</p>
+
+  <h2>5. Ambient, and the final mix</h2>
+
+  <p>With only diffuse + specular, every shadowed face would be pure black — too harsh,
+  because in reality light bounces around and fills shadows. A cheap stand-in is a small
+  constant <strong>ambient</strong> term added everywhere. The full shading, over the
+  surface's base color (its <strong>albedo</strong> = texture × vertex tint):</p>
+
+  <pre class="diagram">  albedo = texture(uTex, vUV) · vColor
+
+  color = albedo · (ambient + lightColor · diffuse)   // base color, lit
+        +          lightColor · specStrength · specular  // highlight on top</pre>
+
+  <p>Notice the texture didn't go anywhere — lighting <em>modulates</em> it. That's why the
+  cubes still show the checker, now with shaded faces.</p>
+
+  <h2>6. Where lighting plugs into the GPU</h2>
+
+  <p>The light is the same for the whole frame, so its parameters live in a
+  <strong>fragment uniform buffer</strong>. SDL3 puts fragment uniform buffers in descriptor
+  <strong>set 3</strong> (recall: vertex UBO set 1, fragment textures set 2). We push it
+  once per frame:</p>
+
+  <table>
+    <thead>
+      <tr><th>Resource</th><th>Set</th><th>Pushed/bound</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Vertex UBO <code>{mvp, model}</code></td><td><code>set=1</code></td><td>per node (<code>PushGPUVertexUniformData</code>)</td></tr>
+      <tr><td>Texture + sampler</td><td><code>set=2</code></td><td>once per frame (<code>BindGPUFragmentSamplers</code>)</td></tr>
+      <tr><td>Light UBO (dir, color, ambient, eye)</td><td><code>set=3</code></td><td>once per frame (<code>PushGPUFragmentUniformData</code>)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>7. The code</h2>
+
+  <h3>The normal — <a href="../src/renderer/Vertex.hpp">Vertex.hpp</a> &amp; <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a></h3>
+  <p><code>Vertex</code> gains a <code>normal[3]</code> (appended, so earlier offsets hold);
+  the pipeline gets a 4th vertex attribute. The cube's 24 vertices get their per-face
+  normals; the plane's point <code>+Y</code>.</p>
+
+  <h3>The shaders — <a href="../shaders/triangle.vert">triangle.vert</a> / <a href="../shaders/triangle.frag">triangle.frag</a></h3>
+  <p>The vertex shader takes <code>{mvp, model}</code> and outputs world position + world
+  normal; the fragment shader adds the light UBO at <code>set=3</code> and computes the
+  ambient/diffuse/specular mix over the textured albedo.</p>
+
+  <h3>Feeding it — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer</a> &amp; <a href="../src/core/Engine.cpp">Engine</a></h3>
+  <p><code>recordNode</code> now pushes both matrices; <code>recordScene</code> pushes the
+  light uniform once (a fixed sun + the camera position) before walking the tree. The
+  Engine passes <code>camera_.position()</code> into <code>renderFrame</code>/
+  <code>captureFrame</code> for the specular term.</p>
+
+  <h2>8. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Move the sun.</strong> Change the light direction in
+    <a href="../src/renderer/GpuRenderer.cpp">recordScene</a> and watch which faces light
+    up. Point it sideways to rake light across the cubes.</li>
+    <li><strong>Tighten the highlight.</strong> Raise <code>kShininess</code> in
+    <a href="../shaders/triangle.frag">triangle.frag</a> to 128 for a small sharp glint, or
+    drop it to 4 for a broad sheen.</li>
+    <li><strong>Kill the ambient.</strong> Set ambient to 0 and see shadowed faces go pure
+    black — then appreciate why even a little fill matters.</li>
+    <li><strong>Smooth normals.</strong> Give a sphere (if you add one) averaged per-vertex
+    normals instead of flat per-face ones, and watch faceting turn into smooth shading.</li>
+  </ol>
+
+  <h2>9. What's next</h2>
+
+  <p>➡️ <strong>Step 8 and beyond.</strong> With geometry, a scene graph, textures, and
+  lighting in place, the foundations are done. Next come bigger pieces: loading real
+  <strong>models</strong> (glTF) instead of hand-built primitives, <strong>shadows</strong>
+  (so objects occlude the light), and <strong>post-processing</strong>. A natural near-term
+  refinement is a <strong>material</strong> (per-object texture + shininess) so the one
+  global texture/light gives way to per-object surfaces.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

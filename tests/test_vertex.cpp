@@ -23,18 +23,20 @@
 using koi::Vertex;
 
 TEST_CASE("Vertex is tightly packed so its size is the buffer pitch") {
-    // position (3) + color (3) + uv (2) = 8 floats = 32 bytes, no padding.
-    // Step 3 widened position to 3D (20→24); Step 6 appended a 2D uv (24→32).
-    CHECK(sizeof(Vertex) == 32);
+    // position (3) + color (3) + uv (2) + normal (3) = 11 floats = 44 bytes.
+    // Step 3 widened position to 3D (→24); Step 6 appended uv (→32); Step 7
+    // appended normal (→44). Each addition went LAST, so earlier offsets held.
+    CHECK(sizeof(Vertex) == 44);
     CHECK(sizeof(float) == 4);
 }
 
 TEST_CASE("Vertex attribute offsets match the pipeline's vertex layout") {
-    // These offsets are what createTrianglePipeline() passes as the three attribute
-    // offsets (and what triangle.vert reads at location 0 / 1 / 2).
+    // These offsets are what createTrianglePipeline() passes as the four attribute
+    // offsets (and what triangle.vert reads at location 0 / 1 / 2 / 3).
     CHECK(offsetof(Vertex, position) == 0);
     CHECK(offsetof(Vertex, color) == 12);
     CHECK(offsetof(Vertex, uv) == 24);
+    CHECK(offsetof(Vertex, normal) == 32);
 }
 
 TEST_CASE("Cube index set references 24 vertices to build 12 triangles") {
