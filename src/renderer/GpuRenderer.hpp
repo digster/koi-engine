@@ -48,15 +48,17 @@ public:
     }
 
     // Render exactly one frame: acquire an image from the window's swapchain,
-    // clear it (and the depth buffer), draw the spinning cube, and present it.
-    void renderFrame(const SDL_FColor& clearColor);
+    // clear it (and the depth buffer), draw the cube cluster as seen through the
+    // given camera `view` matrix, and present it.
+    void renderFrame(const SDL_FColor& clearColor, const Mat4& view);
 
     // Render one frame into an OFF-SCREEN texture (not the window), download the
     // pixels back to the CPU, and save them to `path` as a BMP. This is our
     // headless visual-debugging tool: it captures exactly what the engine draws
-    // without needing screen-recording access or a visible window. Returns false
-    // (after logging) on failure. See docs / CLAUDE.md.
-    [[nodiscard]] bool captureFrame(const char* path, const SDL_FColor& clearColor);
+    // (through `view`) without needing screen-recording access or a visible
+    // window. Returns false (after logging) on failure. See docs / CLAUDE.md.
+    [[nodiscard]] bool captureFrame(const char* path, const SDL_FColor& clearColor,
+                                    const Mat4& view);
 
 private:
     // Build the graphics pipeline (loads + compiles shaders, and describes the
@@ -76,21 +78,19 @@ private:
     SDL_GPUBuffer* uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
                                      const void* data, Uint32 size);
 
-    // Record the draw for our cube into an already-begun render pass: bind the
-    // pipeline + vertex/index buffers and issue the indexed draw. Shared by the
-    // live (renderFrame) and off-screen (captureFrame) paths so they can't drift.
-    void recordCube(SDL_GPURenderPass* pass) const;
+    // Record the whole scene into an already-begun render pass: bind the pipeline
+    // + geometry once, then draw each cube in the cluster with its own
+    // Model-View-Projection uniform (proj·view·model). Shared by the live
+    // (renderFrame) and off-screen (captureFrame) paths so they can't drift.
+    // `cmd` is needed to push the per-cube uniform; `aspect` builds the projection.
+    void recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                     const Mat4& view, float aspect) const;
 
     // Ensure the depth texture exists and matches (w, h), recreating it on resize.
     // Returns false (after logging) if creation fails. Called each frame before
     // the render pass, since the window — and thus the needed depth size — can
     // change. See docs/04 for what a depth buffer is and why we need one.
     bool ensureDepthTexture(Uint32 width, Uint32 height);
-
-    // Build the Model-View-Projection matrix for the cube at the given viewport
-    // aspect ratio and rotation angle. View is identity for now (the camera
-    // arrives in Step 4); the camera distance is folded into the model translate.
-    [[nodiscard]] Mat4 buildMvp(float aspect, float angleRadians) const;
 
     SDL_Window*    window_ = nullptr;  // not owned — the Engine owns the Window
     SDL_GPUDevice* device_ = nullptr;  // owned — released in the destructor

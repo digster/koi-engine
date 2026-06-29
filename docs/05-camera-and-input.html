@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera &amp; Input · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html" aria-current="page">Camera &amp; Input</a>
+  </div>
+</nav>
+
+<main>
+  <h1>A Fly Camera &amp; Input</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 4:</strong> move through the scene. Add a first-person
+    <strong>fly camera</strong> driven by the keyboard and mouse, a <strong>view
+    matrix</strong> built by <code>lookAt</code>, and a <strong>delta-time</strong> clock
+    so motion is smooth and frame-rate independent.</p>
+    <p>To make the movement obvious there are now several cubes scattered around — a
+    plain hardcoded list, not yet a scene graph (that's Step 5).</p>
+  </blockquote>
+
+  <p>In <a href="04-3d-cube-mvp-and-depth.html">Step 3</a> the <strong>View</strong> in
+  "Model-View-Projection" was the identity matrix — the camera was stuck at the origin.
+  This step makes V real, and wires up the input to control it.</p>
+
+  <h2>1. There is no camera — only a view matrix</h2>
+
+  <p>This is the idea that makes cameras click: <strong>the GPU has no concept of a
+  camera.</strong> The vertex shader only knows clip space. So we don't "move a camera" —
+  we move the <em>entire world</em> by the opposite of the camera's transform. Slide the
+  camera two metres right, and equivalently every object shifts two metres left. Turn the
+  camera, and the world counter-rotates around you.</p>
+
+  <p>The <strong>view matrix</strong> is exactly that "inverse of the camera" transform. It
+  takes world-space coordinates and re-expresses them relative to the camera. We build it
+  with <code>lookAt(eye, center, up)</code>:</p>
+
+  <pre class="diagram">  lookAt builds an orthonormal camera basis and the matching shift:
+     forward f = normalize(center - eye)   // where the camera points
+     right   s = normalize(cross(f, up))   // its right
+     up      u = cross(s, f)               // its true up
+
+  view = | s.x  s.y  s.z  -dot(s,eye) |    rotation rows re-express the
+         | u.x  u.y  u.z  -dot(u,eye) |    world in the camera's axes;
+         |-f.x -f.y -f.z   dot(f,eye) |    the last column shifts by -eye
+         |  0    0    0       1       |</pre>
+
+  <p>Our full transform per vertex is now <code>Projection · View · Model</code>. (Read
+  right to left: model places the object in the world, view moves the world relative to the
+  camera, projection adds perspective.)</p>
+
+  <h2>2. The fly camera: yaw, pitch &amp; a forward vector</h2>
+
+  <p>How do we represent which way the camera looks? With two angles, the classic FPS
+  approach:</p>
+
+  <ul>
+    <li><strong>Yaw</strong> — turning left/right, a rotation about the world's up axis.</li>
+    <li><strong>Pitch</strong> — looking up/down, a rotation about the camera's right axis.</li>
+  </ul>
+
+  <p>From those two angles we compute a unit <strong>forward</strong> vector (spherical to
+  Cartesian):</p>
+
+  <pre><code>forward = normalize( cos(pitch)·cos(yaw),
+                     sin(pitch),
+                     cos(pitch)·sin(yaw) )</code></pre>
+
+  <p>Then <code>viewMatrix() = lookAt(position, position + forward, worldUp)</code>. We
+  clamp pitch to ±89°: at exactly ±90° the forward vector lines up with "up" and the camera
+  <strong>gimbal-locks</strong> (the math for "right" collapses and the view flips).</p>
+
+  <h2>3. Delta-time: motion that doesn't depend on frame rate</h2>
+
+  <p>Naïvely, "move forward a bit each frame" makes a 600-FPS machine fly ten times faster
+  than a 60-FPS one. The fix is <strong>delta-time</strong> (<code>dt</code>): the real
+  elapsed seconds since the previous frame. Multiply speeds by it and everything is measured
+  in <em>units per second</em>, identical on any machine:</p>
+
+  <pre><code>distance_this_frame = speed_per_second · dt</code></pre>
+
+  <p>We measure <code>dt</code> with <code>SDL_GetTicksNS()</code> (nanosecond precision) and
+  clamp it — after a breakpoint or a long stall a giant <code>dt</code> would teleport the
+  camera across the map.</p>
+
+  <h2>4. Two kinds of input: events vs. polled state</h2>
+
+  <p>SDL gives input two ways, and using the right one matters:</p>
+
+  <table>
+    <thead>
+      <tr><th>Kind</th><th>How</th><th>Good for</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Events</strong></td><td><code>SDL_PollEvent</code></td><td><em>Discrete</em> moments: window closed, Escape pressed, a mouse-motion delta.</td></tr>
+      <tr><td><strong>Polled state</strong></td><td><code>SDL_GetKeyboardState</code></td><td><em>Continuous</em> questions: "is W held <em>right now</em>?"</td></tr>
+    </tbody>
+  </table>
+
+  <p>If you moved the camera on key-<em>down</em> events, motion would stutter at your OS's
+  key-repeat rate. So movement reads the live keyboard array every frame, while one-shot
+  things (quit, look deltas) stay event-driven. A fly camera needs both.</p>
+
+  <h2>5. Mouse look: relative mouse mode</h2>
+
+  <p>For FPS-style looking, we don't want the cursor bumping into the screen edge. SDL's
+  <strong>relative mouse mode</strong> (<code>SDL_SetWindowRelativeMouseMode</code>) hides
+  the cursor, locks it to the window, and reports motion as <strong>deltas</strong>
+  (<code>xrel</code>, <code>yrel</code>) no matter how far you move. We feed those deltas
+  straight into yaw/pitch. (We enable it only for an interactive run, so the headless
+  screenshot path doesn't grab your cursor.)</p>
+
+  <h2>6. The code</h2>
+
+  <h3>The view matrix — <a href="../src/math/Mat4.hpp">src/math/Mat4.hpp</a></h3>
+
+  <p><code>lookAt(eye, center, up)</code> joins our math library, reusing the
+  <code>cross</code>/<code>normalize</code>/<code>dot</code> from <a href="../src/math/Vec.hpp">Vec.hpp</a>.
+  It's pure, so it's unit-tested in <a href="../tests/test_math.cpp">test_math.cpp</a> (a
+  camera at (0,0,5) looking at the origin maps the origin to (0,0,−5) in view space).</p>
+
+  <h3>The camera — <a href="../src/scene/Camera.hpp">src/scene/Camera.{hpp,cpp}</a></h3>
+
+  <p>Holds <code>position</code>, <code>yaw</code>, <code>pitch</code>; exposes
+  <code>viewMatrix()</code>, <code>processKeyboard(keys, dt)</code> (WASD + E/Q), and
+  <code>addMouseLook(dx, dy)</code>. It lives in <code>scene/</code>, above the renderer:
+  it knows nothing about the GPU, it just hands over a view matrix. Its logic is covered by
+  <a href="../tests/test_camera.cpp">test_camera.cpp</a> (W moves along forward, pitch
+  clamps, …).</p>
+
+  <h3>Driving it — <a href="../src/core/Engine.cpp">src/core/Engine.cpp</a></h3>
+
+  <pre><code>// once, for an interactive run:
+SDL_SetWindowRelativeMouseMode(window, true);
+Uint64 last = SDL_GetTicksNS();
+
+while (running) {
+    processEvents();                          // quit, Esc, mouse-motion → addMouseLook
+    float dt = (SDL_GetTicksNS() - last) / 1e9f;   last = now;  (clamped)
+    camera.processKeyboard(SDL_GetKeyboardState(nullptr), dt);  // continuous WASD
+    renderer.renderFrame(clearColor, camera.viewMatrix());      // hand over the view
+}</code></pre>
+
+  <h3>Drawing the cluster — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a></h3>
+
+  <p>The renderer now takes the view matrix. <code>recordScene()</code> binds the cube's
+  geometry once, then for each position in a small hardcoded list it pushes that cube's
+  <code>Projection · View · Model</code> and draws — the per-object uniform pattern (one set
+  of buffers, many placements). Projection is rebuilt each frame from the swapchain's actual
+  size, so resizing the window never distorts the image.</p>
+
+  <h2>7. Controls</h2>
+
+  <ul>
+    <li><strong>W / S</strong> — move forward / back</li>
+    <li><strong>A / D</strong> — strafe left / right</li>
+    <li><strong>E / Q</strong> — rise / descend</li>
+    <li><strong>Mouse</strong> — look around</li>
+    <li><strong>Esc</strong> — quit</li>
+  </ul>
+
+  <h2>8. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Change the feel.</strong> Tweak <code>moveSpeed_</code> and
+    <code>mouseSensitivity_</code> in <a href="../src/scene/Camera.hpp">Camera.hpp</a>.</li>
+    <li><strong>Prove delta-time works.</strong> Temporarily multiply movement by a constant
+    instead of <code>dt</code>, then toggle vsync / frame caps and feel the speed change with
+    frame rate — the bug <code>dt</code> prevents.</li>
+    <li><strong>Break the pitch clamp.</strong> Remove the ±89° limit and look straight up —
+    watch the view flip as it gimbal-locks.</li>
+    <li><strong>Add cubes.</strong> Extend <code>kCubePositions</code> in
+    <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> and fly through your new scene.</li>
+  </ol>
+
+  <h2>9. What's next</h2>
+
+  <p>➡️ <strong>Step 5 — Meshes &amp; a scene graph.</strong> That hardcoded cube list
+  becomes a real <strong>mesh</strong> abstraction and a <strong>scene graph</strong> — a
+  hierarchy of nodes with parent/child transforms — so objects can be composed, nested, and
+  moved as groups instead of one ad-hoc loop.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

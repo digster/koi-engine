@@ -64,7 +64,7 @@ void Engine::run() {
     // This is our visual-debugging tool — it saves exactly what the engine draws
     // without needing screen-recording access. (See CLAUDE.md / docs.)
     if (const char* capturePath = SDL_getenv("KOI_CAPTURE")) {
-        if (renderer_->captureFrame(capturePath, kClearColor)) {
+        if (renderer_->captureFrame(capturePath, kClearColor, camera_.viewMatrix())) {
             KOI_INFO("Captured frame to '%s'.", capturePath);
         } else {
             KOI_ERROR("Frame capture failed.");
@@ -83,11 +83,38 @@ void Engine::run() {
     }
     Uint64 frame = 0;
 
-    // The classic game loop: process input, render, repeat. Every frame starts
-    // fresh by handling whatever events queued up since last time.
+    // For an interactive run, capture the mouse: SDL hides the cursor, locks it to
+    // the window, and reports motion as relative deltas — exactly what FPS-style
+    // mouse look needs. We skip this for headless smoke tests (KOI_MAX_FRAMES) so
+    // automated runs don't grab the user's cursor.
+    if (maxFrames == 0) {
+        SDL_SetWindowRelativeMouseMode(window_->handle(), true);
+        KOI_INFO("Controls: WASD move, E/Q up/down, mouse look, Esc to quit.");
+    }
+
+    // Delta-time clock: the time since the previous frame, in seconds. Movement is
+    // scaled by this so the camera travels the same distance per second whether the
+    // machine renders at 60 or 600 FPS. SDL_GetTicksNS gives nanosecond precision.
+    Uint64 lastTimeNs = SDL_GetTicksNS();
+
+    // The classic game loop: process input, update, render, repeat.
     while (running_) {
         processEvents();
-        renderer_->renderFrame(kClearColor);
+
+        const Uint64 nowNs = SDL_GetTicksNS();
+        float dt = static_cast<float>(nowNs - lastTimeNs) / 1.0e9f;
+        lastTimeNs = nowNs;
+        // Clamp: after a breakpoint or a long stall, a huge dt would teleport the
+        // camera. Capping it keeps motion sane.
+        if (dt > 0.1f) {
+            dt = 0.1f;
+        }
+
+        // Continuous input: read the CURRENT keyboard state (not key-down events)
+        // so held keys produce smooth, repeat-rate-independent movement.
+        camera_.processKeyboard(SDL_GetKeyboardState(nullptr), dt);
+
+        renderer_->renderFrame(kClearColor, camera_.viewMatrix());
 
         if (maxFrames != 0 && ++frame >= maxFrames) {
             KOI_INFO("Reached KOI_MAX_FRAMES=%llu — exiting.",
@@ -117,9 +144,16 @@ void Engine::processEvents() {
                 }
                 break;
 
+            case SDL_EVENT_MOUSE_MOTION:
+                // Relative mouse mode reports motion as deltas (xrel/yrel). We feed
+                // them straight into the camera as a yaw/pitch change — FPS look.
+                camera_.addMouseLook(event.motion.xrel, event.motion.yrel);
+                break;
+
             case SDL_EVENT_WINDOW_RESIZED:
-                // The swapchain auto-resizes; we just log it for now. Later this
-                // is where the camera's aspect ratio would be updated.
+                // The swapchain (and our depth texture) auto-resize, and the
+                // renderer recomputes the aspect ratio from the swapchain size each
+                // frame, so there's nothing to do here but log it.
                 KOI_DEBUG("Window resized to %dx%d", event.window.data1, event.window.data2);
                 break;
 

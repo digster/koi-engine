@@ -3,9 +3,9 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 3 (window & render loop, the first triangle, geometry in GPU
-vertex/index buffers, and a 3D cube with hand-rolled math, an MVP uniform, and a
-depth buffer).
+through Step 4 (window & render loop, the first triangle, geometry in GPU
+vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
+buffer, and a fly camera driven by keyboard/mouse input with delta-time).
 
 ## Guiding principles
 
@@ -42,11 +42,12 @@ depth buffer).
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems, runs the game loop, dispatches input events, controls startup/shutdown order. |
+| `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera, runs the game loop, computes delta-time, routes input (events for quit/look, polled key state for movement), controls startup/shutdown order. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the graphics pipeline, the geometry's vertex + index buffers, and the depth texture; uploads geometry at startup (`uploadToGpuBuffer` + `createGeometry`), and per frame builds the MVP (`buildMvp`), pushes it as a uniform, and records/submits the draw (acquire → ensure depth texture → render pass with color+depth targets → `recordCube` → submit). |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the graphics pipeline, the cube's vertex + index buffers, and the depth texture; uploads geometry at startup, and per frame takes a camera `view` matrix and records/submits the draw (acquire → ensure depth texture → render pass with color+depth targets → `recordScene`: bind once, then per-cube push `proj·view·model` + indexed draw → submit). |
+| `Camera` | [src/scene/Camera.*](src/scene/) | A yaw/pitch fly camera (position + angles). Produces a `view` matrix via `lookAt`; `processKeyboard`/`addMouseLook` update it from input. Lives above the renderer and knows nothing about the GPU; its header is SDL-free. Logic unit-tested in `tests/test_camera.cpp`. |
 | `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
-| `math` (`Vec`, `Mat4`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`) and column-major 4×4 matrix math (translate/rotate/perspective). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp`. |
+| `math` (`Vec`, `Mat4`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`) and column-major 4×4 matrix math (translate/rotate/perspective/`lookAt`). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp`. |
 | `Shader` | [src/renderer/Shader.*](src/renderer/) | Loads a compiled shader for the active backend: `selectShaderVariant` (pure, unit-tested) picks the format/extension/entry point; `loadShader` reads the file and creates the `SDL_GPUShader` (with the right uniform-buffer count). |
 | `Log` | [src/core/Log.hpp](src/core/Log.hpp) | Leveled logging macros over SDL's logger; one place to control verbosity. |
 
@@ -55,23 +56,25 @@ depth buffer).
 The render loop (in `Engine::run`) repeats:
 
 ```
-processEvents()  → SDL_PollEvent drains input; Esc / close → stop the loop
+processEvents()  → SDL_PollEvent: Esc/close → stop; mouse motion → camera.addMouseLook
        │
-renderFrame()    → in GpuRenderer:
+dt + input       → dt = ΔSDL_GetTicksNS (clamped); camera.processKeyboard(polled keys, dt)
+       │
+renderFrame(view)→ in GpuRenderer (view = camera.viewMatrix()):
                      1. acquire command buffer
                      2. acquire swapchain image (waits for vsync) + its size
                      3. ensure the depth texture matches that size
                      4. begin render pass (color CLEAR + depth CLEAR to 1.0)
-                     5. build MVP (time-based spin) → push as vertex uniform
-                     6. recordCube: bind pipeline + vertex/index buffers, indexed draw
-                     7. end render pass
-                     8. submit command buffer (queues present)
+                     5. recordScene: bind once, then per cube push proj·view·model + indexed draw
+                     6. end render pass
+                     7. submit command buffer (queues present)
 ```
 
 See [docs/01-window-and-render-loop.html](docs/01-window-and-render-loop.html),
 [docs/02-first-triangle.html](docs/02-first-triangle.html),
-[docs/03-vertex-and-index-buffers.html](docs/03-vertex-and-index-buffers.html), and
-[docs/04-3d-cube-mvp-and-depth.html](docs/04-3d-cube-mvp-and-depth.html) for the
+[docs/03-vertex-and-index-buffers.html](docs/03-vertex-and-index-buffers.html),
+[docs/04-3d-cube-mvp-and-depth.html](docs/04-3d-cube-mvp-and-depth.html), and
+[docs/05-camera-and-input.html](docs/05-camera-and-input.html) for the
 concept-by-concept explanation.
 
 ### Shaders & the build-time toolchain
@@ -139,6 +142,28 @@ the swapchain, recreated on resize by `ensureDepthTexture`) is cleared to 1.0 ea
 frame and attached to the render pass; the pipeline's depth test (`compare_op =
 LESS`, depth write on) keeps only the nearest fragment per pixel, so face draw
 order no longer matters. The projection's aspect term also fixes Step 2's stretch.
+
+### Camera, input & delta-time (Step 4)
+
+The **View** in MVP (identity in Step 3) is now produced by a `Camera` in
+`src/scene/`. It's a yaw/pitch fly camera: from two angles it derives a `forward`
+vector and builds a view matrix with `Mat4::lookAt` — which transforms the world by
+the camera's inverse (moving the camera is the same as moving the world the other
+way). The camera sits *above* the renderer: `Engine` owns it, updates it from input,
+and passes its `viewMatrix()` into `renderFrame`/`captureFrame`; the renderer stays
+ignorant of cameras and input.
+
+Input is split by nature. **Continuous** movement reads the live key array from
+`SDL_GetKeyboardState` each frame (so held keys move smoothly), scaled by
+**delta-time** (`SDL_GetTicksNS` deltas, clamped) so speed is frame-rate independent.
+**Discrete** input stays event-driven in `processEvents`: quit/Escape, and mouse
+motion under SDL **relative mouse mode** (cursor hidden + locked, motion as deltas)
+feeding `addMouseLook`. Relative mode is enabled only for interactive runs, not the
+headless `KOI_MAX_FRAMES`/`KOI_CAPTURE` paths.
+
+The scene is a small **hardcoded list of cube positions**, drawn by `recordScene`
+binding the geometry once and pushing a per-cube `proj·view·model` uniform before
+each draw. This is deliberately *not* a scene graph — that abstraction is Step 5.
 
 ## Lifecycle & ownership
 
@@ -211,7 +236,10 @@ Future milestones slot into this structure without reshaping it:
   MVP matrix to the shader via a uniform buffer; a depth buffer joined the render pass.
   (Quaternions were deferred — no use case yet — per the "introduce when needed"
   principle.)
-- **Step 4+:** `scene/` (camera, transforms, node hierarchy) sits above the
-  renderer and feeds it what to draw; the identity View matrix becomes a real camera,
-  and a delta-time clock drives motion. `renderFrame` likely splits into
-  `begin/draw/end` once there are many draws.
+- **Step 4 (done):** `scene/` arrived with a `Camera`; the identity View matrix
+  became a real `lookAt` camera flown with keyboard/mouse, and a delta-time clock
+  drives motion. `Mat4` gained `lookAt`. The renderer now takes a `view` and draws a
+  hardcoded cube cluster via `recordScene`.
+- **Step 5+:** `scene/` grows a real **mesh** type and a **node hierarchy** (parent/
+  child transforms) to replace the hardcoded cube list; `renderFrame` likely splits
+  into `begin/draw/end` as the number and variety of draws grows.

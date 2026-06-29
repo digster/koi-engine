@@ -17,6 +17,8 @@
 
 #include <memory>
 
+#include "scene/Camera.hpp"  // value member; SDL-free (math only), so cheap to include
+
 namespace koi {
 
 class Window;
@@ -61,6 +63,10 @@ private:
 
     std::unique_ptr<Window>      window_;
     std::unique_ptr<GpuRenderer> renderer_;
+
+    // The fly camera we drive from input each frame; its view matrix is handed to
+    // the renderer. Held by value (it's small and owns no resources).
+    Camera camera_;
 };
 
 }  // namespace koi

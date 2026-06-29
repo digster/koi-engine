@@ -142,4 +142,33 @@ struct Mat4 {
     return out;
 }
 
+// Look-at view matrix — the "camera" transform.
+//
+//  There is no camera in the GPU; the vertex shader only knows clip space. To
+//  "place a camera" we instead transform the whole world by the camera's INVERSE:
+//  moving the camera right is the same as sliding the world left. lookAt builds
+//  exactly that inverse from where the camera is (`eye`), what it points at
+//  (`center`), and which way is up (`up`).
+//
+//  It constructs an orthonormal camera basis — forward `f`, right `s`, true up
+//  `u` — and packs it so that multiplying a world point expresses that point in
+//  the camera's frame. Right-handed: the camera looks down its own -Z (forward),
+//  matching our perspective() convention.
+[[nodiscard]] inline Mat4 lookAt(Vec3 eye, Vec3 center, Vec3 up) {
+    const Vec3 f = normalize(center - eye);  // forward: from the eye toward the target
+    const Vec3 s = normalize(cross(f, up));  // right:   perpendicular to forward & up
+    const Vec3 u = cross(s, f);              // true up: re-orthogonalized
+
+    Mat4 out = Mat4::identity();
+    // Rotation part: the camera basis as rows (so it maps world axes → camera axes).
+    out.at(0, 0) = s.x;  out.at(0, 1) = s.y;  out.at(0, 2) = s.z;
+    out.at(1, 0) = u.x;  out.at(1, 1) = u.y;  out.at(1, 2) = u.z;
+    out.at(2, 0) = -f.x; out.at(2, 1) = -f.y; out.at(2, 2) = -f.z;
+    // Translation part: shift the world by -eye, expressed in the camera basis.
+    out.at(0, 3) = -dot(s, eye);
+    out.at(1, 3) = -dot(u, eye);
+    out.at(2, 3) =  dot(f, eye);
+    return out;
+}
+
 }  // namespace koi

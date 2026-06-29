@@ -18,7 +18,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     koi::Engine engine;
 
     const koi::Engine::Config config{
-        .title  = "Koi Engine — Step 3: 3D Cube (MVP + Depth)",
+        .title  = "Koi Engine — Step 4: Fly Camera",
         .width  = 1280,
         .height = 720,
     };

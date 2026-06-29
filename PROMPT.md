@@ -59,3 +59,12 @@ referenced in `CLAUDE.md`.
 - Quaternions: **deferred** until a milestone needs them, over implementing them now —
   following the project's "introduce a subsystem only when needed" principle (Step 3
   math is `Vec` + `Mat4` only). The view matrix is likewise deferred to Step 4.
+
+**Next milestone request (Step 4):**
+> Okay, work on the next step.
+
+**Decisions made (via clarifying questions):**
+- Look input: **mouse look** (SDL relative mouse mode + motion deltas) for yaw/pitch,
+  over arrow-key look or both. Movement is WASD + E/Q regardless.
+- Scene content: **a few static cubes** at fixed positions (a hardcoded list, not a
+  scene graph), over a single cube — so flying the camera is legible.

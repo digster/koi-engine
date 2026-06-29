@@ -9,11 +9,13 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 3:** draws a spinning **3D cube**. This adds the engine's
-> own **hand-rolled math** (`Vec`/`Mat4`), a **Model-View-Projection** matrix fed to
-> the vertex shader through a **uniform buffer**, and a **depth buffer** so near faces
-> correctly hide far ones — the core 3D transform pipeline. (It also fixes Step 2's
-> aspect-ratio stretch via the projection matrix.)
+> **Current status — Step 4:** adds a **fly camera** you can move through the scene.
+> This introduces a **view matrix** (hand-rolled `lookAt`), a **delta-time** clock so
+> motion is frame-rate independent, and **input** — polled keyboard state for WASD
+> movement plus SDL relative mouse mode for FPS-style mouse look. The scene is now a
+> small cluster of cubes to fly around.
+>
+> **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 
 ## Quick start
 
@@ -50,6 +52,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - [docs/04-3d-cube-mvp-and-depth.html](docs/04-3d-cube-mvp-and-depth.html) — the MVP
   transform chain, homogeneous coordinates, uniform buffers, and the depth buffer,
   mapped to the Step 3 code that spins a 3D cube.
+- [docs/05-camera-and-input.html](docs/05-camera-and-input.html) — the view matrix &
+  `lookAt`, a yaw/pitch fly camera, delta-time, and events vs. polled input, mapped to
+  the Step 4 code you fly with WASD + mouse.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -60,7 +65,7 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 | ✅ **1** | **First triangle** | Shaders, graphics pipeline, shader toolchain (`glslc` + `spirv-cross`) |
 | ✅ **2** | **Vertex/index buffers** | GPU buffers, transfer buffers, vertex layouts |
 | ✅ **3** | **3D cube + MVP + depth** | hand-rolled `vec`/`mat4`, projection, depth testing |
-| 4 | Camera + input movement | view matrix, delta-time, fly camera |
+| ✅ **4** | **Camera + input movement** | view matrix, delta-time, fly camera |
 | 5 | Meshes & scene graph | model abstraction, node hierarchy |
 | 6 | Textures + Phong lighting | samplers, normals, uniform buffers |
 | 7+ | Models, shadows, post-fx | glTF loading, shadow maps, post-processing |

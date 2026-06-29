@@ -92,3 +92,21 @@ TEST_CASE("perspective maps the near/far planes to z in [0, 1]") {
     const Vec4 farClip = P * Vec4{0, 0, -farZ, 1};
     CHECK(farClip.z / farClip.w == doctest::Approx(1.0f));
 }
+
+TEST_CASE("lookAt puts the world into the camera's frame") {
+    // A camera at (0,0,5) looking at the origin, with +Y up.
+    const Mat4 V = lookAt(Vec3{0, 0, 5}, Vec3{0, 0, 0}, Vec3{0, 1, 0});
+
+    // The camera's own position maps to the origin of view space.
+    const Vec4 eyeInView = V * Vec4{0, 0, 5, 1};
+    CHECK(eyeInView.x == doctest::Approx(0.0f));
+    CHECK(eyeInView.y == doctest::Approx(0.0f));
+    CHECK(eyeInView.z == doctest::Approx(0.0f));
+
+    // The world origin sits 5 units in FRONT of the camera — i.e. at -Z in view
+    // space (the camera looks down its own -Z).
+    const Vec4 originInView = V * Vec4{0, 0, 0, 1};
+    CHECK(originInView.x == doctest::Approx(0.0f));
+    CHECK(originInView.y == doctest::Approx(0.0f));
+    CHECK(originInView.z == doctest::Approx(-5.0f));
+}

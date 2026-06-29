@@ -351,41 +351,52 @@ bool GpuRenderer::ensureDepthTexture(Uint32 width, Uint32 height) {
     return true;
 }
 
-Mat4 GpuRenderer::buildMvp(float aspect, float angleRadians) const {
-    // Model: spin the cube (Y plus a slower X tilt so we see three faces) and
-    // push it away from the camera so it's in front of us. View is identity for
-    // now — a real camera arrives in Step 4 — so MVP collapses to Projection*Model.
-    const Mat4 model = translation({0.0f, 0.0f, -3.0f}) *
-                       rotationY(angleRadians) *
-                       rotationX(angleRadians * 0.6f);
-    const Mat4 projection = perspective(radians(60.0f), aspect, 0.1f, 100.0f);
-    return projection * model;
-}
+void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                              const Mat4& view, float aspect) const {
+    // A handful of cubes at fixed world positions, purely so flying the camera
+    // around is legible. This is a hardcoded list, NOT a scene graph — that
+    // abstraction (and a real mesh type) arrives in Step 5.
+    static constexpr Vec3 kCubePositions[] = {
+        {  0.0f,  0.0f,  0.0f },
+        {  2.5f,  0.0f, -1.0f },
+        { -2.5f,  0.5f,  1.0f },
+        {  1.5f,  1.5f, -3.0f },
+        { -2.0f, -1.0f, -2.0f },
+        {  3.0f, -0.5f,  2.0f },
+        { -1.5f,  1.0f,  3.0f },
+        {  0.5f, -1.5f, -4.0f },
+    };
 
-void GpuRenderer::recordCube(SDL_GPURenderPass* pass) const {
-    // Switch the GPU to our pipeline, then point it at the geometry buffers.
+    // Bind the pipeline + geometry ONCE. Every cube reuses the same vertex/index
+    // buffers; only the per-cube MVP uniform changes between draws below.
     SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
-
-    // Bind the vertex buffer into slot 0 (the slot our pipeline's vertex input
-    // layout describes). offset 0 = start reading from the buffer's beginning.
     SDL_GPUBufferBinding vertexBinding = {};
     vertexBinding.buffer = vertexBuffer_;
-    vertexBinding.offset = 0;
     SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vertexBinding, /*num_bindings=*/1);
-
-    // Bind the index buffer. Our indices are Uint16, so the element size is 16-bit
-    // (use 32-bit only when a mesh has more than 65,536 unique vertices).
     SDL_GPUBufferBinding indexBinding = {};
     indexBinding.buffer = indexBuffer_;
-    indexBinding.offset = 0;
     SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
-    // Indexed draw: for each of the `indexCount_` indices, the GPU looks up that
-    // entry in the index buffer and fetches the corresponding vertex. This turns
-    // our 8 stored corners into 12 triangles (36 index lookups).
-    SDL_DrawGPUIndexedPrimitives(pass, indexCount_, /*num_instances=*/1,
-                                 /*first_index=*/0, /*vertex_offset=*/0,
-                                 /*first_instance=*/0);
+    // The projection depends only on the viewport; build it once. The view comes
+    // from the camera. Only the model (per-cube placement) varies in the loop.
+    const Mat4 projection = perspective(radians(60.0f), aspect, 0.1f, 100.0f);
+
+    int index = 0;
+    for (const Vec3 pos : kCubePositions) {
+        // A fixed per-cube tilt so neighbouring cubes don't look identical.
+        const float tilt = static_cast<float>(index) * 0.5f;
+        const Mat4 model = translation(pos) * rotationY(tilt) * rotationX(tilt * 0.7f);
+
+        // The whole point of a uniform buffer: push this cube's MVP, then draw.
+        // Each draw uses the most recently pushed uniform, so N pushes + N draws
+        // render N independently-placed cubes from one set of geometry buffers.
+        const Mat4 mvp = projection * view * model;
+        SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &mvp, sizeof(mvp));
+        SDL_DrawGPUIndexedPrimitives(pass, indexCount_, /*num_instances=*/1,
+                                     /*first_index=*/0, /*vertex_offset=*/0,
+                                     /*first_instance=*/0);
+        ++index;
+    }
 }
 
 GpuRenderer::~GpuRenderer() {
@@ -419,7 +430,7 @@ GpuRenderer::~GpuRenderer() {
     }
 }
 
-void GpuRenderer::renderFrame(const SDL_FColor& clearColor) {
+void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view) {
     // ------------------------------------------------------------------------
     //  1. Acquire a command buffer.
     //     We don't command the GPU directly; we *record* commands into a buffer
@@ -484,17 +495,11 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor) {
         SDL_GPURenderPass* pass =
             SDL_BeginGPURenderPass(cmd, &colorTarget, /*num_color_targets=*/1, &depthTarget);
 
-        // Build this frame's MVP from a time-based angle (a gentle auto-spin) and
-        // push it to the vertex shader's uniform slot 0. Full delta-time + a fly
-        // camera are Step 4; SDL_GetTicks() is enough to animate the cube now.
+        // Draw the cube cluster through the camera's view matrix. The aspect ratio
+        // comes from the actual swapchain size, so the image is never stretched and
+        // adapts automatically when the window is resized.
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-        const float seconds = static_cast<float>(SDL_GetTicks()) / 1000.0f;
-        const Mat4 mvp = buildMvp(aspect, seconds * 0.8f);
-        SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &mvp, sizeof(mvp));
-
-        // Draw the cube from its GPU buffers. Shared with captureFrame so both
-        // paths match.
-        recordCube(pass);
+        recordScene(cmd, pass, view, aspect);
 
         SDL_EndGPURenderPass(pass);
     }
@@ -508,7 +513,8 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor) {
     SDL_SubmitGPUCommandBuffer(cmd);
 }
 
-bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor) {
+bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
+                               const Mat4& view) {
     // Fixed capture resolution: keeps the output deterministic and small. The
     // aspect ratio (1280/720) feeds the projection so the cube isn't distorted.
     constexpr Uint32 kWidth  = 1280;
@@ -578,12 +584,10 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor) {
     depthTarget.cycle            = true;
 
     SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, &depthTarget);
-    // Fixed framing angle (not time-based) so the captured image is deterministic
-    // — enough rotation to reveal three faces and prove the depth test.
+    // Draw the same scene the live path does, through the supplied `view` (the
+    // camera's default pose) — deterministic because nothing here is time-based.
     constexpr float kCaptureAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
-    const Mat4 mvp = buildMvp(kCaptureAspect, 0.6f);
-    SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &mvp, sizeof(mvp));
-    recordCube(pass);
+    recordScene(cmd, pass, view, kCaptureAspect);
     SDL_EndGPURenderPass(pass);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
