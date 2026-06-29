@@ -1,7 +1,12 @@
 #include "renderer/GpuRenderer.hpp"
 
+#include <array>    // std::array for our compile-time geometry
+#include <cstddef>  // offsetof
+#include <cstring>  // std::memcpy
+
 #include "core/Log.hpp"
 #include "renderer/Shader.hpp"
+#include "renderer/Vertex.hpp"
 
 namespace koi {
 
@@ -64,7 +69,7 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     KOI_INFO("GPU device ready (backend: %s)", SDL_GetGPUDeviceDriver(device_));
 
     // ------------------------------------------------------------------------
-    //  3. Build the graphics pipeline that draws our triangle. If this fails
+    //  3. Build the graphics pipeline that draws our quad. If this fails
     //     (e.g. compiled shaders missing) isValid() stays false and the Engine
     //     reports it.
     // ------------------------------------------------------------------------
@@ -72,6 +77,15 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
         return;
     }
     KOI_INFO("Graphics pipeline ready.");
+
+    // ------------------------------------------------------------------------
+    //  4. Upload our geometry (the quad) into GPU buffers. If this fails,
+    //     isValid() stays false and the Engine reports it.
+    // ------------------------------------------------------------------------
+    if (!createGeometry()) {
+        return;
+    }
+    KOI_INFO("Geometry uploaded (vertex + index buffers ready).");
 }
 
 bool GpuRenderer::createTrianglePipeline() {
@@ -92,15 +106,44 @@ bool GpuRenderer::createTrianglePipeline() {
     SDL_GPUColorTargetDescription colorTargetDesc = {};
     colorTargetDesc.format = SDL_GetGPUSwapchainTextureFormat(device_, window_);
 
+    // ------------------------------------------------------------------------
+    //  Vertex input layout — how the GPU reads one vertex out of the buffer.
+    //  This has two halves:
+    //    * A *buffer description* per bound vertex buffer: its slot (we use 0),
+    //      its `pitch` (bytes from one vertex to the next = sizeof(Vertex)), and
+    //      whether it advances per-vertex or per-instance (per-vertex here).
+    //    * One *attribute* per shader input: which `location` it feeds, which
+    //      buffer slot it comes from, its `format` (element type + count), and
+    //      its byte `offset` within the vertex. These MUST match koi::Vertex and
+    //      the `layout(location=N) in` declarations in triangle.vert.
+    // ------------------------------------------------------------------------
+    SDL_GPUVertexBufferDescription vertexBufferDesc = {};
+    vertexBufferDesc.slot       = 0;
+    vertexBufferDesc.pitch      = static_cast<Uint32>(sizeof(Vertex));
+    vertexBufferDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+
+    const SDL_GPUVertexAttribute vertexAttributes[2] = {
+        // location 0: inPosition (vec2) at the start of the vertex.
+        { /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+          offsetof(Vertex, position) },
+        // location 1: inColor (vec3) right after the 2-float position.
+        { /*location=*/1, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+          offsetof(Vertex, color) },
+    };
+
     SDL_GPUGraphicsPipelineCreateInfo pipelineInfo = {};
     pipelineInfo.vertex_shader   = vertexShader;
     pipelineInfo.fragment_shader = fragmentShader;
+    pipelineInfo.vertex_input_state.vertex_buffer_descriptions = &vertexBufferDesc;
+    pipelineInfo.vertex_input_state.num_vertex_buffers         = 1;
+    pipelineInfo.vertex_input_state.vertex_attributes          = vertexAttributes;
+    pipelineInfo.vertex_input_state.num_vertex_attributes      = 2;
     // TRIANGLELIST = every 3 vertices form one independent triangle.
     pipelineInfo.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     pipelineInfo.target_info.num_color_targets         = 1;
     pipelineInfo.target_info.color_target_descriptions = &colorTargetDesc;
     // Everything else (blending, culling, depth) stays zero-initialized: no
-    // blending, no face culling, no depth test — exactly what a flat triangle
+    // blending, no face culling, no depth test — exactly what a flat quad
     // needs. We'll revisit these in later steps.
 
     trianglePipeline_ = SDL_CreateGPUGraphicsPipeline(device_, &pipelineInfo);
@@ -117,10 +160,147 @@ bool GpuRenderer::createTrianglePipeline() {
     return true;
 }
 
+SDL_GPUBuffer* GpuRenderer::uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
+                                              const void* data, Uint32 size) {
+    // ------------------------------------------------------------------------
+    //  Getting data onto the GPU is a TWO-STEP move, and understanding why is
+    //  the heart of this step. The fast memory a vertex/index buffer lives in is
+    //  GPU-local and usually NOT directly writable by the CPU. So we:
+    //    1. Create the real GPU buffer (the destination — fast, GPU-only).
+    //    2. Create a *transfer buffer* (a.k.a. staging buffer): CPU-visible
+    //       memory we CAN map and write into.
+    //    3. memcpy our data into the mapped transfer buffer.
+    //    4. Record a *copy pass* that the GPU runs to move the bytes from the
+    //       transfer buffer into the real buffer.
+    //  (captureFrame does the mirror image of this to read pixels BACK.)
+    // ------------------------------------------------------------------------
+
+    // 1. The destination: a GPU-local buffer of the requested usage.
+    SDL_GPUBufferCreateInfo bufInfo = {};
+    bufInfo.usage = usage;
+    bufInfo.size  = size;
+    SDL_GPUBuffer* buffer = SDL_CreateGPUBuffer(device_, &bufInfo);
+    if (buffer == nullptr) {
+        KOI_ERROR("uploadToGpuBuffer: failed to create buffer: %s", SDL_GetError());
+        return nullptr;
+    }
+
+    // 2. The staging area: a CPU-visible UPLOAD transfer buffer.
+    SDL_GPUTransferBufferCreateInfo tbInfo = {};
+    tbInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    tbInfo.size  = size;
+    SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device_, &tbInfo);
+    if (transfer == nullptr) {
+        KOI_ERROR("uploadToGpuBuffer: failed to create transfer buffer: %s", SDL_GetError());
+        SDL_ReleaseGPUBuffer(device_, buffer);
+        return nullptr;
+    }
+
+    // 3. Map the staging buffer into our address space, copy the bytes in, unmap.
+    void* mapped = SDL_MapGPUTransferBuffer(device_, transfer, /*cycle=*/false);
+    if (mapped == nullptr) {
+        KOI_ERROR("uploadToGpuBuffer: failed to map transfer buffer: %s", SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(device_, transfer);
+        SDL_ReleaseGPUBuffer(device_, buffer);
+        return nullptr;
+    }
+    std::memcpy(mapped, data, size);
+    SDL_UnmapGPUTransferBuffer(device_, transfer);
+
+    // 4. Record + submit a copy pass that performs the staging -> GPU transfer.
+    SDL_GPUCommandBuffer* cmd  = SDL_AcquireGPUCommandBuffer(device_);
+    SDL_GPUCopyPass*      copy = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTransferBufferLocation src = {};
+    src.transfer_buffer = transfer;
+    src.offset          = 0;
+    SDL_GPUBufferRegion dst = {};
+    dst.buffer = buffer;
+    dst.offset = 0;
+    dst.size   = size;
+    SDL_UploadToGPUBuffer(copy, &src, &dst, /*cycle=*/false);
+    SDL_EndGPUCopyPass(copy);
+
+    // We don't need a fence here: this is a one-time init upload, and command
+    // buffers execute in submission order, so the later per-frame draw is
+    // guaranteed to see the finished copy. Releasing the transfer buffer now is
+    // safe too — SDL defers the actual free until the GPU is done using it.
+    SDL_SubmitGPUCommandBuffer(cmd);
+    SDL_ReleaseGPUTransferBuffer(device_, transfer);
+    return buffer;
+}
+
+bool GpuRenderer::createGeometry() {
+    // The four unique corners of the quad, in NDC. With an index buffer we store
+    // each corner ONCE; the indices below reference them to build two triangles.
+    // (Without indices we'd need to repeat the two shared corners — 6 vertices
+    // instead of 4. That saving is exactly why index buffers exist, and it grows
+    // dramatically for real meshes where most vertices are shared by many faces.)
+    //
+    //   3 ───────── 2     positions span -0.5..+0.5 so the quad sits centered;
+    //   │  ╲        │      colors are one per corner so the rasterizer blends a
+    //   │     ╲     │      smooth red/green/blue/yellow gradient across the face.
+    //   │        ╲  │
+    //   0 ───────── 1
+    constexpr std::array<Vertex, 4> vertices = {{
+        { { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f } },  // 0: bottom-left  (red)
+        { {  0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },  // 1: bottom-right (green)
+        { {  0.5f,  0.5f }, { 0.0f, 0.0f, 1.0f } },  // 2: top-right    (blue)
+        { { -0.5f,  0.5f }, { 1.0f, 1.0f, 0.0f } },  // 3: top-left     (yellow)
+    }};
+
+    // Two triangles (0,1,2) and (2,3,0) tile the quad. Note corners 0 and 2 are
+    // each used twice — the reuse the index buffer is built to exploit.
+    constexpr std::array<Uint16, 6> indices = { 0, 1, 2, 2, 3, 0 };
+
+    vertexBuffer_ = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_VERTEX,
+                                      vertices.data(),
+                                      static_cast<Uint32>(sizeof(vertices)));
+    indexBuffer_  = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_INDEX,
+                                      indices.data(),
+                                      static_cast<Uint32>(sizeof(indices)));
+    indexCount_   = static_cast<Uint32>(indices.size());
+
+    return vertexBuffer_ != nullptr && indexBuffer_ != nullptr;
+}
+
+void GpuRenderer::recordQuad(SDL_GPURenderPass* pass) const {
+    // Switch the GPU to our pipeline, then point it at the geometry buffers.
+    SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
+
+    // Bind the vertex buffer into slot 0 (the slot our pipeline's vertex input
+    // layout describes). offset 0 = start reading from the buffer's beginning.
+    SDL_GPUBufferBinding vertexBinding = {};
+    vertexBinding.buffer = vertexBuffer_;
+    vertexBinding.offset = 0;
+    SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vertexBinding, /*num_bindings=*/1);
+
+    // Bind the index buffer. Our indices are Uint16, so the element size is 16-bit
+    // (use 32-bit only when a mesh has more than 65,536 unique vertices).
+    SDL_GPUBufferBinding indexBinding = {};
+    indexBinding.buffer = indexBuffer_;
+    indexBinding.offset = 0;
+    SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+
+    // Indexed draw: for each of the `indexCount_` indices, the GPU looks up that
+    // entry in the index buffer and fetches the corresponding vertex. This is
+    // what turns our 4 stored vertices into 2 triangles (6 vertex fetches).
+    SDL_DrawGPUIndexedPrimitives(pass, indexCount_, /*num_instances=*/1,
+                                 /*first_index=*/0, /*vertex_offset=*/0,
+                                 /*first_instance=*/0);
+}
+
 GpuRenderer::~GpuRenderer() {
     if (device_ != nullptr) {
-        // Release GPU resources we created (the pipeline) before tearing down
-        // the device that owns them.
+        // Release GPU resources we created (geometry buffers + pipeline) before
+        // tearing down the device that owns them.
+        if (vertexBuffer_ != nullptr) {
+            SDL_ReleaseGPUBuffer(device_, vertexBuffer_);
+            vertexBuffer_ = nullptr;
+        }
+        if (indexBuffer_ != nullptr) {
+            SDL_ReleaseGPUBuffer(device_, indexBuffer_);
+            indexBuffer_ = nullptr;
+        }
         if (trianglePipeline_ != nullptr) {
             SDL_ReleaseGPUGraphicsPipeline(device_, trianglePipeline_);
             trianglePipeline_ = nullptr;
@@ -174,7 +354,7 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor) {
         //     what to do with their existing contents:
         //       load_op  = CLEAR  -> wipe to clear_color before drawing.
         //       store_op = STORE  -> keep the result so it can be displayed.
-        //     The clear gives us the dark-teal background; the triangle is drawn
+        //     The clear gives us the dark-teal background; the quad is drawn
         //     on top of it.
         // --------------------------------------------------------------------
         SDL_GPUColorTargetInfo colorTarget = {};
@@ -187,12 +367,9 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor) {
             SDL_BeginGPURenderPass(cmd, &colorTarget, /*num_color_targets=*/1,
                                    /*depth_stencil_target_info=*/nullptr);
 
-        // Draw the triangle: switch the GPU to our pipeline, then issue a draw
-        // for 3 vertices / 1 instance. There's no vertex buffer to bind — the
-        // vertex shader generates the 3 positions from gl_VertexIndex (0,1,2).
-        SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
-        SDL_DrawGPUPrimitives(pass, /*num_vertices=*/3, /*num_instances=*/1,
-                              /*first_vertex=*/0, /*first_instance=*/0);
+        // Draw the quad from its GPU buffers (bind pipeline + vertex/index
+        // buffers + indexed draw). Shared with captureFrame so both paths match.
+        recordQuad(pass);
 
         SDL_EndGPURenderPass(pass);
     }
@@ -207,7 +384,7 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor) {
 }
 
 bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor) {
-    // Fixed capture resolution. Our triangle is defined in NDC, so it looks the
+    // Fixed capture resolution. Our quad is defined in NDC, so it looks the
     // same at any size; a fixed size keeps the output deterministic and small.
     constexpr Uint32 kWidth  = 1280;
     constexpr Uint32 kHeight = 720;
@@ -248,7 +425,7 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor) {
         return false;
     }
 
-    // 3. Record: draw the triangle into the off-screen texture, then a copy pass
+    // 3. Record: draw the quad into the off-screen texture, then a copy pass
     //    that downloads that texture into the transfer buffer.
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
 
@@ -258,8 +435,7 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor) {
     colorTarget.load_op     = SDL_GPU_LOADOP_CLEAR;
     colorTarget.store_op    = SDL_GPU_STOREOP_STORE;
     SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, nullptr);
-    SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
-    SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    recordQuad(pass);
     SDL_EndGPURenderPass(pass);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);

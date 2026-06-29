@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vertex &amp; Index Buffers · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html" aria-current="page">Vertex &amp; Index Buffers</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Vertex &amp; Index Buffers</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 2:</strong> stop baking geometry into the shader. Put the
+    corners of a shape into real <strong>GPU buffers</strong> and feed them to the
+    pipeline — the way every real mesh gets drawn.</p>
+    <p>We graduate from a triangle to a <strong>quad</strong> (a rectangle made of two
+    triangles), because the quad is the smallest shape that shows off the second new
+    idea: an <strong>index buffer</strong>, which lets triangles <em>share</em> vertices
+    instead of duplicating them.</p>
+  </blockquote>
+
+  <p>In <a href="02-first-triangle.html">Step 1</a> the vertex shader invented its three
+  positions out of <code>gl_VertexIndex</code> — there was no data to manage. That's a
+  dead end: you can't load a model that way. The professional path is to hand the GPU a
+  block of vertex data and a description of how to read it. That's this step.</p>
+
+  <h2>1. Why a buffer at all? CPU memory vs GPU memory</h2>
+
+  <p>Your C++ <code>Vertex</code> array lives in <strong>system RAM</strong>, owned by the
+  CPU. The GPU is a separate processor with its own fast memory (<strong>VRAM</strong>),
+  and — this is the key fact — <strong>it cannot reach into your program's RAM to read
+  that array.</strong> A shader can only read data that already lives in a GPU resource.</p>
+
+  <p>A <strong>buffer</strong> is exactly that: a plain block of bytes that lives in GPU
+  memory. To draw our own geometry we must first get the vertex data <em>out</em> of CPU
+  RAM and <em>into</em> a GPU buffer. That copy is the heart of this step.</p>
+
+  <h2>2. The two-step upload: staging buffers &amp; the copy pass</h2>
+
+  <p>Here's the wrinkle: the fast, GPU-only memory a vertex buffer wants to live in is
+  usually <strong>not writable by the CPU</strong> at all. So you can't just create the
+  buffer and memcpy into it. Modern GPU APIs solve this with a <strong>two-step move</strong>
+  through a <strong>transfer buffer</strong> (also called a <em>staging buffer</em>):</p>
+
+  <pre class="diagram">  your Vertex[]            (1) create a CPU-visible
+  in CPU RAM                   "transfer buffer"
+      │                            │
+      │  (2) memcpy                ▼
+      └──────────────►  ┌────────────────────┐
+                        │  transfer buffer    │  CPU can map &amp; write this
+                        └────────────────────┘
+                                 │  (3) copy pass on the GPU
+                                 ▼
+                        ┌────────────────────┐
+                        │  vertex buffer      │  GPU-only, fast; shaders read this
+                        └────────────────────┘</pre>
+
+  <ol>
+    <li>Create the real <strong>vertex buffer</strong> in GPU memory (the destination).</li>
+    <li>Create a <strong>transfer buffer</strong> — CPU-visible staging memory. <em>Map</em>
+    it (get a pointer), <code>memcpy</code> your vertices in, <em>unmap</em> it.</li>
+    <li>Record a <strong>copy pass</strong>: a command telling the GPU to copy the bytes
+    from the transfer buffer into the vertex buffer. Submit it.</li>
+  </ol>
+
+  <blockquote>
+    <p>You've seen this machinery before — in reverse. Our headless screenshot tool
+    (<code>captureFrame</code>) uses a <em>download</em> transfer buffer to copy rendered
+    pixels back from the GPU to the CPU. Uploading geometry is the mirror image: same
+    parts, opposite direction. A copy pass is just the GPU's "move bytes between
+    resources" mode, the sibling of the render pass.</p>
+  </blockquote>
+
+  <p>Because this upload happens <strong>once at startup</strong>, we don't bother waiting
+  on a fence: GPU command buffers run in the order they're submitted, so the per-frame
+  draw (submitted later) is guaranteed to see the finished copy. We can even release the
+  transfer buffer immediately — SDL defers the actual free until the GPU is done with it.</p>
+
+  <h2>3. The vertex input layout: teaching the GPU to read your bytes</h2>
+
+  <p>A buffer is just bytes; the GPU has no idea that byte 0 is a position and byte 8 is a
+  color. When we build the pipeline we attach a <strong>vertex input layout</strong> that
+  describes the bytes exactly. It has two halves:</p>
+
+  <ul>
+    <li>A <strong>buffer description</strong> (per bound buffer): which <em>slot</em> it's
+    bound to, its <strong>pitch</strong> (how many bytes from one vertex to the next —
+    i.e. <code>sizeof(Vertex)</code>), and whether it advances once per vertex or once per
+    instance.</li>
+    <li>One <strong>attribute</strong> per shader input: which <code>location</code> it
+    feeds, which buffer slot it reads from, its <strong>format</strong> (e.g. two floats,
+    three floats), and its <strong>byte offset</strong> within one vertex.</li>
+  </ul>
+
+  <pre class="diagram">  one Vertex = 20 bytes (the "pitch")
+  ┌────────────┬──────────────────┐
+  │ position   │ color            │
+  │ 2×float    │ 3×float          │
+  │ offset 0   │ offset 8         │
+  └────────────┴──────────────────┘
+   →location 0   →location 1
+    FLOAT2        FLOAT3</pre>
+
+  <p>That <code>location</code> number is the single source of truth that must agree across
+  <strong>four</strong> layers. Get one wrong and the GPU reads the wrong bytes — usually
+  with no error, just a garbled image:</p>
+
+  <pre class="diagram">  GLSL                SPIR-V            MSL (Metal)            SDL pipeline
+  layout(location=1)  →  decoration  →  [[attribute(1)]]   →   SDL_GPUVertexAttribute
+  in vec3 inColor                                               .location = 1</pre>
+
+  <h2>4. Index buffers: why store a vertex once and reuse it</h2>
+
+  <p>A quad is two triangles. The naïve way needs <strong>six</strong> vertices — but two
+  of them are duplicates, because the triangles share an edge:</p>
+
+  <pre class="diagram">  Without indices (6 vertices, 2 duplicated):
+     triangle A = v0, v1, v2
+     triangle B = v2, v3, v0     ← v2 and v0 stored AGAIN
+
+  With an index buffer (4 vertices + 6 indices):
+     vertices = [v0, v1, v2, v3]          ← each corner stored ONCE
+     indices  = [0,1,2,  2,3,0]           ← cheap 16-bit references</pre>
+
+  <p>An <strong>index buffer</strong> holds small integers that <em>point at</em> entries
+  in the vertex buffer. The GPU walks the indices, and for each one fetches that vertex.
+  This decouples "how many corners exist" from "how many times they're used." For a quad
+  it saves two vertices; for a real model — where each vertex is shared by many faces — it
+  routinely cuts vertex data by more than half, and it's how every mesh format stores
+  geometry. Our indices are 16-bit (<code>Uint16</code>), enough for 65,536 unique
+  vertices; meshes larger than that switch to 32-bit indices.</p>
+
+  <p>So the per-frame draw changes from "draw N vertices" to "draw N <em>indices</em>":
+  <code>SDL_DrawGPUIndexedPrimitives</code> instead of <code>SDL_DrawGPUPrimitives</code>.</p>
+
+  <h2>5. The code</h2>
+
+  <h3>The vertex shader now has inputs — <a href="../shaders/triangle.vert">shaders/triangle.vert</a></h3>
+
+  <p>The hardcoded arrays are gone. Each invocation receives one vertex's attributes
+  through <code>in</code> variables, tagged with the <code>location</code>s from the layout
+  above:</p>
+
+  <pre><code>// triangle.vert  (GLSL 450)
+layout(location = 0) in vec2 inPosition;   // from the vertex buffer, offset 0
+layout(location = 1) in vec3 inColor;      // from the vertex buffer, offset 8
+layout(location = 0) out vec3 vColor;      // varying → fragment shader
+void main() {
+    gl_Position = vec4(inPosition, 0.0, 1.0);
+    vColor      = inColor;
+}</code></pre>
+
+  <p>The fragment shader is unchanged — it still just passes the interpolated color
+  through. The shader stopped knowing the geometry; it now transforms whatever it's fed.</p>
+
+  <h3>One vertex, described once — <a href="../src/renderer/Vertex.hpp">src/renderer/Vertex.hpp</a></h3>
+
+  <p>A small struct defines the CPU-side layout. Its byte layout <em>is</em> the contract
+  the pipeline's attributes describe, so we pin it with <code>static_assert</code>s (and
+  matching unit tests in <code>tests/test_vertex.cpp</code>) — if it ever drifts, the build
+  fails instead of the image silently corrupting:</p>
+
+  <pre><code>struct Vertex {
+    float position[2];  // location 0, FLOAT2, offset 0
+    float color[3];     // location 1, FLOAT3, offset 8
+};                      // sizeof == 20  → the vertex buffer "pitch"</code></pre>
+
+  <h3>The upload helper — <a href="../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a></h3>
+
+  <p><code>uploadToGpuBuffer()</code> performs the whole two-step move from §2 — create GPU
+  buffer, create &amp; map transfer buffer, memcpy, copy pass, submit — and returns the
+  finished buffer. <code>createGeometry()</code> calls it twice: once for the 4-vertex
+  vertex buffer, once for the 6-index index buffer. Defining the data is now ordinary C++:</p>
+
+  <pre><code>constexpr std::array&lt;Vertex, 4&gt; vertices = {{
+    {{-0.5f,-0.5f}, {1,0,0}},  // 0 bottom-left  red
+    {{ 0.5f,-0.5f}, {0,1,0}},  // 1 bottom-right green
+    {{ 0.5f, 0.5f}, {0,0,1}},  // 2 top-right    blue
+    {{-0.5f, 0.5f}, {1,1,0}},  // 3 top-left     yellow
+}};
+constexpr std::array&lt;Uint16, 6&gt; indices = { 0,1,2,  2,3,0 };</code></pre>
+
+  <h3>Binding &amp; drawing — <code>recordQuad()</code></h3>
+
+  <p>The pipeline now carries the vertex input layout. Each frame, inside the render pass,
+  we bind the buffers and issue an indexed draw (one helper shared by the live frame and
+  the screenshot path, so they can't drift):</p>
+
+  <pre><code>SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
+SDL_BindGPUVertexBuffers(pass, 0, &amp;vertexBinding, 1);
+SDL_BindGPUIndexBuffer(pass, &amp;indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+SDL_DrawGPUIndexedPrimitives(pass, /*num_indices=*/6, 1, 0, 0, 0);</code></pre>
+
+  <h2>6. The result (and a teaser for Step 3)</h2>
+
+  <p>You get a centered rectangle with a red / green / blue / yellow corner gradient. Look
+  closely and you can see a faint diagonal seam from the bottom-left to the top-right
+  corner: that's the shared edge between the two triangles, with each triangle interpolating
+  its own corners — the index buffer made visible.</p>
+
+  <p>You'll also notice the "quad" is <em>wider than it is tall</em>, even though its NDC
+  coordinates are a perfect square (−0.5 to +0.5 on both axes). That's because NDC is
+  stretched to fill a non-square window (1280×720). Fixing that — making a square look
+  square regardless of window shape — needs a <strong>projection matrix</strong>, which is
+  exactly where Step 3 begins.</p>
+
+  <h2>7. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Recolor or move the corners.</strong> Edit the <code>vertices</code> array
+    in <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> and rebuild — no shader
+    recompile needed, because the data lives in C++ now, not the shader.</li>
+    <li><strong>Break the layout on purpose.</strong> Swap the two
+    <code>SDL_GPUVertexAttribute</code> offsets (give position offset 8, color offset 0) and
+    run with the GPU debug layer on — watch the colors and shape go wrong, a vivid lesson in
+    why the layout must match the struct.</li>
+    <li><strong>Drop the index buffer.</strong> Try drawing the quad with six non-indexed
+    vertices instead, to feel exactly what the index buffer was saving you.</li>
+    <li><strong>Capture it headlessly:</strong>
+    <code>KOI_CAPTURE=out.bmp ./build/koi-engine</code>, then
+    <code>sips -s format png out.bmp --out out.png</code>.</li>
+  </ol>
+
+  <h2>8. What's next</h2>
+
+  <p>➡️ <strong>Step 3 — A 3D cube with MVP &amp; depth.</strong> We add the third position
+  axis, write our own <code>vec</code>/<code>mat4</code> math, and multiply vertices by a
+  <strong>Model-View-Projection</strong> matrix to turn flat NDC coordinates into real 3D —
+  plus a <strong>depth buffer</strong> so nearer faces correctly hide farther ones.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

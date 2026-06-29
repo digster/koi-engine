@@ -2,8 +2,9 @@
 
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
-choices. It evolves as the engine grows; right now it describes the Step 0
-foundation.
+choices. It evolves as the engine grows; right now it describes the foundation
+through Step 2 (window & render loop, the first triangle, and geometry in GPU
+vertex/index buffers).
 
 ## Guiding principles
 
@@ -42,7 +43,8 @@ foundation.
 |-----------|------|----------------|
 | `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems, runs the game loop, dispatches input events, controls startup/shutdown order. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice` and the graphics pipeline; records and submits one frame (acquire → render pass → bind pipeline → draw → submit). |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the graphics pipeline, and the geometry's vertex + index buffers; uploads geometry at startup (`uploadToGpuBuffer` + `createGeometry`) and records/submits one frame (acquire → render pass → `recordQuad` (bind pipeline + buffers, indexed draw) → submit). |
+| `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (position + color). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
 | `Shader` | [src/renderer/Shader.*](src/renderer/) | Loads a compiled shader for the active backend: `selectShaderVariant` (pure, unit-tested) picks the format/extension/entry point; `loadShader` reads the file and creates the `SDL_GPUShader`. |
 | `Log` | [src/core/Log.hpp](src/core/Log.hpp) | Leveled logging macros over SDL's logger; one place to control verbosity. |
 
@@ -57,14 +59,15 @@ renderFrame()    → in GpuRenderer:
                      1. acquire command buffer
                      2. acquire swapchain image (waits for vsync)
                      3. begin render pass (load_op = CLEAR)
-                     4. bind the triangle pipeline + draw 3 vertices
+                     4. recordQuad: bind pipeline + vertex/index buffers, indexed draw
                      5. end render pass
                      6. submit command buffer (queues present)
 ```
 
-See [docs/01-window-and-render-loop.html](docs/01-window-and-render-loop.html) and
-[docs/02-first-triangle.html](docs/02-first-triangle.html) for the
-concept-by-concept explanation.
+See [docs/01-window-and-render-loop.html](docs/01-window-and-render-loop.html),
+[docs/02-first-triangle.html](docs/02-first-triangle.html), and
+[docs/03-vertex-and-index-buffers.html](docs/03-vertex-and-index-buffers.html) for
+the concept-by-concept explanation.
 
 ### Shaders & the build-time toolchain
 
@@ -82,6 +85,32 @@ builds the outputs into `build/shaders/`, beside the executable. At runtime
 `loadShader` (via `selectShaderVariant`) loads whichever variant the active device
 supports — `.msl` (entry `main0`) on Metal here. The pipeline is built once at
 startup and bound each frame.
+
+### Geometry: vertex & index buffers
+
+Geometry lives in GPU memory, not in the shader (Step 1's approach) or the C++
+heap. Shaders can only read GPU resources, and the fast memory a vertex buffer
+wants is not CPU-writable, so getting data onto the GPU is a **two-step move**:
+
+```
+Vertex[] in CPU RAM ──memcpy──► transfer (staging) buffer ──copy pass──► vertex buffer (GPU)
+```
+
+`GpuRenderer::uploadToGpuBuffer()` encapsulates that move (create GPU buffer →
+create + map an UPLOAD transfer buffer → memcpy → copy pass → submit) and is reused
+for both the vertex buffer and the index buffer in `createGeometry()`. This is the
+mirror image of `captureFrame`, which uses a *download* transfer buffer to read
+pixels back. The upload runs once at startup; no fence is needed because command
+buffers execute in submission order, so the later per-frame draw sees the finished
+copy.
+
+The pipeline carries a **vertex input layout** — a buffer description (slot, pitch =
+`sizeof(Vertex)`, per-vertex rate) plus one attribute per shader input (location,
+format, byte offset). The attribute `location`s must match `triangle.vert`'s
+`layout(location=N) in` declarations and `koi::Vertex`'s field offsets; that chain
+(GLSL → SPIR-V → MSL `[[attribute(N)]]` → SDL attribute) is the contract the
+`Vertex` `static_assert`s guard. The **index buffer** lets the quad's two triangles
+reuse the 4 corner vertices (6 indices → 4 vertices) via `SDL_DrawGPUIndexedPrimitives`.
 
 ## Lifecycle & ownership
 
@@ -147,8 +176,9 @@ builds if you like.
 
 Future milestones slot into this structure without reshaping it:
 
-- **Step 2:** `renderer/` grows GPU buffer/transfer helpers; the triangle's data
-  moves from the shader into a vertex buffer with a described vertex layout.
+- **Step 2 (done):** `renderer/` grew GPU buffer/transfer helpers (`uploadToGpuBuffer`)
+  and a `Vertex` type; geometry moved from the shader into vertex + index buffers with
+  a described vertex layout.
 - **Step 3+:** a `math/` module (hand-rolled `vec`, `mat4`, `quat`) feeds MVP
   matrices to shaders via uniform buffers; a depth buffer joins the render pass.
   `renderFrame` likely splits into `begin/draw/end` once there are many draws.

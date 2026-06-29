@@ -41,3 +41,11 @@ A running record of the prompts that shaped this project, for context.
 
 Added `KOI_CAPTURE` (render one frame to a BMP via `GpuRenderer::captureFrame`);
 referenced in `CLAUDE.md`.
+
+**Next milestone request (Step 2):**
+> Work on the next milestone.
+
+**Decision made (via clarifying question):**
+- Step 2 geometry: **a quad drawn with a vertex buffer + an index buffer** (over a
+  triangle with only a vertex buffer), so the index buffer is genuinely meaningful
+  (4 vertices reused 6 times).

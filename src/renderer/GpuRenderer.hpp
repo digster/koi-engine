@@ -36,15 +36,17 @@ public:
     GpuRenderer(const GpuRenderer&) = delete;
     GpuRenderer& operator=(const GpuRenderer&) = delete;
 
-    // Valid only once the device AND the triangle pipeline are ready, so the
-    // Engine aborts with a clear message if (e.g.) the compiled shaders are
-    // missing rather than running with nothing to draw.
+    // Valid only once the device, the pipeline, AND the geometry buffers are
+    // ready, so the Engine aborts with a clear message if (e.g.) the compiled
+    // shaders are missing or an upload failed, rather than running with nothing
+    // to draw.
     [[nodiscard]] bool isValid() const {
-        return device_ != nullptr && trianglePipeline_ != nullptr;
+        return device_ != nullptr && trianglePipeline_ != nullptr &&
+               vertexBuffer_ != nullptr && indexBuffer_ != nullptr;
     }
 
     // Render exactly one frame: acquire an image from the window's swapchain,
-    // clear it to `clearColor`, draw the triangle, and present it.
+    // clear it to `clearColor`, draw the quad, and present it.
     void renderFrame(const SDL_FColor& clearColor);
 
     // Render one frame into an OFF-SCREEN texture (not the window), download the
@@ -55,17 +57,44 @@ public:
     [[nodiscard]] bool captureFrame(const char* path, const SDL_FColor& clearColor);
 
 private:
-    // Build the graphics pipeline for the triangle (loads + compiles shaders into
-    // an immutable pipeline object). Called once from the constructor.
+    // Build the graphics pipeline (loads + compiles shaders, and describes the
+    // vertex input layout, into an immutable pipeline object). Called once from
+    // the constructor.
     bool createTrianglePipeline();
+
+    // Create the vertex + index buffers and upload the quad's data into them.
+    // Called once from the constructor, after the pipeline. Leaves the buffers
+    // null on failure so isValid() reports it.
+    bool createGeometry();
+
+    // Create one GPU buffer of `usage` (VERTEX or INDEX), upload `size` bytes
+    // from `data` into it via a staging transfer buffer + copy pass, and return
+    // it. Returns nullptr (after logging) on failure. The shared helper behind
+    // both the vertex and index uploads.
+    SDL_GPUBuffer* uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
+                                     const void* data, Uint32 size);
+
+    // Record the draw for our quad into an already-begun render pass: bind the
+    // pipeline + vertex/index buffers and issue the indexed draw. Shared by the
+    // live (renderFrame) and off-screen (captureFrame) paths so they can't drift.
+    void recordQuad(SDL_GPURenderPass* pass) const;
 
     SDL_Window*    window_ = nullptr;  // not owned — the Engine owns the Window
     SDL_GPUDevice* device_ = nullptr;  // owned — released in the destructor
 
-    // The graphics pipeline that draws our triangle: it bundles the vertex +
+    // The graphics pipeline that draws our quad: it bundles the vertex +
     // fragment shaders together with fixed-function state (primitive type, the
-    // color target's format, etc.) into one object the GPU can switch to quickly.
+    // color target's format, the vertex input layout, etc.) into one object the
+    // GPU can switch to quickly.
     SDL_GPUGraphicsPipeline* trianglePipeline_ = nullptr;  // owned
+
+    // The geometry, now living in GPU memory instead of being baked into the
+    // shader. The vertex buffer holds the 4 unique corners; the index buffer
+    // holds the 6 indices that stitch them into 2 triangles (the whole point of
+    // an index buffer: reuse vertices instead of duplicating them).
+    SDL_GPUBuffer* vertexBuffer_ = nullptr;  // owned
+    SDL_GPUBuffer* indexBuffer_  = nullptr;  // owned
+    Uint32         indexCount_   = 0;        // how many indices to draw
 };
 
 }  // namespace koi

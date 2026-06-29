@@ -18,7 +18,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     koi::Engine engine;
 
     const koi::Engine::Config config{
-        .title  = "Koi Engine — Step 1: First Triangle",
+        .title  = "Koi Engine — Step 2: Vertex & Index Buffers",
         .width  = 1280,
         .height = 720,
     };

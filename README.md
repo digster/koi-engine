@@ -9,10 +9,10 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 1:** draws the classic RGB-gradient triangle with our
-> own GLSL shaders, on top of the Step 0 render loop. This adds the three pillars
-> everything else needs: shaders, a graphics pipeline, and a shader-compilation
-> toolchain (GLSL → SPIR-V → MSL, run automatically by the build).
+> **Current status — Step 2:** draws an RGB-gradient **quad** whose geometry lives
+> in real **GPU buffers** (a vertex buffer + an index buffer), uploaded via a staging
+> transfer buffer and described to the pipeline with a vertex input layout. This is
+> the data path every real mesh uses, replacing Step 1's shader-baked triangle.
 
 ## Quick start
 
@@ -43,6 +43,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
   swapchains, command buffers & render passes explained, mapped to the Step 0 code.
 - [docs/02-first-triangle.html](docs/02-first-triangle.html) — shaders, the graphics
   pipeline, clip space, and the GLSL→SPIR-V→MSL toolchain, mapped to the Step 1 code.
+- [docs/03-vertex-and-index-buffers.html](docs/03-vertex-and-index-buffers.html) — GPU
+  vs CPU memory, transfer buffers & the copy pass, vertex input layouts, and index
+  buffers, mapped to the Step 2 code that draws the gradient quad.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -51,7 +54,7 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 |------|-----------|--------------|
 | ✅ **0** | **Window + clear screen** | GPU device, swapchain, command buffer, render pass |
 | ✅ **1** | **First triangle** | Shaders, graphics pipeline, shader toolchain (`glslc` + `spirv-cross`) |
-| 2 | Vertex/index buffers | GPU buffers, transfer buffers, vertex layouts |
+| ✅ **2** | **Vertex/index buffers** | GPU buffers, transfer buffers, vertex layouts |
 | 3 | 3D cube + MVP + depth | hand-rolled `vec`/`mat4`, projection, depth testing |
 | 4 | Camera + input movement | view matrix, delta-time, fly camera |
 | 5 | Meshes & scene graph | model abstraction, node hierarchy |
