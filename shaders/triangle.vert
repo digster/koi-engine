@@ -1,37 +1,35 @@
 // ============================================================================
-//  triangle.vert — vertex shader for Step 2's vertex/index-buffered quad
+//  triangle.vert — vertex shader for Step 3's spinning 3D cube
 // ----------------------------------------------------------------------------
-//  A vertex shader runs ONCE PER VERTEX. Its required job is to output a
-//  position in "clip space" (gl_Position). The GPU then turns those positions
-//  into pixels (rasterization) and runs the fragment shader for each pixel.
-//
-//  In Step 1 the per-vertex data was baked into this shader and picked with
-//  gl_VertexIndex. In Step 2 the data instead arrives from a real GPU *vertex
-//  buffer*: each invocation receives one vertex's attributes through the
-//  `in` variables below. This is how every real engine feeds geometry — the
-//  shader stops knowing the geometry and just transforms whatever it is handed.
+//  A vertex shader runs ONCE PER VERTEX and must output a clip-space position.
+//  Until now our vertices were already in clip space (flat 2D in NDC). Now they
+//  arrive in 3D MODEL space and we transform them with a single matrix — the
+//  "MVP" (Model * View * Projection) — to place, orient, and project them into
+//  clip space. The GPU then divides by w (perspective division), which is what
+//  makes farther parts of the cube look smaller.
 // ============================================================================
 #version 450
 
-// --- Per-vertex inputs (read from the bound vertex buffer) -----------------
-// "location = N" is the attribute slot. It is the single source of truth that
-// must line up across FOUR layers, or the GPU reads garbage (often silently):
-//   GLSL  layout(location=N)  ->  SPIR-V decoration  ->  MSL [[attribute(N)]]
-//   ->  SDL_GPUVertexAttribute.location  (set when we build the pipeline).
-// Our C++ koi::Vertex struct supplies these: position at byte offset 0 (FLOAT2),
-// color at byte offset 8 (FLOAT3). See src/renderer/Vertex.hpp.
-layout(location = 0) in vec2 inPosition;   // x, y in Normalized Device Coords
-layout(location = 1) in vec3 inColor;      // r, g, b for this corner
+// --- Per-vertex inputs (from the vertex buffer) ----------------------------
+// inPosition is now a vec3: the cube lives in real 3D space.
+layout(location = 0) in vec3 inPosition;
+layout(location = 1) in vec3 inColor;
 
-// Output to the fragment shader. "location = 0" here must match the fragment
-// shader's matching input. Values written here are interpolated across the
-// surface before the fragment shader sees them — that produces the gradient.
+// --- Per-draw uniform (the same for every vertex this draw) ----------------
+// A uniform buffer holds values constant across the whole draw call, unlike the
+// per-vertex `in` attributes above. SDL3's GPU API places VERTEX-stage uniform
+// buffers in descriptor set 1 (set 0 is for textures/storage); we upload this
+// each frame with SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, ...). The mat4
+// is laid out column-major, matching our koi::Mat4 storage.
+layout(set = 1, binding = 0) uniform UBO {
+    mat4 mvp;
+};
+
 layout(location = 0) out vec3 vColor;
 
 void main() {
-    // gl_Position is vec4 (x, y, z, w). z = 0 (on the near plane), w = 1 (no
-    // perspective division yet — that arrives with the projection matrix in
-    // Step 3). We simply promote our 2D NDC position into clip space.
-    gl_Position = vec4(inPosition, 0.0, 1.0);
+    // Promote the 3D position to homogeneous coordinates (w = 1, marking it a
+    // point) and transform it into clip space. The GPU does the w-divide next.
+    gl_Position = mvp * vec4(inPosition, 1.0);
     vColor = inColor;
 }

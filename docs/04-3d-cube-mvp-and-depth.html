@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D Cube: MVP &amp; Depth · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html" aria-current="page">3D Cube: MVP &amp; Depth</a>
+  </div>
+</nav>
+
+<main>
+  <h1>A 3D Cube: MVP &amp; Depth</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 3:</strong> leave flat 2D behind. Draw a real, spinning
+    3D cube — which means writing our own vector/matrix math, transforming vertices
+    with a <strong>Model-View-Projection (MVP)</strong> matrix passed through a
+    <strong>uniform buffer</strong>, and adding a <strong>depth buffer</strong> so the
+    cube's near faces correctly cover its far faces.</p>
+    <p>This is the step where the engine becomes 3D. Everything after — cameras,
+    lighting, models — builds on these three ideas.</p>
+  </blockquote>
+
+  <p>Until now our vertices were already in clip space: we typed coordinates in the
+  −1…+1 box and they appeared on screen. That doesn't scale to 3D. Instead we author
+  geometry in its own convenient space and let matrices carry it the rest of the way.</p>
+
+  <h2>1. The spaces a vertex travels through</h2>
+
+  <p>A vertex starts in <strong>model space</strong> (coordinates relative to the
+  object's own origin — our cube spans −0.5…+0.5 around its center) and must end in
+  <strong>clip space</strong> (what the GPU wants). It gets there by a chain of matrix
+  multiplications, each moving it into the next space:</p>
+
+  <pre class="diagram">  model space ──[ Model ]──► world space ──[ View ]──► view/camera space ──[ Projection ]──► clip space
+   (cube's own)            (placed in the      (relative to the           (ready for the GPU's
+                            scene, rotated)     camera)                    perspective divide)</pre>
+
+  <ul>
+    <li><strong>Model (M):</strong> places/rotates/scales the object in the world. Ours
+    spins the cube and pushes it away from the camera.</li>
+    <li><strong>View (V):</strong> moves the world so the camera sits at the origin
+    looking down −Z. <em>We leave V as the identity this step</em> — a proper camera
+    arrives in <a href="03-vertex-and-index-buffers.html">Step 4</a> — and fold the
+    "back up so we can see the cube" distance into the Model translate. So for now MVP =
+    Projection · Model.</li>
+    <li><strong>Projection (P):</strong> applies perspective so farther things look
+    smaller, and squashes the visible region into clip space.</li>
+  </ul>
+
+  <p>We combine them into one matrix on the CPU (<code>MVP = P · V · M</code>) and the
+  vertex shader does a single multiply: <code>gl_Position = mvp * vec4(position, 1.0)</code>.
+  Read the product right-to-left: M acts first, then V, then P.</p>
+
+  <h2>2. Homogeneous coordinates: why vec4 and the "w"</h2>
+
+  <p>You may wonder why a 3D position becomes a <code>vec4</code> with a fourth component
+  <code>w = 1</code>. That fourth coordinate is the trick that makes a single 4×4 matrix
+  able to express <em>translation</em> and <em>perspective</em>, not just rotation/scale.</p>
+
+  <p>After the vertex shader, the GPU performs the <strong>perspective divide</strong>:
+  it divides x, y, z by w. The projection matrix is built so that a vertex's <em>distance
+  from the camera</em> ends up in w. Dividing by it is what makes distant geometry
+  shrink toward the center — the very essence of perspective. A point uses
+  <code>w = 1</code>; a pure direction would use <code>w = 0</code> (so translation
+  doesn't move it).</p>
+
+  <h2>3. Column-major matrices (and why we don't transpose)</h2>
+
+  <p>A matrix is 16 numbers; the only question is what order they're stored in. GLSL —
+  and therefore the SPIR-V/MSL our shaders compile to — reads a <code>mat4</code> as
+  <strong>column-major</strong>: the first four floats are the first <em>column</em>.
+  We store <code>koi::Mat4</code> the same way, so we can copy our matrix straight into
+  the shader's uniform with no flipping. Element (row r, col c) lives at index
+  <code>c*4 + r</code>, which puts a translation in the last column:</p>
+
+  <pre class="diagram">       col0 col1 col2 col3
+  row0 [ 0    4    8   12 ]      translation (tx, ty, tz)
+  row1 [ 1    5    9   13 ]      lives at indices 12, 13, 14
+  row2 [ 2    6   10   14 ]
+  row3 [ 3    7   11   15 ]</pre>
+
+  <h2>4. Uniform buffers: per-draw constants</h2>
+
+  <p>Vertex attributes (Step 2) vary <em>per vertex</em>. But the MVP matrix is the same
+  for all 8 cube corners in a draw — it's a <strong>per-draw constant</strong>. The GPU
+  has a dedicated, fast channel for exactly this: a <strong>uniform buffer</strong>.</p>
+
+  <p>SDL3's GPU API gives uniform buffers a streamlined path — you don't even allocate a
+  buffer yourself; you "push" the bytes onto the command buffer and the shader reads them:</p>
+
+  <pre><code>SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &amp;mvp, sizeof(mvp));</code></pre>
+
+  <p>Two details that must line up, or the shader reads nothing:</p>
+  <ul>
+    <li>The shader declares the uniform in a specific <strong>descriptor set</strong>.
+    SDL's convention for SPIR-V puts <em>vertex-stage</em> uniform buffers in
+    <strong>set 1</strong>: <code>layout(set = 1, binding = 0) uniform UBO { mat4 mvp; };</code>.</li>
+    <li>We must tell SDL the shader uses one uniform buffer when we create it
+    (<code>num_uniform_buffers = 1</code>), so it sets up the binding.</li>
+  </ul>
+
+  <h2>5. The depth buffer: who's in front?</h2>
+
+  <p>Draw a cube's six faces and a problem appears: which fragments are visible? The
+  naïve answer — "whatever was drawn last wins" (the painter's algorithm) — fails the
+  moment shapes interpenetrate or you rotate them, because draw order has nothing to do
+  with what's actually nearer the camera.</p>
+
+  <p>The fix is a <strong>depth buffer</strong> (a.k.a. z-buffer): a hidden texture, the
+  same size as the screen, storing for each pixel the <em>depth of the closest fragment
+  drawn so far</em>. With the <strong>depth test</strong> enabled, before the GPU writes
+  a fragment's color it compares the fragment's depth against what's stored:</p>
+
+  <pre class="diagram">  new fragment depth  &lt;  stored depth ?
+        │                       │
+       yes → it's closer:       no → something nearer is
+       write its color AND      already there: discard the
+       update the stored depth  new fragment
+  </pre>
+
+  <p>We clear the depth buffer to <strong>1.0</strong> (the far plane) at the start of
+  each frame and use the comparison <code>LESS</code>, so smaller (nearer) depths win.
+  SDL3's clip-space depth runs <strong>0 (near) … 1 (far)</strong> — the Metal/Vulkan/D3D
+  convention, unlike OpenGL's −1…1 — which is exactly what our <code>perspective()</code>
+  matrix produces. With this on, the cube's geometry sorts itself out no matter the draw
+  order or rotation.</p>
+
+  <h2>6. The code</h2>
+
+  <h3>The math — <a href="../src/math/Vec.hpp">src/math/Vec.hpp</a> &amp; <a href="../src/math/Mat4.hpp">Mat4.hpp</a></h3>
+
+  <p>Hand-rolled, header-only, no GLM. <code>Vec.hpp</code> has <code>Vec2/3/4</code> with
+  dot/cross/length/normalize; <code>Mat4.hpp</code> has the column-major matrix with
+  <code>identity</code>, multiply, <code>translation</code>, <code>rotationX/Y/Z</code>,
+  and <code>perspective</code> (right-handed, depth 0…1). It's pure code, so it's covered
+  by real unit tests in <a href="../tests/test_math.cpp">tests/test_math.cpp</a> (e.g.
+  that a 90° Z-rotation maps +X→+Y, and that <code>perspective</code> sends the near/far
+  planes to z = 0/1).</p>
+
+  <h3>The vertex shader — <a href="../shaders/triangle.vert">shaders/triangle.vert</a></h3>
+
+  <pre><code>layout(location = 0) in vec3 inPosition;            // now 3D
+layout(location = 1) in vec3 inColor;
+layout(set = 1, binding = 0) uniform UBO { mat4 mvp; };  // per-draw constant
+layout(location = 0) out vec3 vColor;
+void main() {
+    gl_Position = mvp * vec4(inPosition, 1.0);      // model space → clip space
+    vColor = inColor;
+}</code></pre>
+
+  <h3>The cube — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> <code>createGeometry()</code></h3>
+
+  <p>Eight corners (each colored by its position, so the cube is literally the RGB color
+  cube) and 36 indices = 12 triangles, two per face — the index buffer from Step 2 now
+  earning its keep by reusing 8 vertices instead of storing 36. The vertex's
+  <code>position</code> attribute widened from <code>FLOAT2</code> to <code>FLOAT3</code>
+  (see <a href="../src/renderer/Vertex.hpp">Vertex.hpp</a>; <code>sizeof(Vertex)</code> is
+  now 24).</p>
+
+  <h3>Depth in the pipeline &amp; the render pass</h3>
+
+  <p>The pipeline turns on the depth test (<code>compare_op = LESS</code>, depth write on)
+  and declares its depth-target format. Each frame we (re)create a depth texture matching
+  the window size (<code>ensureDepthTexture</code>) and attach it to the render pass,
+  cleared to 1.0. Then we build the MVP — a time-based angle for the live window, a fixed
+  angle for the deterministic <code>KOI_CAPTURE</code> screenshot — push it, and draw.</p>
+
+  <blockquote>
+    <p><strong>A gotcha worth remembering:</strong> a zeroed
+    <code>SDL_GPUDepthStencilTargetInfo</code> sets the load ops to
+    <code>LOAD</code> (enum value 0), and SDL forbids <code>cycle = true</code> with a
+    LOAD op. Because our depth format carries no stencil, we set the stencil load/store
+    ops to <code>DONT_CARE</code> explicitly. Forgetting this caused a GPU hang (the
+    debug layer asserted, the device never went idle) — a reminder that in these APIs,
+    "all zeros" is a real configuration, not "unset".</p>
+  </blockquote>
+
+  <h2>7. The result</h2>
+
+  <p>A solid, gently spinning RGB cube, viewed at an angle so three faces show. Two things
+  to notice versus Step 2: it has real <strong>depth</strong> (near faces hide far ones,
+  thanks to the z-buffer), and it's no longer <strong>stretched</strong> — the projection's
+  aspect-ratio term makes a square cube look square in a wide window. That stretch we
+  flagged at the end of Step 2 is now fixed.</p>
+
+  <h2>8. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Stop the spin.</strong> In <code>buildMvp</code>, pass a constant angle —
+    the cube freezes; the depth test still keeps it correct.</li>
+    <li><strong>Break the depth test.</strong> Set <code>enable_depth_test = false</code>
+    in the pipeline and watch faces paint over each other in the wrong order — the bug the
+    depth buffer exists to prevent.</li>
+    <li><strong>Change the lens.</strong> Try a 90° vs 30° field of view in
+    <code>perspective()</code> and see the cube balloon or flatten.</li>
+    <li><strong>Move the camera (sort of).</strong> Change the model translate's z from
+    −3 to −2 and the cube comes closer; this is the camera distance we'll soon move into a
+    real View matrix.</li>
+    <li><strong>Capture it:</strong> <code>KOI_CAPTURE=out.bmp ./build/koi-engine</code>,
+    then <code>sips -s format png out.bmp --out out.png</code>.</li>
+  </ol>
+
+  <h2>9. What's next</h2>
+
+  <p>➡️ <strong>Step 4 — Camera &amp; movement.</strong> We promote the identity View
+  matrix into a real <strong>look-at camera</strong> you can fly around with the keyboard,
+  introduce <strong>delta-time</strong> so motion is frame-rate independent, and start
+  separating "where things are" from "where we're looking from."</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

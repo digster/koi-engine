@@ -35,8 +35,13 @@ struct ShaderVariant {
 // Load a compiled shader named like "triangle.vert" (no extension) for `stage`,
 // choosing the variant the device supports and reading it from the `shaders/`
 // folder next to the executable. Returns nullptr (after logging) on failure.
+//
+// `numUniformBuffers` must match how many uniform buffers the shader declares
+// (SDL validates this against the compiled code). Step 3's vertex shader uses 1
+// (the MVP matrix); shaders with no uniforms leave it at the default 0.
 [[nodiscard]] SDL_GPUShader* loadShader(SDL_GPUDevice* device,
                                         const char* name,
-                                        SDL_GPUShaderStage stage);
+                                        SDL_GPUShaderStage stage,
+                                        Uint32 numUniformBuffers = 0);
 
 }  // namespace koi

@@ -9,10 +9,11 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 2:** draws an RGB-gradient **quad** whose geometry lives
-> in real **GPU buffers** (a vertex buffer + an index buffer), uploaded via a staging
-> transfer buffer and described to the pipeline with a vertex input layout. This is
-> the data path every real mesh uses, replacing Step 1's shader-baked triangle.
+> **Current status — Step 3:** draws a spinning **3D cube**. This adds the engine's
+> own **hand-rolled math** (`Vec`/`Mat4`), a **Model-View-Projection** matrix fed to
+> the vertex shader through a **uniform buffer**, and a **depth buffer** so near faces
+> correctly hide far ones — the core 3D transform pipeline. (It also fixes Step 2's
+> aspect-ratio stretch via the projection matrix.)
 
 ## Quick start
 
@@ -46,6 +47,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - [docs/03-vertex-and-index-buffers.html](docs/03-vertex-and-index-buffers.html) — GPU
   vs CPU memory, transfer buffers & the copy pass, vertex input layouts, and index
   buffers, mapped to the Step 2 code that draws the gradient quad.
+- [docs/04-3d-cube-mvp-and-depth.html](docs/04-3d-cube-mvp-and-depth.html) — the MVP
+  transform chain, homogeneous coordinates, uniform buffers, and the depth buffer,
+  mapped to the Step 3 code that spins a 3D cube.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -55,7 +59,7 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 | ✅ **0** | **Window + clear screen** | GPU device, swapchain, command buffer, render pass |
 | ✅ **1** | **First triangle** | Shaders, graphics pipeline, shader toolchain (`glslc` + `spirv-cross`) |
 | ✅ **2** | **Vertex/index buffers** | GPU buffers, transfer buffers, vertex layouts |
-| 3 | 3D cube + MVP + depth | hand-rolled `vec`/`mat4`, projection, depth testing |
+| ✅ **3** | **3D cube + MVP + depth** | hand-rolled `vec`/`mat4`, projection, depth testing |
 | 4 | Camera + input movement | view matrix, delta-time, fly camera |
 | 5 | Meshes & scene graph | model abstraction, node hierarchy |
 | 6 | Textures + Phong lighting | samplers, normals, uniform buffers |

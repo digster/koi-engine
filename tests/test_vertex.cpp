@@ -23,27 +23,35 @@
 using koi::Vertex;
 
 TEST_CASE("Vertex is tightly packed so its size is the buffer pitch") {
-    // position (2 floats) + color (3 floats) = 5 floats = 20 bytes, no padding.
-    CHECK(sizeof(Vertex) == 20);
+    // position (3 floats) + color (3 floats) = 6 floats = 24 bytes, no padding.
+    // Step 3 widened position from 2D to 3D, so this grew from 20 to 24.
+    CHECK(sizeof(Vertex) == 24);
     CHECK(sizeof(float) == 4);
 }
 
 TEST_CASE("Vertex attribute offsets match the pipeline's vertex layout") {
-    // These offsets are what createTrianglePipeline() passes as the FLOAT2 /
-    // FLOAT3 attribute offsets (and what triangle.vert reads at location 0 / 1).
+    // These offsets are what createTrianglePipeline() passes as the two FLOAT3
+    // attribute offsets (and what triangle.vert reads at location 0 / 1).
     CHECK(offsetof(Vertex, position) == 0);
-    CHECK(offsetof(Vertex, color) == 8);
+    CHECK(offsetof(Vertex, color) == 12);
 }
 
-TEST_CASE("Quad index set references 4 vertices to build 2 triangles") {
-    // Mirrors GpuRenderer::createGeometry(): two triangles tile the quad, with
-    // corners 0 and 2 each reused once — the reuse an index buffer exists for.
-    constexpr std::array<unsigned short, 6> indices = { 0, 1, 2, 2, 3, 0 };
+TEST_CASE("Cube index set references 8 vertices to build 12 triangles") {
+    // Mirrors GpuRenderer::createGeometry(): 6 faces × 2 triangles tile the cube,
+    // reusing its 8 corners — the reuse an index buffer exists for.
+    constexpr std::array<unsigned short, 36> indices = {
+        0, 1, 2,  2, 3, 0,   // front
+        1, 5, 6,  6, 2, 1,   // right
+        5, 4, 7,  7, 6, 5,   // back
+        4, 0, 3,  3, 7, 4,   // left
+        3, 2, 6,  6, 7, 3,   // top
+        4, 5, 1,  1, 0, 4,   // bottom
+    };
 
-    CHECK(indices.size() == 6);  // 2 triangles × 3 vertices
+    CHECK(indices.size() == 36);  // 12 triangles × 3 vertices
 
-    // Every index must point at one of the 4 stored vertices (0..3).
+    // Every index must point at one of the 8 stored cube corners (0..7).
     for (const unsigned short i : indices) {
-        CHECK(i < 4);
+        CHECK(i < 8);
     }
 }

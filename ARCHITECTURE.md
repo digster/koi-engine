@@ -3,8 +3,9 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 2 (window & render loop, the first triangle, and geometry in GPU
-vertex/index buffers).
+through Step 3 (window & render loop, the first triangle, geometry in GPU
+vertex/index buffers, and a 3D cube with hand-rolled math, an MVP uniform, and a
+depth buffer).
 
 ## Guiding principles
 
@@ -43,9 +44,10 @@ vertex/index buffers).
 |-----------|------|----------------|
 | `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems, runs the game loop, dispatches input events, controls startup/shutdown order. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the graphics pipeline, and the geometry's vertex + index buffers; uploads geometry at startup (`uploadToGpuBuffer` + `createGeometry`) and records/submits one frame (acquire → render pass → `recordQuad` (bind pipeline + buffers, indexed draw) → submit). |
-| `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (position + color). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
-| `Shader` | [src/renderer/Shader.*](src/renderer/) | Loads a compiled shader for the active backend: `selectShaderVariant` (pure, unit-tested) picks the format/extension/entry point; `loadShader` reads the file and creates the `SDL_GPUShader`. |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the graphics pipeline, the geometry's vertex + index buffers, and the depth texture; uploads geometry at startup (`uploadToGpuBuffer` + `createGeometry`), and per frame builds the MVP (`buildMvp`), pushes it as a uniform, and records/submits the draw (acquire → ensure depth texture → render pass with color+depth targets → `recordCube` → submit). |
+| `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
+| `math` (`Vec`, `Mat4`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`) and column-major 4×4 matrix math (translate/rotate/perspective). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp`. |
+| `Shader` | [src/renderer/Shader.*](src/renderer/) | Loads a compiled shader for the active backend: `selectShaderVariant` (pure, unit-tested) picks the format/extension/entry point; `loadShader` reads the file and creates the `SDL_GPUShader` (with the right uniform-buffer count). |
 | `Log` | [src/core/Log.hpp](src/core/Log.hpp) | Leveled logging macros over SDL's logger; one place to control verbosity. |
 
 ## Data flow: one frame
@@ -57,17 +59,20 @@ processEvents()  → SDL_PollEvent drains input; Esc / close → stop the loop
        │
 renderFrame()    → in GpuRenderer:
                      1. acquire command buffer
-                     2. acquire swapchain image (waits for vsync)
-                     3. begin render pass (load_op = CLEAR)
-                     4. recordQuad: bind pipeline + vertex/index buffers, indexed draw
-                     5. end render pass
-                     6. submit command buffer (queues present)
+                     2. acquire swapchain image (waits for vsync) + its size
+                     3. ensure the depth texture matches that size
+                     4. begin render pass (color CLEAR + depth CLEAR to 1.0)
+                     5. build MVP (time-based spin) → push as vertex uniform
+                     6. recordCube: bind pipeline + vertex/index buffers, indexed draw
+                     7. end render pass
+                     8. submit command buffer (queues present)
 ```
 
 See [docs/01-window-and-render-loop.html](docs/01-window-and-render-loop.html),
-[docs/02-first-triangle.html](docs/02-first-triangle.html), and
-[docs/03-vertex-and-index-buffers.html](docs/03-vertex-and-index-buffers.html) for
-the concept-by-concept explanation.
+[docs/02-first-triangle.html](docs/02-first-triangle.html),
+[docs/03-vertex-and-index-buffers.html](docs/03-vertex-and-index-buffers.html), and
+[docs/04-3d-cube-mvp-and-depth.html](docs/04-3d-cube-mvp-and-depth.html) for the
+concept-by-concept explanation.
 
 ### Shaders & the build-time toolchain
 
@@ -109,8 +114,31 @@ The pipeline carries a **vertex input layout** — a buffer description (slot, p
 format, byte offset). The attribute `location`s must match `triangle.vert`'s
 `layout(location=N) in` declarations and `koi::Vertex`'s field offsets; that chain
 (GLSL → SPIR-V → MSL `[[attribute(N)]]` → SDL attribute) is the contract the
-`Vertex` `static_assert`s guard. The **index buffer** lets the quad's two triangles
-reuse the 4 corner vertices (6 indices → 4 vertices) via `SDL_DrawGPUIndexedPrimitives`.
+`Vertex` `static_assert`s guard. The **index buffer** lets the cube's 12 triangles
+reuse its 8 corner vertices (36 indices → 8 vertices) via `SDL_DrawGPUIndexedPrimitives`.
+
+### Math, the MVP transform & the depth buffer (Step 3)
+
+The cube lives in 3D **model space** and is carried to clip space by a
+**Model-View-Projection** matrix. The math is hand-rolled (no GLM) in the
+header-only `src/math/` module: `Mat4` is **column-major** (matching GLSL's
+`mat4` memory layout, so it copies into the uniform with no transpose) and
+`perspective()` produces depth in the **0…1** range SDL3's GPU API expects
+(Metal/Vulkan/D3D), not OpenGL's −1…1. The View matrix is identity for now (a
+real camera is Step 4); the camera distance is folded into the model translate.
+
+The MVP is a **per-draw constant**, so it travels via a **uniform buffer** rather
+than per-vertex attributes: `GpuRenderer::buildMvp()` builds it each frame (a
+time-based spin) and `SDL_PushGPUVertexUniformData(cmd, 0, …)` hands it to the
+vertex shader. SDL's SPIR-V convention puts vertex-stage uniform buffers in
+descriptor set 1 (`layout(set = 1, binding = 0)`), and `loadShader` is told the
+shader uses one uniform buffer.
+
+A **depth buffer** makes the solid cube correct: a depth texture (sized to match
+the swapchain, recreated on resize by `ensureDepthTexture`) is cleared to 1.0 each
+frame and attached to the render pass; the pipeline's depth test (`compare_op =
+LESS`, depth write on) keeps only the nearest fragment per pixel, so face draw
+order no longer matters. The projection's aspect term also fixes Step 2's stretch.
 
 ## Lifecycle & ownership
 
@@ -179,8 +207,11 @@ Future milestones slot into this structure without reshaping it:
 - **Step 2 (done):** `renderer/` grew GPU buffer/transfer helpers (`uploadToGpuBuffer`)
   and a `Vertex` type; geometry moved from the shader into vertex + index buffers with
   a described vertex layout.
-- **Step 3+:** a `math/` module (hand-rolled `vec`, `mat4`, `quat`) feeds MVP
-  matrices to shaders via uniform buffers; a depth buffer joins the render pass.
-  `renderFrame` likely splits into `begin/draw/end` once there are many draws.
+- **Step 3 (done):** a header-only `math/` module (hand-rolled `Vec`, `Mat4`) feeds an
+  MVP matrix to the shader via a uniform buffer; a depth buffer joined the render pass.
+  (Quaternions were deferred — no use case yet — per the "introduce when needed"
+  principle.)
 - **Step 4+:** `scene/` (camera, transforms, node hierarchy) sits above the
-  renderer and feeds it what to draw.
+  renderer and feeds it what to draw; the identity View matrix becomes a real camera,
+  and a delta-time clock drives motion. `renderFrame` likely splits into
+  `begin/draw/end` once there are many draws.

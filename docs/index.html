@@ -16,6 +16,7 @@
     <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
     <a class="navlink" href="02-first-triangle.html">First Triangle</a>
     <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
   </div>
 </nav>
 
@@ -49,6 +50,11 @@
       <p>GPU vs CPU memory, staging/transfer buffers and the copy pass, vertex input
       layouts, and index buffers — then the Step 2 code that draws a gradient quad.</p>
     </a>
+    <a class="card" href="04-3d-cube-mvp-and-depth.html">
+      <h3>3D Cube: MVP &amp; Depth →</h3>
+      <p>Hand-rolled vector/matrix math, the Model-View-Projection chain, uniform
+      buffers, and the depth buffer — then the Step 3 code that spins a 3D cube.</p>
+    </a>
   </div>
 
   <h2>Roadmap</h2>
@@ -64,7 +70,7 @@
       <tr><td>✅ <strong>0</strong></td><td><strong>Window + clear screen</strong></td><td>GPU device, swapchain, command buffer, render pass</td></tr>
       <tr><td>✅ <strong>1</strong></td><td><strong>First triangle</strong></td><td>Shaders, graphics pipeline, shader toolchain (<code>glslc</code> + <code>spirv-cross</code>)</td></tr>
       <tr><td>✅ <strong>2</strong></td><td><strong>Vertex/index buffers</strong></td><td>GPU buffers, transfer buffers, vertex layouts</td></tr>
-      <tr><td>3</td><td>3D cube + MVP + depth</td><td>hand-rolled <code>vec</code>/<code>mat4</code>, projection, depth testing</td></tr>
+      <tr><td>✅ <strong>3</strong></td><td><strong>3D cube + MVP + depth</strong></td><td>hand-rolled <code>vec</code>/<code>mat4</code>, projection, depth testing</td></tr>
       <tr><td>4</td><td>Camera + input movement</td><td>view matrix, delta-time, fly camera</td></tr>
       <tr><td>5</td><td>Meshes &amp; scene graph</td><td>model abstraction, node hierarchy</td></tr>
       <tr><td>6</td><td>Textures + Phong lighting</td><td>samplers, normals, uniform buffers</td></tr>

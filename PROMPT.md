@@ -49,3 +49,13 @@ referenced in `CLAUDE.md`.
 - Step 2 geometry: **a quad drawn with a vertex buffer + an index buffer** (over a
   triangle with only a vertex buffer), so the index buffer is genuinely meaningful
   (4 vertices reused 6 times).
+
+**Next milestone request (Step 3):**
+> Okay, work on the next step.
+
+**Decisions made (via clarifying questions):**
+- Cube motion: **auto-spin** (per-frame MVP from `SDL_GetTicks()`; the capture uses a
+  fixed angle), over a static angled view.
+- Quaternions: **deferred** until a milestone needs them, over implementing them now —
+  following the project's "introduce a subsystem only when needed" principle (Step 3
+  math is `Vec` + `Mat4` only). The view matrix is likewise deferred to Step 4.

@@ -5,6 +5,7 @@
 #include <cstring>  // std::memcpy
 
 #include "core/Log.hpp"
+#include "math/Mat4.hpp"
 #include "renderer/Shader.hpp"
 #include "renderer/Vertex.hpp"
 
@@ -69,7 +70,7 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     KOI_INFO("GPU device ready (backend: %s)", SDL_GetGPUDeviceDriver(device_));
 
     // ------------------------------------------------------------------------
-    //  3. Build the graphics pipeline that draws our quad. If this fails
+    //  3. Build the graphics pipeline that draws our cube. If this fails
     //     (e.g. compiled shaders missing) isValid() stays false and the Engine
     //     reports it.
     // ------------------------------------------------------------------------
@@ -79,7 +80,7 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     KOI_INFO("Graphics pipeline ready.");
 
     // ------------------------------------------------------------------------
-    //  4. Upload our geometry (the quad) into GPU buffers. If this fails,
+    //  4. Upload our geometry (the cube) into GPU buffers. If this fails,
     //     isValid() stays false and the Engine reports it.
     // ------------------------------------------------------------------------
     if (!createGeometry()) {
@@ -88,10 +89,30 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     KOI_INFO("Geometry uploaded (vertex + index buffers ready).");
 }
 
+// Pick a depth texture format the device supports as a depth-stencil target.
+// We prefer 32-bit float depth (most precise, universally supported on Metal),
+// then 24-bit, then 16-bit. Returns INVALID if somehow none work.
+static SDL_GPUTextureFormat chooseDepthFormat(SDL_GPUDevice* device) {
+    const SDL_GPUTextureFormat candidates[] = {
+        SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
+        SDL_GPU_TEXTUREFORMAT_D24_UNORM,
+        SDL_GPU_TEXTUREFORMAT_D16_UNORM,
+    };
+    for (const SDL_GPUTextureFormat fmt : candidates) {
+        if (SDL_GPUTextureSupportsFormat(device, fmt, SDL_GPU_TEXTURETYPE_2D,
+                                         SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET)) {
+            return fmt;
+        }
+    }
+    return SDL_GPU_TEXTUREFORMAT_INVALID;
+}
+
 bool GpuRenderer::createTrianglePipeline() {
     // Load the two halves of the programmable pipeline. loadShader picks the
     // compiled file matching this backend (MSL on Metal, SPIR-V on Vulkan).
-    SDL_GPUShader* vertexShader   = loadShader(device_, "triangle.vert", SDL_GPU_SHADERSTAGE_VERTEX);
+    // The vertex shader declares one uniform buffer (the MVP matrix); the
+    // fragment shader declares none.
+    SDL_GPUShader* vertexShader   = loadShader(device_, "triangle.vert", SDL_GPU_SHADERSTAGE_VERTEX, /*numUniformBuffers=*/1);
     SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT);
     if (vertexShader == nullptr || fragmentShader == nullptr) {
         // loadShader already logged the cause. Clean up whichever did load.
@@ -105,6 +126,17 @@ bool GpuRenderer::createTrianglePipeline() {
     // the swapchain so the colors are written correctly.
     SDL_GPUColorTargetDescription colorTargetDesc = {};
     colorTargetDesc.format = SDL_GetGPUSwapchainTextureFormat(device_, window_);
+
+    // Choose (once) the depth-buffer format this pipeline — and our per-frame
+    // depth textures — will use. The pipeline must know it up front so its depth
+    // test is compatible with the depth texture we attach each frame.
+    depthFormat_ = chooseDepthFormat(device_);
+    if (depthFormat_ == SDL_GPU_TEXTUREFORMAT_INVALID) {
+        KOI_ERROR("No supported depth texture format found.");
+        SDL_ReleaseGPUShader(device_, vertexShader);
+        SDL_ReleaseGPUShader(device_, fragmentShader);
+        return false;
+    }
 
     // ------------------------------------------------------------------------
     //  Vertex input layout — how the GPU reads one vertex out of the buffer.
@@ -123,10 +155,10 @@ bool GpuRenderer::createTrianglePipeline() {
     vertexBufferDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
 
     const SDL_GPUVertexAttribute vertexAttributes[2] = {
-        // location 0: inPosition (vec2) at the start of the vertex.
-        { /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+        // location 0: inPosition (vec3) at the start of the vertex.
+        { /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
           offsetof(Vertex, position) },
-        // location 1: inColor (vec3) right after the 2-float position.
+        // location 1: inColor (vec3) right after the 3-float position.
         { /*location=*/1, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
           offsetof(Vertex, color) },
     };
@@ -140,11 +172,23 @@ bool GpuRenderer::createTrianglePipeline() {
     pipelineInfo.vertex_input_state.num_vertex_attributes      = 2;
     // TRIANGLELIST = every 3 vertices form one independent triangle.
     pipelineInfo.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+
+    // Depth testing: enable it so the cube's near faces correctly hide its far
+    // faces. compare_op = LESS means "keep the new fragment only if its depth is
+    // smaller (closer) than what's already there"; we clear depth to 1.0 (far)
+    // each frame and write the winner's depth back. Without this, triangles would
+    // simply paint over each other in draw order and the cube would look wrong.
+    pipelineInfo.depth_stencil_state.enable_depth_test  = true;
+    pipelineInfo.depth_stencil_state.enable_depth_write = true;
+    pipelineInfo.depth_stencil_state.compare_op         = SDL_GPU_COMPAREOP_LESS;
+
     pipelineInfo.target_info.num_color_targets         = 1;
     pipelineInfo.target_info.color_target_descriptions = &colorTargetDesc;
-    // Everything else (blending, culling, depth) stays zero-initialized: no
-    // blending, no face culling, no depth test — exactly what a flat quad
-    // needs. We'll revisit these in later steps.
+    // Tell the pipeline it renders into a depth target too, and its format.
+    pipelineInfo.target_info.has_depth_stencil_target  = true;
+    pipelineInfo.target_info.depth_stencil_format      = depthFormat_;
+    // Blending and face culling stay at defaults (off): the depth test alone
+    // resolves visibility for our opaque cube. Culling is a later optimization.
 
     trianglePipeline_ = SDL_CreateGPUGraphicsPipeline(device_, &pipelineInfo);
 
@@ -230,27 +274,40 @@ SDL_GPUBuffer* GpuRenderer::uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
 }
 
 bool GpuRenderer::createGeometry() {
-    // The four unique corners of the quad, in NDC. With an index buffer we store
-    // each corner ONCE; the indices below reference them to build two triangles.
-    // (Without indices we'd need to repeat the two shared corners — 6 vertices
-    // instead of 4. That saving is exactly why index buffers exist, and it grows
-    // dramatically for real meshes where most vertices are shared by many faces.)
+    // The cube's 8 unique corners, centered on the origin (±0.5 on each axis) in
+    // MODEL space. Each corner's color is its position shifted into 0..1 — so the
+    // cube is literally the RGB color cube, and every corner is a distinct color
+    // (the (-,-,-) corner is black, (+,+,+) is white). The depth test + rotation
+    // are what make it read as solid and three-dimensional.
     //
-    //   3 ───────── 2     positions span -0.5..+0.5 so the quad sits centered;
-    //   │  ╲        │      colors are one per corner so the rasterizer blends a
-    //   │     ╲     │      smooth red/green/blue/yellow gradient across the face.
-    //   │        ╲  │
-    //   0 ───────── 1
-    constexpr std::array<Vertex, 4> vertices = {{
-        { { -0.5f, -0.5f }, { 1.0f, 0.0f, 0.0f } },  // 0: bottom-left  (red)
-        { {  0.5f, -0.5f }, { 0.0f, 1.0f, 0.0f } },  // 1: bottom-right (green)
-        { {  0.5f,  0.5f }, { 0.0f, 0.0f, 1.0f } },  // 2: top-right    (blue)
-        { { -0.5f,  0.5f }, { 1.0f, 1.0f, 0.0f } },  // 3: top-left     (yellow)
+    //        7───────6        Corner index = bits (x,y,z), - = -0.5, + = +0.5:
+    //       /│      /│          0:(-,-,-) 1:(+,-,-) 2:(+,+,-) 3:(-,+,-)
+    //      4───────5 │          4:(-,-,+) 5:(+,-,+) 6:(+,+,+) 7:(-,+,+)
+    //      │ 3─────│─2
+    //      │/      │/
+    //      0───────1
+    constexpr float n = -0.5f, p = 0.5f;
+    constexpr std::array<Vertex, 8> vertices = {{
+        { { n, n, n }, { 0.0f, 0.0f, 0.0f } },  // 0
+        { { p, n, n }, { 1.0f, 0.0f, 0.0f } },  // 1
+        { { p, p, n }, { 1.0f, 1.0f, 0.0f } },  // 2
+        { { n, p, n }, { 0.0f, 1.0f, 0.0f } },  // 3
+        { { n, n, p }, { 0.0f, 0.0f, 1.0f } },  // 4
+        { { p, n, p }, { 1.0f, 0.0f, 1.0f } },  // 5
+        { { p, p, p }, { 1.0f, 1.0f, 1.0f } },  // 6
+        { { n, p, p }, { 0.0f, 1.0f, 1.0f } },  // 7
     }};
 
-    // Two triangles (0,1,2) and (2,3,0) tile the quad. Note corners 0 and 2 are
-    // each used twice — the reuse the index buffer is built to exploit.
-    constexpr std::array<Uint16, 6> indices = { 0, 1, 2, 2, 3, 0 };
+    // 12 triangles (2 per face) referencing the 8 corners — 36 indices reusing
+    // 8 vertices, the index buffer's payoff. Each pair below is one cube face.
+    constexpr std::array<Uint16, 36> indices = {
+        0, 1, 2,  2, 3, 0,   // front  (z = -0.5)
+        1, 5, 6,  6, 2, 1,   // right  (x = +0.5)
+        5, 4, 7,  7, 6, 5,   // back   (z = +0.5)
+        4, 0, 3,  3, 7, 4,   // left   (x = -0.5)
+        3, 2, 6,  6, 7, 3,   // top    (y = +0.5)
+        4, 5, 1,  1, 0, 4,   // bottom (y = -0.5)
+    };
 
     vertexBuffer_ = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_VERTEX,
                                       vertices.data(),
@@ -263,7 +320,49 @@ bool GpuRenderer::createGeometry() {
     return vertexBuffer_ != nullptr && indexBuffer_ != nullptr;
 }
 
-void GpuRenderer::recordQuad(SDL_GPURenderPass* pass) const {
+// Choose a depth texture format the device supports — see chooseDepthFormat above.
+bool GpuRenderer::ensureDepthTexture(Uint32 width, Uint32 height) {
+    // Reuse the existing texture if it already matches the requested size.
+    if (depthTexture_ != nullptr && depthWidth_ == width && depthHeight_ == height) {
+        return true;
+    }
+
+    // Size changed (or first use): drop the old one and make a fresh depth target.
+    if (depthTexture_ != nullptr) {
+        SDL_ReleaseGPUTexture(device_, depthTexture_);
+        depthTexture_ = nullptr;
+    }
+
+    SDL_GPUTextureCreateInfo info = {};
+    info.type                 = SDL_GPU_TEXTURETYPE_2D;
+    info.format               = depthFormat_;
+    info.usage                = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+    info.width                = width;
+    info.height               = height;
+    info.layer_count_or_depth = 1;
+    info.num_levels           = 1;
+    depthTexture_ = SDL_CreateGPUTexture(device_, &info);
+    if (depthTexture_ == nullptr) {
+        KOI_ERROR("Failed to create depth texture (%ux%u): %s", width, height, SDL_GetError());
+        return false;
+    }
+    depthWidth_  = width;
+    depthHeight_ = height;
+    return true;
+}
+
+Mat4 GpuRenderer::buildMvp(float aspect, float angleRadians) const {
+    // Model: spin the cube (Y plus a slower X tilt so we see three faces) and
+    // push it away from the camera so it's in front of us. View is identity for
+    // now — a real camera arrives in Step 4 — so MVP collapses to Projection*Model.
+    const Mat4 model = translation({0.0f, 0.0f, -3.0f}) *
+                       rotationY(angleRadians) *
+                       rotationX(angleRadians * 0.6f);
+    const Mat4 projection = perspective(radians(60.0f), aspect, 0.1f, 100.0f);
+    return projection * model;
+}
+
+void GpuRenderer::recordCube(SDL_GPURenderPass* pass) const {
     // Switch the GPU to our pipeline, then point it at the geometry buffers.
     SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
 
@@ -282,8 +381,8 @@ void GpuRenderer::recordQuad(SDL_GPURenderPass* pass) const {
     SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
     // Indexed draw: for each of the `indexCount_` indices, the GPU looks up that
-    // entry in the index buffer and fetches the corresponding vertex. This is
-    // what turns our 4 stored vertices into 2 triangles (6 vertex fetches).
+    // entry in the index buffer and fetches the corresponding vertex. This turns
+    // our 8 stored corners into 12 triangles (36 index lookups).
     SDL_DrawGPUIndexedPrimitives(pass, indexCount_, /*num_instances=*/1,
                                  /*first_index=*/0, /*vertex_offset=*/0,
                                  /*first_instance=*/0);
@@ -300,6 +399,10 @@ GpuRenderer::~GpuRenderer() {
         if (indexBuffer_ != nullptr) {
             SDL_ReleaseGPUBuffer(device_, indexBuffer_);
             indexBuffer_ = nullptr;
+        }
+        if (depthTexture_ != nullptr) {
+            SDL_ReleaseGPUTexture(device_, depthTexture_);
+            depthTexture_ = nullptr;
         }
         if (trianglePipeline_ != nullptr) {
             SDL_ReleaseGPUGraphicsPipeline(device_, trianglePipeline_);
@@ -335,9 +438,12 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor) {
     //     swapchain's images and handed it back to us. This naturally paces our
     //     loop to the display's refresh rather than spinning uselessly.
     // ------------------------------------------------------------------------
+    //  We capture the acquired image's width/height: the depth buffer must match
+    //  its size, and the aspect ratio feeds the projection matrix.
     SDL_GPUTexture* swapchainTexture = nullptr;
+    Uint32 width = 0, height = 0;
     if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window_, &swapchainTexture,
-                                               /*width=*/nullptr, /*height=*/nullptr)) {
+                                               &width, &height)) {
         KOI_ERROR("Failed to acquire swapchain texture: %s", SDL_GetError());
         // Even on failure we must hand the command buffer back, or it leaks.
         SDL_SubmitGPUCommandBuffer(cmd);
@@ -347,15 +453,16 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor) {
     // The call can succeed yet return a null texture when there's nothing to
     // draw into — e.g. the window is minimized. That's not an error: we simply
     // skip the render pass this frame but still submit the (empty) buffer.
-    if (swapchainTexture != nullptr) {
+    if (swapchainTexture != nullptr && ensureDepthTexture(width, height)) {
         // --------------------------------------------------------------------
         //  3. Describe and begin a render pass.
         //     A render pass declares which texture(s) we're drawing into and
         //     what to do with their existing contents:
         //       load_op  = CLEAR  -> wipe to clear_color before drawing.
         //       store_op = STORE  -> keep the result so it can be displayed.
-        //     The clear gives us the dark-teal background; the quad is drawn
-        //     on top of it.
+        //     The clear gives us the dark-teal background; the cube is drawn
+        //     on top of it. The depth target is cleared to 1.0 (the far plane)
+        //     so every fragment initially passes the LESS test.
         // --------------------------------------------------------------------
         SDL_GPUColorTargetInfo colorTarget = {};
         colorTarget.texture     = swapchainTexture;
@@ -363,13 +470,31 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor) {
         colorTarget.load_op     = SDL_GPU_LOADOP_CLEAR;
         colorTarget.store_op    = SDL_GPU_STOREOP_STORE;
 
-        SDL_GPURenderPass* pass =
-            SDL_BeginGPURenderPass(cmd, &colorTarget, /*num_color_targets=*/1,
-                                   /*depth_stencil_target_info=*/nullptr);
+        SDL_GPUDepthStencilTargetInfo depthTarget = {};
+        depthTarget.texture          = depthTexture_;
+        depthTarget.clear_depth      = 1.0f;
+        depthTarget.load_op          = SDL_GPU_LOADOP_CLEAR;
+        depthTarget.store_op         = SDL_GPU_STOREOP_DONT_CARE;  // not needed after the frame
+        // We have no stencil (depth-only format), but these default to LOAD (enum
+        // value 0). LOAD is incompatible with cycle=true, so set them explicitly.
+        depthTarget.stencil_load_op  = SDL_GPU_LOADOP_DONT_CARE;
+        depthTarget.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+        depthTarget.cycle            = true;  // safe to reuse: we clear it every frame
 
-        // Draw the quad from its GPU buffers (bind pipeline + vertex/index
-        // buffers + indexed draw). Shared with captureFrame so both paths match.
-        recordQuad(pass);
+        SDL_GPURenderPass* pass =
+            SDL_BeginGPURenderPass(cmd, &colorTarget, /*num_color_targets=*/1, &depthTarget);
+
+        // Build this frame's MVP from a time-based angle (a gentle auto-spin) and
+        // push it to the vertex shader's uniform slot 0. Full delta-time + a fly
+        // camera are Step 4; SDL_GetTicks() is enough to animate the cube now.
+        const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
+        const float seconds = static_cast<float>(SDL_GetTicks()) / 1000.0f;
+        const Mat4 mvp = buildMvp(aspect, seconds * 0.8f);
+        SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &mvp, sizeof(mvp));
+
+        // Draw the cube from its GPU buffers. Shared with captureFrame so both
+        // paths match.
+        recordCube(pass);
 
         SDL_EndGPURenderPass(pass);
     }
@@ -384,8 +509,8 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor) {
 }
 
 bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor) {
-    // Fixed capture resolution. Our quad is defined in NDC, so it looks the
-    // same at any size; a fixed size keeps the output deterministic and small.
+    // Fixed capture resolution: keeps the output deterministic and small. The
+    // aspect ratio (1280/720) feeds the projection so the cube isn't distorted.
     constexpr Uint32 kWidth  = 1280;
     constexpr Uint32 kHeight = 720;
 
@@ -425,7 +550,15 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor) {
         return false;
     }
 
-    // 3. Record: draw the quad into the off-screen texture, then a copy pass
+    // A matching depth target, so the off-screen cube is depth-tested exactly
+    // like the on-screen one.
+    if (!ensureDepthTexture(kWidth, kHeight)) {
+        SDL_ReleaseGPUTransferBuffer(device_, transfer);
+        SDL_ReleaseGPUTexture(device_, target);
+        return false;
+    }
+
+    // 3. Record: draw the cube into the off-screen texture, then a copy pass
     //    that downloads that texture into the transfer buffer.
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
 
@@ -434,8 +567,23 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor) {
     colorTarget.clear_color = clearColor;
     colorTarget.load_op     = SDL_GPU_LOADOP_CLEAR;
     colorTarget.store_op    = SDL_GPU_STOREOP_STORE;
-    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, nullptr);
-    recordQuad(pass);
+
+    SDL_GPUDepthStencilTargetInfo depthTarget = {};
+    depthTarget.texture          = depthTexture_;
+    depthTarget.clear_depth      = 1.0f;
+    depthTarget.load_op          = SDL_GPU_LOADOP_CLEAR;
+    depthTarget.store_op         = SDL_GPU_STOREOP_DONT_CARE;
+    depthTarget.stencil_load_op  = SDL_GPU_LOADOP_DONT_CARE;
+    depthTarget.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    depthTarget.cycle            = true;
+
+    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, &depthTarget);
+    // Fixed framing angle (not time-based) so the captured image is deterministic
+    // — enough rotation to reveal three faces and prove the depth test.
+    constexpr float kCaptureAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
+    const Mat4 mvp = buildMvp(kCaptureAspect, 0.6f);
+    SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &mvp, sizeof(mvp));
+    recordCube(pass);
     SDL_EndGPURenderPass(pass);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);

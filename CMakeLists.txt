@@ -113,14 +113,15 @@ target_link_libraries(koi-engine PRIVATE koi_core koi_warnings)
 # ----------------------------------------------------------------------------
 #  koi-tests — the doctest-based test runner.
 #  Pure, headless unit tests (no GPU/window) covering the logic we can isolate:
-#  shader-variant selection, color-format mapping, and the vertex layout
-#  contract. Broader coverage arrives with the hand-rolled math library (Step 3).
+#  shader-variant selection, color-format mapping, the vertex layout contract,
+#  and (Step 3) the hand-rolled vector/matrix math.
 # ----------------------------------------------------------------------------
 enable_testing()
 add_executable(koi-tests
     tests/test_core.cpp
     tests/test_shader.cpp
     tests/test_vertex.cpp
+    tests/test_math.cpp
 )
 target_link_libraries(koi-tests PRIVATE koi_core doctest::doctest koi_warnings)
 add_test(NAME koi-tests COMMAND koi-tests)
