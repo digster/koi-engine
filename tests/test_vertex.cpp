@@ -23,35 +23,37 @@
 using koi::Vertex;
 
 TEST_CASE("Vertex is tightly packed so its size is the buffer pitch") {
-    // position (3 floats) + color (3 floats) = 6 floats = 24 bytes, no padding.
-    // Step 3 widened position from 2D to 3D, so this grew from 20 to 24.
-    CHECK(sizeof(Vertex) == 24);
+    // position (3) + color (3) + uv (2) = 8 floats = 32 bytes, no padding.
+    // Step 3 widened position to 3D (20→24); Step 6 appended a 2D uv (24→32).
+    CHECK(sizeof(Vertex) == 32);
     CHECK(sizeof(float) == 4);
 }
 
 TEST_CASE("Vertex attribute offsets match the pipeline's vertex layout") {
-    // These offsets are what createTrianglePipeline() passes as the two FLOAT3
-    // attribute offsets (and what triangle.vert reads at location 0 / 1).
+    // These offsets are what createTrianglePipeline() passes as the three attribute
+    // offsets (and what triangle.vert reads at location 0 / 1 / 2).
     CHECK(offsetof(Vertex, position) == 0);
     CHECK(offsetof(Vertex, color) == 12);
+    CHECK(offsetof(Vertex, uv) == 24);
 }
 
-TEST_CASE("Cube index set references 8 vertices to build 12 triangles") {
-    // Mirrors GpuRenderer::createGeometry(): 6 faces × 2 triangles tile the cube,
-    // reusing its 8 corners — the reuse an index buffer exists for.
+TEST_CASE("Cube index set references 24 vertices to build 12 triangles") {
+    // Mirrors makeCubeMesh(): since Step 6 the cube is 24 vertices (6 faces × 4
+    // unshared corners, so each face can carry its own UVs), and each face's 4
+    // consecutive vertices form 2 triangles: {4f, 4f+1, 4f+2, 4f+2, 4f+3, 4f}.
     constexpr std::array<unsigned short, 36> indices = {
-        0, 1, 2,  2, 3, 0,   // front
-        1, 5, 6,  6, 2, 1,   // right
-        5, 4, 7,  7, 6, 5,   // back
-        4, 0, 3,  3, 7, 4,   // left
-        3, 2, 6,  6, 7, 3,   // top
-        4, 5, 1,  1, 0, 4,   // bottom
+         0,  1,  2,   2,  3,  0,   // front
+         4,  5,  6,   6,  7,  4,   // right
+         8,  9, 10,  10, 11,  8,   // back
+        12, 13, 14,  14, 15, 12,   // left
+        16, 17, 18,  18, 19, 16,   // top
+        20, 21, 22,  22, 23, 20,   // bottom
     };
 
     CHECK(indices.size() == 36);  // 12 triangles × 3 vertices
 
-    // Every index must point at one of the 8 stored cube corners (0..7).
+    // Every index must point at one of the 24 stored cube vertices (0..23).
     for (const unsigned short i : indices) {
-        CHECK(i < 8);
+        CHECK(i < 24);
     }
 }

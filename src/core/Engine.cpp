@@ -3,12 +3,14 @@
 #include <SDL3/SDL.h>
 
 #include <memory>
+#include <string>
 
 #include "core/Log.hpp"
 #include "core/Window.hpp"
 #include "renderer/GpuRenderer.hpp"
 #include "renderer/Mesh.hpp"
 #include "renderer/Primitives.hpp"
+#include "renderer/Texture.hpp"
 #include "scene/Node.hpp"
 
 namespace koi {
@@ -60,6 +62,16 @@ bool Engine::init(const Config& config) {
     // The renderer is ready, so it can now manufacture meshes. Build the scene
     // graph that the main loop will animate and the renderer will draw.
     if (!buildScene()) {
+        shutdown();
+        return false;
+    }
+
+    // Load the texture the scene is sampled from (a checkerboard / UV grid),
+    // resolved relative to the executable — the same convention the shaders use.
+    const std::string texturePath =
+        std::string(SDL_GetBasePath() ? SDL_GetBasePath() : "") + "assets/uv_grid.bmp";
+    texture_ = renderer_->loadTexture(texturePath.c_str());
+    if (!texture_) {
         shutdown();
         return false;
     }
@@ -134,7 +146,7 @@ void Engine::run() {
         // Resolve the scene's world matrices once (the animation hasn't run, so
         // this captures the deterministic t = 0 pose) before drawing it off-screen.
         sceneRoot_->updateWorldTransforms();
-        if (renderer_->captureFrame(capturePath, kClearColor, camera_.viewMatrix(), *sceneRoot_)) {
+        if (renderer_->captureFrame(capturePath, kClearColor, camera_.viewMatrix(), *sceneRoot_, *texture_)) {
             KOI_INFO("Captured frame to '%s'.", capturePath);
         } else {
             KOI_ERROR("Frame capture failed.");
@@ -193,7 +205,7 @@ void Engine::run() {
         // Propagate transforms down the tree (parent → child → grandchild) so every
         // node's cached world matrix is current, THEN draw.
         sceneRoot_->updateWorldTransforms();
-        renderer_->renderFrame(kClearColor, camera_.viewMatrix(), *sceneRoot_);
+        renderer_->renderFrame(kClearColor, camera_.viewMatrix(), *sceneRoot_, *texture_);
 
         if (maxFrames != 0 && ++frame >= maxFrames) {
             KOI_INFO("Reached KOI_MAX_FRAMES=%llu — exiting.",
@@ -247,13 +259,14 @@ void Engine::shutdown() {
         return;  // already torn down (or never initialized)
     }
 
-    // Destroy in reverse order of creation. The ORDER HERE MATTERS: the scene
-    // holds the meshes, and each mesh frees its GPU buffers through the renderer's
-    // device — so the scene must die BEFORE the renderer destroys that device.
-    // (Resetting a unique_ptr runs the held object's destructor immediately.)
+    // Destroy in reverse order of creation. The ORDER HERE MATTERS: the scene and
+    // the texture each hold GPU resources freed through the renderer's device — so
+    // they must die BEFORE the renderer destroys that device. (Resetting a smart
+    // pointer runs the held object's destructor immediately.)
     sceneRoot_.reset();      // frees all nodes + meshes (the meshes' GPU buffers)
     hub_     = nullptr;      // dangling now that the tree is gone
     spinner_ = nullptr;
+    texture_.reset();        // frees the texture's GPU image
     renderer_.reset();       // detaches the swapchain, then destroys the device
     window_.reset();
 

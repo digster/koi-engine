@@ -94,6 +94,7 @@ add_library(koi_core STATIC
     src/renderer/Mesh.cpp
     src/renderer/Primitives.cpp
     src/renderer/Shader.cpp
+    src/renderer/Texture.cpp
     src/scene/Camera.cpp
     src/scene/Node.cpp
 )
@@ -190,3 +191,25 @@ koi_add_shader(triangle.frag)
 # up-to-date compiled shaders next to it.
 add_custom_target(koi_shaders ALL DEPENDS ${KOI_SHADER_OUTPUTS})
 add_dependencies(koi-engine koi_shaders)
+
+# ----------------------------------------------------------------------------
+#  Assets — copied (not compiled) next to the executable.
+#  Step 6 loads a texture image at runtime via SDL_GetBasePath() + "assets/...",
+#  so the source image under assets/ must sit beside the binary in build/assets/.
+#  We mirror the shader setup: a copy command per asset + an ALL target the app
+#  depends on, so the asset is always present and up to date.
+# ----------------------------------------------------------------------------
+set(ASSET_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets)
+set(ASSET_OUT_DIR ${CMAKE_BINARY_DIR}/assets)
+file(MAKE_DIRECTORY ${ASSET_OUT_DIR})
+
+add_custom_command(
+    OUTPUT  ${ASSET_OUT_DIR}/uv_grid.bmp
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${ASSET_SRC_DIR}/uv_grid.bmp ${ASSET_OUT_DIR}/uv_grid.bmp
+    DEPENDS ${ASSET_SRC_DIR}/uv_grid.bmp
+    COMMENT "copy  uv_grid.bmp -> build/assets"
+    VERBATIM)
+
+add_custom_target(koi_assets ALL DEPENDS ${ASSET_OUT_DIR}/uv_grid.bmp)
+add_dependencies(koi-engine koi_assets)

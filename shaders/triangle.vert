@@ -14,6 +14,9 @@
 // inPosition is now a vec3: the cube lives in real 3D space.
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inColor;
+// Step 6: a 2D texture coordinate per vertex. The rasterizer interpolates it across
+// the triangle so each fragment knows where to look in the texture.
+layout(location = 2) in vec2 inUV;
 
 // --- Per-draw uniform (the same for every vertex this draw) ----------------
 // A uniform buffer holds values constant across the whole draw call, unlike the
@@ -26,10 +29,12 @@ layout(set = 1, binding = 0) uniform UBO {
 };
 
 layout(location = 0) out vec3 vColor;
+layout(location = 1) out vec2 vUV;
 
 void main() {
     // Promote the 3D position to homogeneous coordinates (w = 1, marking it a
     // point) and transform it into clip space. The GPU does the w-divide next.
     gl_Position = mvp * vec4(inPosition, 1.0);
     vColor = inColor;
+    vUV = inUV;  // pass the texture coordinate straight through to the fragment stage
 }

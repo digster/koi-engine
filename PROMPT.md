@@ -84,3 +84,19 @@ referenced in `CLAUDE.md`.
 - Still **deferred** (per "introduce a subsystem only when needed"): quaternions
   (`Transform` uses Euler angles, like `Camera`) and the `renderFrame` begin/draw/end
   split. No shader/vertex-format change — lighting/textures are Step 6.
+
+**Next milestone request (Step 6):**
+> Okay, work on the next step.
+
+**Decisions made (via clarifying question):**
+- Scope: **textures first** (over textures-only-vs-lighting-first-vs-both). The roadmap's
+  "Textures + Phong lighting" is two features with different infrastructure, so per the
+  "small steps" principle it was split: **Step 6 Textures, Step 7 Phong lighting** (Models/
+  shadows shifted to Step 8+). Roadmaps in README + docs updated.
+- Layering (consistent with Step 5): `Texture` in **`renderer/`** (a GPU resource, made by
+  the renderer's `loadTexture`); the **sampler** is renderer-owned reusable state; the
+  *Engine* owns the `Texture` and passes it to the renderer each frame. One texture for the
+  whole scene — per-mesh materials are a later step.
+- Image: load a committed `assets/uv_grid.bmp` via `SDL_LoadBMP` (no SDL_image dep), copied
+  next to the binary by a new CMake `koi_assets` target; sampler uses REPEAT so the floor
+  tiles. Cube split 8→24 verts for per-face UVs.

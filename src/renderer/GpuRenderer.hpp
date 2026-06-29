@@ -27,8 +27,9 @@
 
 namespace koi {
 
-class Mesh;  // manufactured by createMesh; full definition in renderer/Mesh.hpp
-class Node;  // the scene-graph root we traverse to draw; scene/Node.hpp
+class Mesh;     // manufactured by createMesh; full definition in renderer/Mesh.hpp
+class Node;     // the scene-graph root we traverse to draw; scene/Node.hpp
+class Texture;  // manufactured by loadTexture; full definition in renderer/Texture.hpp
 
 // Map a GPU color-target format to the equivalent SDL surface pixel format, so
 // downloaded pixels can be wrapped in an SDL_Surface and saved. Pure function
@@ -53,11 +54,12 @@ public:
     GpuRenderer(const GpuRenderer&) = delete;
     GpuRenderer& operator=(const GpuRenderer&) = delete;
 
-    // Valid once the device AND the pipeline are ready, so the Engine aborts with
-    // a clear message if (e.g.) the compiled shaders are missing. The renderer no
-    // longer owns geometry — meshes are created separately via createMesh.
+    // Valid once the device, the pipeline, AND the shared sampler are ready, so the
+    // Engine aborts with a clear message if (e.g.) the compiled shaders are missing.
+    // The renderer owns no geometry or textures — those are created separately via
+    // createMesh / loadTexture.
     [[nodiscard]] bool isValid() const {
-        return device_ != nullptr && trianglePipeline_ != nullptr;
+        return device_ != nullptr && trianglePipeline_ != nullptr && sampler_ != nullptr;
     }
 
     // Upload geometry into a new Mesh and return it (shared, so many scene nodes
@@ -68,19 +70,26 @@ public:
     [[nodiscard]] std::shared_ptr<Mesh> createMesh(std::span<const Vertex> vertices,
                                                    std::span<const Uint16> indices);
 
+    // Load an image file (BMP) from `path` and upload it into a new GPU Texture
+    // (shared, so it could be reused by many draws). Returns nullptr (after logging)
+    // on failure. Like createMesh, this is the only place textures are born — it
+    // holds both the device and the upload helper.
+    [[nodiscard]] std::shared_ptr<Texture> loadTexture(const char* path);
+
     // Render exactly one frame: acquire a swapchain image, clear it (and the depth
-    // buffer), draw every mesh in `sceneRoot` (each through its own world matrix)
-    // as seen through the camera `view`, and present it.
+    // buffer), bind `texture`, draw every mesh in `sceneRoot` (each through its own
+    // world matrix) as seen through the camera `view`, and present it.
     void renderFrame(const SDL_FColor& clearColor, const Mat4& view,
-                     const Node& sceneRoot);
+                     const Node& sceneRoot, const Texture& texture);
 
     // Render one frame into an OFF-SCREEN texture (not the window), download the
     // pixels back to the CPU, and save them to `path` as a BMP. Our headless
     // visual-debugging tool: it captures exactly what the engine draws (the same
-    // `sceneRoot` through `view`) without a visible window. Returns false (after
-    // logging) on failure. See docs / CLAUDE.md.
+    // `sceneRoot` + `texture` through `view`) without a visible window. Returns
+    // false (after logging) on failure. See docs / CLAUDE.md.
     [[nodiscard]] bool captureFrame(const char* path, const SDL_FColor& clearColor,
-                                    const Mat4& view, const Node& sceneRoot);
+                                    const Mat4& view, const Node& sceneRoot,
+                                    const Texture& texture);
 
 private:
     // Build the graphics pipeline (loads + compiles shaders, and describes the
@@ -95,13 +104,24 @@ private:
     SDL_GPUBuffer* uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
                                      const void* data, Uint32 size);
 
+    // Create a 2D sampled texture (R8G8B8A8_UNORM) of (width, height) and upload
+    // `pixels` (tightly packed RGBA, 4 bytes/texel) into it via a staging transfer
+    // buffer + copy pass — the 2D mirror of uploadToGpuBuffer. Returns nullptr
+    // (after logging) on failure. The helper behind loadTexture.
+    SDL_GPUTexture* uploadToGpuTexture(const void* pixels, Uint32 width, Uint32 height);
+
+    // Create the one sampler all textures are read through (linear filtering,
+    // REPEAT wrap so tiled UVs work). Called once from the constructor.
+    bool createSampler();
+
     // Record the whole scene into an already-begun render pass: bind the pipeline
-    // once, build the projection from `aspect`, then walk `root` drawing each
-    // node's mesh with its own Model-View-Projection uniform (proj·view·world).
-    // Shared by the live (renderFrame) and off-screen (captureFrame) paths so they
-    // can't drift. `cmd` is needed to push the per-node uniform.
+    // and the texture once, build the projection from `aspect`, then walk `root`
+    // drawing each node's mesh with its own Model-View-Projection uniform
+    // (proj·view·world). Shared by the live (renderFrame) and off-screen
+    // (captureFrame) paths so they can't drift. `cmd` pushes the per-node uniform.
     void recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                     const Node& root, const Mat4& view, float aspect) const;
+                     const Node& root, const Mat4& view, float aspect,
+                     const Texture& texture) const;
 
     // Recursive worker for recordScene: draw `node`'s mesh (if any) using the
     // already-combined `projView` matrix, then recurse into its children. Reads
@@ -124,6 +144,12 @@ private:
     // GPU can switch to quickly. All meshes share this one pipeline; only the
     // bound buffers and the MVP uniform change per draw.
     SDL_GPUGraphicsPipeline* trianglePipeline_ = nullptr;  // owned
+
+    // The one sampler every texture is read through: it describes HOW to sample
+    // (linear filtering between texels, REPEAT addressing past the [0,1] edges so
+    // tiled UVs repeat). Reusable device state, independent of any particular
+    // texture, so the renderer owns a single shared one. Created in the constructor.
+    SDL_GPUSampler* sampler_ = nullptr;  // owned
 
     // The depth buffer: a texture the same size as the color target that stores,
     // per pixel, the depth of the nearest fragment drawn so far. With the depth

@@ -3,11 +3,13 @@
 #include <cstddef>  // offsetof
 #include <cstring>  // std::memcpy
 #include <memory>   // std::make_shared
+#include <vector>   // std::vector (repack texture rows to a tight pitch)
 
 #include "core/Log.hpp"
 #include "math/Mat4.hpp"
 #include "renderer/Mesh.hpp"
 #include "renderer/Shader.hpp"
+#include "renderer/Texture.hpp"
 #include "renderer/Vertex.hpp"
 #include "scene/Node.hpp"
 
@@ -81,9 +83,17 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     }
     KOI_INFO("Graphics pipeline ready.");
 
-    // Note: no geometry is uploaded here anymore. The renderer is now a factory
-    // for meshes (createMesh) — the Engine builds the cube + plane after this
-    // constructor returns and hangs them off the scene graph.
+    // ------------------------------------------------------------------------
+    //  4. Create the shared sampler that every texture is read through. If this
+    //     fails, isValid() stays false and the Engine reports it.
+    // ------------------------------------------------------------------------
+    if (!createSampler()) {
+        return;
+    }
+
+    // Note: no geometry or textures are uploaded here. The renderer is a factory
+    // for meshes (createMesh) and textures (loadTexture) — the Engine builds the
+    // cube + plane + texture after this constructor returns and binds them.
 }
 
 // Pick a depth texture format the device supports as a depth-stencil target.
@@ -110,7 +120,7 @@ bool GpuRenderer::createTrianglePipeline() {
     // The vertex shader declares one uniform buffer (the MVP matrix); the
     // fragment shader declares none.
     SDL_GPUShader* vertexShader   = loadShader(device_, "triangle.vert", SDL_GPU_SHADERSTAGE_VERTEX, /*numUniformBuffers=*/1);
-    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT);
+    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/0, /*numSamplers=*/1);
     if (vertexShader == nullptr || fragmentShader == nullptr) {
         // loadShader already logged the cause. Clean up whichever did load.
         if (vertexShader != nullptr)   SDL_ReleaseGPUShader(device_, vertexShader);
@@ -151,13 +161,16 @@ bool GpuRenderer::createTrianglePipeline() {
     vertexBufferDesc.pitch      = static_cast<Uint32>(sizeof(Vertex));
     vertexBufferDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
 
-    const SDL_GPUVertexAttribute vertexAttributes[2] = {
+    const SDL_GPUVertexAttribute vertexAttributes[3] = {
         // location 0: inPosition (vec3) at the start of the vertex.
         { /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
           offsetof(Vertex, position) },
         // location 1: inColor (vec3) right after the 3-float position.
         { /*location=*/1, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
           offsetof(Vertex, color) },
+        // location 2: inUV (vec2) right after the color — Step 6's texture coords.
+        { /*location=*/2, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+          offsetof(Vertex, uv) },
     };
 
     SDL_GPUGraphicsPipelineCreateInfo pipelineInfo = {};
@@ -166,7 +179,7 @@ bool GpuRenderer::createTrianglePipeline() {
     pipelineInfo.vertex_input_state.vertex_buffer_descriptions = &vertexBufferDesc;
     pipelineInfo.vertex_input_state.num_vertex_buffers         = 1;
     pipelineInfo.vertex_input_state.vertex_attributes          = vertexAttributes;
-    pipelineInfo.vertex_input_state.num_vertex_attributes      = 2;
+    pipelineInfo.vertex_input_state.num_vertex_attributes      = 3;
     // TRIANGLELIST = every 3 vertices form one independent triangle.
     pipelineInfo.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
 
@@ -196,6 +209,31 @@ bool GpuRenderer::createTrianglePipeline() {
 
     if (trianglePipeline_ == nullptr) {
         KOI_ERROR("Failed to create graphics pipeline: %s", SDL_GetError());
+        return false;
+    }
+    return true;
+}
+
+bool GpuRenderer::createSampler() {
+    // A SAMPLER is the "how to read a texture" object — entirely separate from any
+    // texture's pixel data, which is why one shared sampler serves every texture.
+    // Two settings matter most here:
+    //   * filter: LINEAR blends the four nearest texels for a smooth look (vs
+    //     NEAREST, which picks one texel and looks blocky when magnified).
+    //   * address mode: REPEAT wraps texture coordinates outside [0,1] back into
+    //     range, so a UV running 0..N tiles the image N times — that's what lets
+    //     the ground plane repeat the checkerboard across the floor.
+    SDL_GPUSamplerCreateInfo info = {};
+    info.min_filter     = SDL_GPU_FILTER_LINEAR;   // minification (texture shrunk)
+    info.mag_filter     = SDL_GPU_FILTER_LINEAR;   // magnification (texture enlarged)
+    info.mipmap_mode    = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+    info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+
+    sampler_ = SDL_CreateGPUSampler(device_, &info);
+    if (sampler_ == nullptr) {
+        KOI_ERROR("Failed to create sampler: %s", SDL_GetError());
         return false;
     }
     return true;
@@ -270,6 +308,76 @@ SDL_GPUBuffer* GpuRenderer::uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
     return buffer;
 }
 
+SDL_GPUTexture* GpuRenderer::uploadToGpuTexture(const void* pixels, Uint32 width,
+                                                Uint32 height) {
+    // The 2D sibling of uploadToGpuBuffer: same staging dance (CPU-visible transfer
+    // buffer → copy pass → GPU resource), but the destination is a texture and the
+    // copy is a texture region. (captureFrame does the reverse to read pixels back.)
+
+    // 1. The destination: a 2D texture we can sample in a shader.
+    SDL_GPUTextureCreateInfo texInfo = {};
+    texInfo.type                 = SDL_GPU_TEXTURETYPE_2D;
+    texInfo.format               = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;  // 8-bit RGBA
+    texInfo.usage                = SDL_GPU_TEXTUREUSAGE_SAMPLER;          // read in a shader
+    texInfo.width                = width;
+    texInfo.height               = height;
+    texInfo.layer_count_or_depth = 1;
+    texInfo.num_levels           = 1;  // a single mip level — no mipmaps yet
+    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device_, &texInfo);
+    if (texture == nullptr) {
+        KOI_ERROR("uploadToGpuTexture: failed to create texture: %s", SDL_GetError());
+        return nullptr;
+    }
+
+    // 2. A CPU-visible UPLOAD transfer buffer holding the tightly-packed RGBA pixels.
+    const Uint32 byteSize = width * height * 4;  // 4 bytes per texel
+    SDL_GPUTransferBufferCreateInfo tbInfo = {};
+    tbInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    tbInfo.size  = byteSize;
+    SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device_, &tbInfo);
+    if (transfer == nullptr) {
+        KOI_ERROR("uploadToGpuTexture: failed to create transfer buffer: %s", SDL_GetError());
+        SDL_ReleaseGPUTexture(device_, texture);
+        return nullptr;
+    }
+
+    // 3. Map, copy the pixels in, unmap.
+    void* mapped = SDL_MapGPUTransferBuffer(device_, transfer, /*cycle=*/false);
+    if (mapped == nullptr) {
+        KOI_ERROR("uploadToGpuTexture: failed to map transfer buffer: %s", SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(device_, transfer);
+        SDL_ReleaseGPUTexture(device_, texture);
+        return nullptr;
+    }
+    std::memcpy(mapped, pixels, byteSize);
+    SDL_UnmapGPUTransferBuffer(device_, transfer);
+
+    // 4. Record + submit a copy pass that uploads the staging pixels into the
+    //    texture. pixels_per_row/rows_per_layer describe the SOURCE layout (tightly
+    //    packed); the region describes the DESTINATION rectangle.
+    SDL_GPUCommandBuffer* cmd  = SDL_AcquireGPUCommandBuffer(device_);
+    SDL_GPUCopyPass*      copy = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureTransferInfo src = {};
+    src.transfer_buffer = transfer;
+    src.offset          = 0;
+    src.pixels_per_row  = width;
+    src.rows_per_layer  = height;
+    SDL_GPUTextureRegion dst = {};
+    dst.texture = texture;
+    dst.w       = width;
+    dst.h       = height;
+    dst.d       = 1;
+    SDL_UploadToGPUTexture(copy, &src, &dst, /*cycle=*/false);
+    SDL_EndGPUCopyPass(copy);
+
+    // One-time init upload: no fence needed (command buffers run in submission
+    // order, so the later draw sees the finished copy), and releasing the transfer
+    // buffer now is safe (SDL defers the free until the GPU is done).
+    SDL_SubmitGPUCommandBuffer(cmd);
+    SDL_ReleaseGPUTransferBuffer(device_, transfer);
+    return texture;
+}
+
 std::shared_ptr<Mesh> GpuRenderer::createMesh(std::span<const Vertex> vertices,
                                               std::span<const Uint16> indices) {
     // Upload both halves of the geometry through the same staging path the cube
@@ -294,6 +402,53 @@ std::shared_ptr<Mesh> GpuRenderer::createMesh(std::span<const Vertex> vertices,
     // the same device) when the last shared_ptr to it drops.
     return std::make_shared<Mesh>(device_, vbo, ibo,
                                   static_cast<Uint32>(indices.size()));
+}
+
+std::shared_ptr<Texture> GpuRenderer::loadTexture(const char* path) {
+    // 1. Load the image file. SDL_LoadBMP reads the BMP format with no extra
+    //    library (so we avoid an SDL_image dependency) and returns a CPU surface.
+    SDL_Surface* surface = SDL_LoadBMP(path);
+    if (surface == nullptr) {
+        KOI_ERROR("loadTexture: SDL_LoadBMP('%s') failed: %s", path, SDL_GetError());
+        return nullptr;
+    }
+
+    // 2. Convert to a known 32-bit RGBA layout that matches our GPU texture format.
+    //    SDL_PIXELFORMAT_RGBA32 is an endian-aware alias whose byte order lines up
+    //    with SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, so the bytes need no swizzling
+    //    regardless of how the BMP stored its pixels.
+    SDL_Surface* rgba = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
+    SDL_DestroySurface(surface);
+    if (rgba == nullptr) {
+        KOI_ERROR("loadTexture: SDL_ConvertSurface failed: %s", SDL_GetError());
+        return nullptr;
+    }
+
+    const Uint32 width  = static_cast<Uint32>(rgba->w);
+    const Uint32 height = static_cast<Uint32>(rgba->h);
+
+    // 3. Repack into a tightly-packed (pitch == width*4) buffer. A surface's `pitch`
+    //    (bytes per row) can include padding; the GPU uploader wants no gaps, so we
+    //    copy row by row. (For our 256×256 RGBA image the pitch is already tight, but
+    //    this keeps the loader correct for any width.)
+    std::vector<Uint8> packed(static_cast<size_t>(width) * height * 4);
+    const Uint8* srcRows = static_cast<const Uint8*>(rgba->pixels);
+    for (Uint32 row = 0; row < height; ++row) {
+        std::memcpy(packed.data() + static_cast<size_t>(row) * width * 4,
+                    srcRows + static_cast<size_t>(row) * static_cast<size_t>(rgba->pitch),
+                    static_cast<size_t>(width) * 4);
+    }
+    SDL_DestroySurface(rgba);
+
+    // 4. Upload the pixels into a GPU texture and wrap it in a Texture (which now
+    //    owns it and frees it via the same device when its last shared_ptr drops).
+    SDL_GPUTexture* gpuTex = uploadToGpuTexture(packed.data(), width, height);
+    if (gpuTex == nullptr) {
+        return nullptr;  // uploadToGpuTexture already logged the cause
+    }
+
+    KOI_INFO("Loaded texture '%s' (%ux%u).", path, width, height);
+    return std::make_shared<Texture>(device_, gpuTex, width, height);
 }
 
 // Choose a depth texture format the device supports — see chooseDepthFormat above.
@@ -328,10 +483,19 @@ bool GpuRenderer::ensureDepthTexture(Uint32 width, Uint32 height) {
 }
 
 void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                              const Node& root, const Mat4& view, float aspect) const {
+                              const Node& root, const Mat4& view, float aspect,
+                              const Texture& texture) const {
     // Bind the one pipeline every mesh shares. Per-mesh vertex/index buffers are
     // bound inside recordNode, just before each node's draw.
     SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
+
+    // Bind the texture + sampler ONCE for the whole scene (every mesh samples the
+    // same texture in this step). The pair goes to fragment sampler slot 0, which
+    // the fragment shader reads as the sampler2D at set=2, binding=0.
+    SDL_GPUTextureSamplerBinding samplerBinding = {};
+    samplerBinding.texture = texture.handle();
+    samplerBinding.sampler = sampler_;
+    SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, &samplerBinding, /*num_bindings=*/1);
 
     // The projection depends only on the viewport, and the view only on the
     // camera, so combine them ONCE here. Each node then only adds one multiply by
@@ -386,6 +550,10 @@ GpuRenderer::~GpuRenderer() {
             SDL_ReleaseGPUTexture(device_, depthTexture_);
             depthTexture_ = nullptr;
         }
+        if (sampler_ != nullptr) {
+            SDL_ReleaseGPUSampler(device_, sampler_);
+            sampler_ = nullptr;
+        }
         if (trianglePipeline_ != nullptr) {
             SDL_ReleaseGPUGraphicsPipeline(device_, trianglePipeline_);
             trianglePipeline_ = nullptr;
@@ -402,7 +570,7 @@ GpuRenderer::~GpuRenderer() {
 }
 
 void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
-                              const Node& sceneRoot) {
+                              const Node& sceneRoot, const Texture& texture) {
     // ------------------------------------------------------------------------
     //  1. Acquire a command buffer.
     //     We don't command the GPU directly; we *record* commands into a buffer
@@ -471,7 +639,7 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
         // from the actual swapchain size, so the image is never stretched and
         // adapts automatically when the window is resized.
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-        recordScene(cmd, pass, sceneRoot, view, aspect);
+        recordScene(cmd, pass, sceneRoot, view, aspect, texture);
 
         SDL_EndGPURenderPass(pass);
     }
@@ -486,7 +654,8 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
 }
 
 bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
-                               const Mat4& view, const Node& sceneRoot) {
+                               const Mat4& view, const Node& sceneRoot,
+                               const Texture& texture) {
     // Fixed capture resolution: keeps the output deterministic and small. The
     // aspect ratio (1280/720) feeds the projection so the cube isn't distorted.
     constexpr Uint32 kWidth  = 1280;
@@ -559,7 +728,7 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
     // Draw the same scene the live path does, through the supplied `view` (the
     // camera's default pose) — deterministic because nothing here is time-based.
     constexpr float kCaptureAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
-    recordScene(cmd, pass, sceneRoot, view, kCaptureAspect);
+    recordScene(cmd, pass, sceneRoot, view, kCaptureAspect, texture);
     SDL_EndGPURenderPass(pass);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);

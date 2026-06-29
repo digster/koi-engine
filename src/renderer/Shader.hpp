@@ -36,12 +36,14 @@ struct ShaderVariant {
 // choosing the variant the device supports and reading it from the `shaders/`
 // folder next to the executable. Returns nullptr (after logging) on failure.
 //
-// `numUniformBuffers` must match how many uniform buffers the shader declares
-// (SDL validates this against the compiled code). Step 3's vertex shader uses 1
-// (the MVP matrix); shaders with no uniforms leave it at the default 0.
+// `numUniformBuffers` and `numSamplers` must match how many of each resource the
+// shader declares (SDL validates these against the compiled code). Step 3's vertex
+// shader uses 1 uniform buffer (the MVP matrix) and no samplers; Step 6's fragment
+// shader uses 1 sampler (the texture) and no uniform buffers. Defaults are 0.
 [[nodiscard]] SDL_GPUShader* loadShader(SDL_GPUDevice* device,
                                         const char* name,
                                         SDL_GPUShaderStage stage,
-                                        Uint32 numUniformBuffers = 0);
+                                        Uint32 numUniformBuffers = 0,
+                                        Uint32 numSamplers = 0);
 
 }  // namespace koi

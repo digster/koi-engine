@@ -9,12 +9,12 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 5:** adds **meshes** and a **scene graph**. Geometry now lives
-> in reusable `Mesh` objects (uploaded once, shared by many objects) instead of being baked
-> into the renderer, and the world is a **tree of nodes** with parent/child **Transforms**
-> (position / rotation / scale). The demo scene is a small animated hierarchy — a spinning
-> hub cube whose satellites orbit it, one carrying its own moon — above a ground plane. Fly
-> through it with the Step 4 camera.
+> **Current status — Step 6:** adds **textures**. Each vertex gains a **texture
+> coordinate (UV)**, an image is **loaded** and **uploaded** into a GPU **texture**, and a
+> **sampler** (linear filtering, REPEAT wrap) reads it in the fragment shader — tinted by
+> the existing per-vertex color. The cubes are now checkered and the ground plane tiles the
+> texture across the floor. (The roadmap's "Textures + Phong lighting" is split into two
+> steps; **lighting is Step 7**.)
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 
@@ -59,6 +59,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - [docs/06-meshes-and-scene-graph.html](docs/06-meshes-and-scene-graph.html) — reusable
   meshes, the Transform (TRS) and matrix order, and a tree of nodes with parent/child
   transforms, mapped to the Step 5 code that animates a cube hierarchy.
+- [docs/07-textures-and-samplers.html](docs/07-textures-and-samplers.html) — texture
+  coordinates, uploading an image to the GPU, samplers (filtering & wrap), and the
+  descriptor-set binding model, mapped to the Step 6 code that textures the scene.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -71,8 +74,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 | ✅ **3** | **3D cube + MVP + depth** | hand-rolled `vec`/`mat4`, projection, depth testing |
 | ✅ **4** | **Camera + input movement** | view matrix, delta-time, fly camera |
 | ✅ **5** | **Meshes & scene graph** | mesh abstraction, Transform (TRS), node hierarchy |
-| 6 | Textures + Phong lighting | samplers, normals, uniform buffers |
-| 7+ | Models, shadows, post-fx | glTF loading, shadow maps, post-processing |
+| ✅ **6** | **Textures** | UV coordinates, GPU textures, samplers (filtering & wrap) |
+| 7 | Phong lighting | normals, a directional light, ambient/diffuse/specular |
+| 8+ | Models, shadows, post-fx | glTF loading, shadow maps, post-processing |
 
 ## Requirements
 

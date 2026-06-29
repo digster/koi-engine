@@ -19,6 +19,7 @@
     <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
     <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
     <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
   </div>
 </nav>
 
@@ -67,6 +68,12 @@
       <p>Reusable meshes, the Transform (TRS), and a tree of nodes with parent/child
       transforms — then the Step 5 code that spins a cube hierarchy above a ground plane.</p>
     </a>
+    <a class="card" href="07-textures-and-samplers.html">
+      <h3>Textures &amp; Samplers →</h3>
+      <p>Texture coordinates, uploading an image to the GPU, samplers (filtering &amp; wrap
+      modes), and the descriptor-set binding model — then the Step 6 code that textures the
+      scene and tiles a floor.</p>
+    </a>
   </div>
 
   <h2>Roadmap</h2>
@@ -85,8 +92,9 @@
       <tr><td>✅ <strong>3</strong></td><td><strong>3D cube + MVP + depth</strong></td><td>hand-rolled <code>vec</code>/<code>mat4</code>, projection, depth testing</td></tr>
       <tr><td>✅ <strong>4</strong></td><td><strong>Camera + input movement</strong></td><td>view matrix, delta-time, fly camera</td></tr>
       <tr><td>✅ <strong>5</strong></td><td><strong>Meshes &amp; scene graph</strong></td><td>mesh abstraction, Transform (TRS), node hierarchy</td></tr>
-      <tr><td>6</td><td>Textures + Phong lighting</td><td>samplers, normals, uniform buffers</td></tr>
-      <tr><td>7+</td><td>Models, shadows, post-fx</td><td>glTF loading, shadow maps, post-processing</td></tr>
+      <tr><td>✅ <strong>6</strong></td><td><strong>Textures</strong></td><td>UV coordinates, GPU textures, samplers (filtering &amp; wrap)</td></tr>
+      <tr><td>7</td><td>Phong lighting</td><td>normals, a directional light, ambient/diffuse/specular</td></tr>
+      <tr><td>8+</td><td>Models, shadows, post-fx</td><td>glTF loading, shadow maps, post-processing</td></tr>
     </tbody>
   </table>
 

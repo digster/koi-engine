@@ -25,7 +25,8 @@ ShaderVariant selectShaderVariant(SDL_GPUShaderFormat supportedFormats) {
 }
 
 SDL_GPUShader* loadShader(SDL_GPUDevice* device, const char* name,
-                          SDL_GPUShaderStage stage, Uint32 numUniformBuffers) {
+                          SDL_GPUShaderStage stage, Uint32 numUniformBuffers,
+                          Uint32 numSamplers) {
     // Ask the device which shader format(s) it accepts, then pick the matching
     // compiled file.
     const ShaderVariant variant = selectShaderVariant(SDL_GetGPUShaderFormats(device));
@@ -50,15 +51,16 @@ SDL_GPUShader* loadShader(SDL_GPUDevice* device, const char* name,
     }
 
     // Describe the shader to SDL. The resource counts must match what the
-    // compiled shader actually declares; SDL validates them. Only uniform buffers
-    // are used so far (the MVP matrix from Step 3) — samplers/storage arrive later.
+    // compiled shader actually declares; SDL validates them. We use uniform buffers
+    // (the MVP matrix, Step 3) and samplers (the texture, Step 6); storage
+    // buffers/textures are still unused.
     SDL_GPUShaderCreateInfo info = {};
     info.code                = static_cast<const Uint8*>(code);
     info.code_size           = codeSize;
     info.entrypoint          = variant.entrypoint;
     info.format              = variant.format;
     info.stage               = stage;
-    info.num_samplers        = 0;
+    info.num_samplers        = numSamplers;
     info.num_uniform_buffers = numUniformBuffers;
     info.num_storage_buffers = 0;
     info.num_storage_textures = 0;

@@ -23,7 +23,8 @@ namespace koi {
 
 class Window;
 class GpuRenderer;
-class Node;  // the scene-graph root; full definition in scene/Node.hpp
+class Node;     // the scene-graph root; full definition in scene/Node.hpp
+class Texture;  // the texture the scene is drawn with; renderer/Texture.hpp
 
 class Engine {
 public:
@@ -81,6 +82,12 @@ private:
     // orbits it). Owned by the tree, so these are plain observing pointers.
     Node* hub_     = nullptr;
     Node* spinner_ = nullptr;
+
+    // The texture every mesh is sampled from this step. Like the scene, it owns a
+    // GPU resource that is freed through the renderer's device, so it is reset
+    // BEFORE the renderer in shutdown() (and declared after it so default
+    // destruction order agrees).
+    std::shared_ptr<Texture> texture_;
 
     // The fly camera we drive from input each frame; its view matrix is handed to
     // the renderer. Held by value (it's small and owns no resources).

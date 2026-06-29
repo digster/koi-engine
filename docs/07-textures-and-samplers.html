@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Textures &amp; Samplers · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html" aria-current="page">Textures &amp; Samplers</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Textures &amp; Samplers</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 6:</strong> paint surfaces with an <strong>image</strong>
+    instead of a flat per-vertex color. Add <strong>texture coordinates (UVs)</strong> to
+    each vertex, <strong>load an image</strong> and upload it into a GPU
+    <strong>texture</strong>, create a <strong>sampler</strong>, bind them, and
+    <strong>sample</strong> the texture in the fragment shader.</p>
+    <p>The roadmap pairs textures with lighting; we're doing them as two small steps.
+    <strong>Lighting is Step 7</strong> — this step is textures only.</p>
+  </blockquote>
+
+  <p>Until now a surface's color came entirely from its vertices, smeared across each
+  triangle by the rasterizer. That can't show fine detail — a brick wall, wood grain, a
+  face — without an absurd number of vertices. A <strong>texture</strong> solves this: a
+  separate image the shader looks up per fragment, so detail is independent of geometry.</p>
+
+  <h2>1. Texture coordinates (UVs)</h2>
+
+  <p>How does a fragment know <em>where</em> in the image to look? Each vertex carries a
+  <strong>texture coordinate</strong> — a 2D point, conventionally called
+  <strong>(u, v)</strong> — into the image. The image is addressed in a normalized
+  <strong>0…1</strong> square regardless of its pixel size: <code>(0,0)</code> is one
+  corner, <code>(1,1)</code> the opposite. The rasterizer interpolates the UV across the
+  triangle just like it interpolates color, so every fragment gets its own spot to sample.</p>
+
+  <pre class="diagram">  image space (UV)                a triangle's vertices carry UVs;
+  (0,0) ───────► u (1,0)          the rasterizer interpolates them
+    │  ┌───────────┐              so each fragment samples its own
+    │  │ . . . . . │              point in the image:
+    ▼  │ . . X . . │
+  v    │ . . . . . │                 fragment at UV (0.5, 0.5)
+ (0,1) └───────────┘                 → the image's center texel</pre>
+
+  <p>UVs live on the vertex, but they're a <em>separate</em> attribute from position: the
+  same shape can be unwrapped onto an image however you like by choosing UVs. SDL3's GPU
+  API (like Vulkan/Metal/D3D) puts <code>(0,0)</code> at the <strong>top-left</strong> of
+  the image.</p>
+
+  <h2>2. Why the cube grew from 8 to 24 vertices</h2>
+
+  <p>Back in <a href="03-vertex-and-index-buffers.html">Step 2</a> our cube was 8 shared
+  corners. That no longer works once each face needs its own UVs. A single corner is shared
+  by three faces, and it wants a <em>different</em> UV on each (it's the top-left of one
+  face, the bottom-right of another). A vertex can hold only one UV, so we
+  <strong>split</strong> the cube into 6 faces × 4 corners = <strong>24 vertices</strong>,
+  each face independent.</p>
+
+  <p>This is a recurring pattern: an attribute that differs <em>per face</em> (UVs now,
+  surface normals when lighting arrives in Step 7) forces unshared vertices. Sharing only
+  works for attributes that are genuinely continuous at a corner (like position).</p>
+
+  <h2>3. Getting an image onto the GPU</h2>
+
+  <p>A GPU <strong>texture</strong> is an image stored in GPU memory in a layout the
+  hardware samples efficiently. Like a vertex buffer, the fast memory it lives in isn't
+  CPU-writable, so we use the very same <strong>two-step staging move</strong> from
+  <a href="03-vertex-and-index-buffers.html">Step 2</a> — just in 2D:</p>
+
+  <pre class="diagram">  image file ──load──► CPU surface ──memcpy──► transfer buffer ──copy pass──► GPU texture
+   (.bmp)            (SDL_Surface)            (CPU-visible)                  (sampled in shader)</pre>
+
+  <p>Concretely: <code>SDL_LoadBMP</code> reads the file (a plain BMP, so no extra image
+  library), <code>SDL_ConvertSurface</code> normalizes it to 32-bit RGBA matching our GPU
+  texture format, then we map a transfer buffer, copy the pixels in, and record a copy pass
+  with <code>SDL_UploadToGPUTexture</code>. If that sounds familiar, it's the exact mirror
+  of <code>captureFrame</code>, which <em>downloads</em> a texture's pixels back to the CPU.</p>
+
+  <h2>4. Samplers: how to read a texture</h2>
+
+  <p>A texture is just the data. <em>How</em> to read it is a separate object — the
+  <strong>sampler</strong> — because the same image is often read different ways. Two
+  settings matter most:</p>
+
+  <table>
+    <thead>
+      <tr><th>Setting</th><th>Options</th><th>What it controls</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Filter</strong></td><td><code>NEAREST</code> / <code>LINEAR</code></td><td>What happens between texels. NEAREST snaps to the closest texel (blocky, pixel-art); LINEAR blends the 4 nearest (smooth).</td></tr>
+      <tr><td><strong>Address mode</strong></td><td><code>REPEAT</code> / <code>CLAMP</code> / …</td><td>What happens <em>outside</em> 0…1. REPEAT wraps (so UVs of 0…N tile the image N times); CLAMP holds the edge.</td></tr>
+    </tbody>
+  </table>
+
+  <p>We create one shared sampler with LINEAR filtering and REPEAT addressing. REPEAT is
+  what lets the ground plane <strong>tile</strong> the texture: its UVs run 0…6, so with
+  REPEAT the checkerboard repeats 6×6 across the floor instead of being stretched once. The
+  cubes keep UVs in 0…1, so each face shows exactly one copy.</p>
+
+  <h2>5. Descriptor sets &amp; binding</h2>
+
+  <p>Shaders reach GPU resources through numbered slots grouped into <strong>descriptor
+  sets</strong>. SDL3's GPU API fixes which set each kind of resource uses. We already met
+  this: the vertex shader's MVP uniform buffer is at <code>set = 1</code>. For a
+  <strong>fragment-stage sampled texture</strong> the set is <strong>2</strong>:</p>
+
+  <pre><code>// in triangle.frag
+layout(set = 2, binding = 0) uniform sampler2D uTex;</code></pre>
+
+  <p>We tell SDL the fragment shader uses one sampler (via <code>loadShader</code>'s new
+  sampler count), and each frame we bind the texture+sampler pair to slot 0 with
+  <code>SDL_BindGPUFragmentSamplers(pass, 0, …)</code> — once, before drawing the scene,
+  since every mesh shares the same texture this step.</p>
+
+  <h2>6. Sampling in the shader</h2>
+
+  <p>With the UV interpolated and the texture bound, the fragment shader is a one-liner.
+  We look up the image at this fragment's UV and multiply by the interpolated vertex color,
+  which now acts as a <strong>tint</strong> (a white tint shows the texture unchanged):</p>
+
+  <pre><code>// triangle.frag
+outColor = texture(uTex, vUV) * vec4(vColor, 1.0);</code></pre>
+
+  <p>That's why the cubes look like a checkerboard washed with their old RGB-cube colors,
+  while the gray-tinted floor shows the pattern more plainly.</p>
+
+  <h2>7. The code</h2>
+
+  <h3>The texture — <a href="../src/renderer/Texture.hpp">src/renderer/Texture.{hpp,cpp}</a></h3>
+  <p>A small RAII owner of one <code>SDL_GPUTexture</code>, exactly like <code>Mesh</code>:
+  it holds a non-owning device pointer to release the texture, so the same lifetime rule
+  applies — textures must be freed before the renderer's device (the Engine resets the
+  texture before the renderer in <code>shutdown()</code>).</p>
+
+  <h3>Loading &amp; uploading — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer</a></h3>
+  <p><code>loadTexture(path)</code> does the load → convert → repack → upload, and
+  <code>uploadToGpuTexture</code> is the 2D sibling of <code>uploadToGpuBuffer</code>.
+  <code>createSampler</code> builds the one shared sampler. The image data itself lives in
+  <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a> only as UVs; the picture comes
+  from <code>assets/uv_grid.bmp</code>, copied next to the binary by CMake's
+  <code>koi_assets</code> target (mirroring how shaders are built).</p>
+
+  <h3>The vertex &amp; shaders — <a href="../src/renderer/Vertex.hpp">Vertex.hpp</a>, <a href="../shaders/triangle.vert">triangle.vert/.frag</a></h3>
+  <p><code>Vertex</code> gains a <code>uv[2]</code> (appended, so position/color keep their
+  offsets); the pipeline gains a third vertex attribute; the vertex shader passes UV through;
+  the fragment shader samples. The cube in <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a>
+  is now 24 vertices with per-face UVs; the plane tiles its UVs 0…6.</p>
+
+  <h3>Binding per frame — <a href="../src/renderer/GpuRenderer.cpp">recordScene</a> &amp; <a href="../src/core/Engine.cpp">Engine</a></h3>
+  <p>The Engine loads the texture at startup and hands it to <code>renderFrame</code> /
+  <code>captureFrame</code> (like it hands over the scene root); <code>recordScene</code>
+  binds it once before walking the tree.</p>
+
+  <h2>8. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Switch to NEAREST filtering</strong> in <a href="../src/renderer/GpuRenderer.cpp">createSampler</a>
+    and watch the checkerboard go crisp/blocky up close.</li>
+    <li><strong>Change the tiling.</strong> Bump the plane's UV range in
+    <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a> from 6 to 1 (one giant tile)
+    or 20 (tiny tiles) — REPEAT does the rest.</li>
+    <li><strong>CLAMP instead of REPEAT</strong> and set the plane UVs past 1.0: the edge
+    texels stretch to the horizon instead of tiling.</li>
+    <li><strong>Drop your own image in.</strong> Replace <code>assets/uv_grid.bmp</code>
+    with any 24-bit BMP and rebuild — <code>koi_assets</code> copies it automatically.</li>
+  </ol>
+
+  <h2>9. What's next</h2>
+
+  <p>➡️ <strong>Step 7 — Phong lighting.</strong> Surfaces are still uniformly bright,
+  ignoring where they face. Next we add per-vertex <strong>normals</strong> and a
+  <strong>light</strong>, and shade each fragment with ambient + diffuse + specular
+  (Phong) — which, like per-face UVs here, is what finally makes the 3D form read as solid.
+  (Normals will split the cube to 24 vertices for the same reason UVs just did — already
+  done.)</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

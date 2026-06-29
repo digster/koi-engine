@@ -3,10 +3,11 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 5 (window & render loop, the first triangle, geometry in GPU
+through Step 6 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
-buffer, a fly camera driven by keyboard/mouse input with delta-time, and a
-**mesh** abstraction drawn through a **scene graph** of parent/child transforms).
+buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
+abstraction drawn through a **scene graph** of parent/child transforms, and
+**textures** sampled onto those surfaces).
 
 ## Guiding principles
 
@@ -45,15 +46,16 @@ buffer, a fly camera driven by keyboard/mouse input with delta-time, and a
 |-----------|------|----------------|
 | `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera + the scene graph, runs the game loop, computes delta-time, routes input, builds the demo scene (`buildScene`), animates + propagates transforms each frame, controls startup/shutdown order. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the graphics pipeline, and the depth texture. Is a **factory** for meshes (`createMesh`) and a **consumer** of a scene: per frame it takes a camera `view` + a scene root and records/submits the draw (acquire → ensure depth texture → render pass → `recordScene`: bind pipeline once, then walk the tree binding each node's mesh + pushing `proj·view·world` + indexed draw → submit). No longer owns geometry. |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the graphics pipeline, the depth texture, and one shared **sampler**. Is a **factory** for meshes (`createMesh`) and textures (`loadTexture`) and a **consumer** of a scene: per frame it takes a camera `view`, a scene root, and a texture, then records/submits the draw (acquire → ensure depth texture → render pass → `recordScene`: bind pipeline + texture/sampler once, then walk the tree binding each node's mesh + pushing `proj·view·world` + indexed draw → submit). Owns no geometry or texture data. |
 | `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count). Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must be destroyed before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
+| `Texture` | [src/renderer/Texture.*](src/renderer/) | RAII owner of one `SDL_GPUTexture` (sampled image). Same non-owning-device lifetime rule as `Mesh`. Created via `GpuRenderer::loadTexture` (load BMP → convert → upload); held by `shared_ptr`. A *sampler* (how to read it) is separate, reusable device state owned by the renderer. |
 | `Primitives` | [src/renderer/Primitives.*](src/renderer/) | Free functions (`makeCubeMesh`, `makePlaneMesh`) that define a shape's vertex/index data and upload it via `createMesh`, keeping the renderer geometry-agnostic. |
 | `Transform` | [src/scene/Transform.hpp](src/scene/Transform.hpp) | Header-only, SDL-free: position / Euler rotation / scale, plus `localMatrix()` returning `T·R·S` (scale → rotate → translate). Unit-tested in `tests/test_transform.cpp`. |
 | `Node` | [src/scene/Node.*](src/scene/) | One element of the scene graph: a local `Transform`, an optional shared `Mesh`, owned children (`unique_ptr`), and a cached world matrix. `updateWorldTransforms` walks the tree computing `world = parentWorld · local`. Scene-graph composition unit-tested in `tests/test_node.cpp`. |
 | `Camera` | [src/scene/Camera.*](src/scene/) | A yaw/pitch fly camera (position + angles). Produces a `view` matrix via `lookAt`; `processKeyboard`/`addMouseLook` update it from input. Lives above the renderer and knows nothing about the GPU; its header is SDL-free. Logic unit-tested in `tests/test_camera.cpp`. |
-| `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
+| `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color + uv). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
 | `math` (`Vec`, `Mat4`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`) and column-major 4×4 matrix math (translate/rotate/**scale**/perspective/`lookAt`). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp`. |
-| `Shader` | [src/renderer/Shader.*](src/renderer/) | Loads a compiled shader for the active backend: `selectShaderVariant` (pure, unit-tested) picks the format/extension/entry point; `loadShader` reads the file and creates the `SDL_GPUShader` (with the right uniform-buffer count). |
+| `Shader` | [src/renderer/Shader.*](src/renderer/) | Loads a compiled shader for the active backend: `selectShaderVariant` (pure, unit-tested) picks the format/extension/entry point; `loadShader` reads the file and creates the `SDL_GPUShader` (with the right uniform-buffer and sampler counts). |
 | `Log` | [src/core/Log.hpp](src/core/Log.hpp) | Leveled logging macros over SDL's logger; one place to control verbosity. |
 
 ## Data flow: one frame
@@ -69,12 +71,13 @@ animate + update → spin a couple of nodes (rotationEuler += rate·dt);
                    sceneRoot.updateWorldTransforms() caches every node's world matrix
        │
 renderFrame(view, → in GpuRenderer (view = camera.viewMatrix()):
-  sceneRoot)         1. acquire command buffer
-                     2. acquire swapchain image (waits for vsync) + its size
+  sceneRoot,           1. acquire command buffer
+  texture)             2. acquire swapchain image (waits for vsync) + its size
                      3. ensure the depth texture matches that size
                      4. begin render pass (color CLEAR + depth CLEAR to 1.0)
-                     5. recordScene: bind pipeline once, then walk the tree — per node
-                        with a mesh, bind its buffers + push proj·view·world + indexed draw
+                     5. recordScene: bind pipeline + texture/sampler once, then walk the
+                        tree — per node with a mesh, bind its buffers + push proj·view·world
+                        + indexed draw
                      6. end render pass
                      7. submit command buffer (queues present)
 ```
@@ -203,21 +206,52 @@ deliberate dependency, since a node that draws must name *what* geometry to draw
 > destruction order agrees). Splitting `renderFrame` into `begin/draw/end` was
 > considered and deliberately deferred — not needed yet.
 
+### Textures & samplers (Step 6)
+
+Surfaces are now painted by an **image** instead of only vertex colors. `Vertex`
+gained a 2D **uv** (texture coordinate), so the cube split from 8 shared corners to
+**24 vertices** — a per-face attribute (uv now, normals later) can't live on a shared
+corner. The fragment shader samples a texture and multiplies by the vertex color
+(now a tint): `outColor = texture(uTex, vUV) * vColor`.
+
+Getting the image onto the GPU reuses the **staging move** from Step 2, in 2D:
+`SDL_LoadBMP` → `SDL_ConvertSurface` (to RGBA32, matching `R8G8B8A8_UNORM`) →
+`uploadToGpuTexture` (the sibling of `uploadToGpuBuffer`: map a transfer buffer,
+copy, `SDL_UploadToGPUTexture`). It's the mirror of `captureFrame`'s pixel download.
+
+```
+   Texture (renderer/)            sampler (renderer-owned)        binding
+   SDL_GPUTexture, RAII           LINEAR filter, REPEAT wrap      set=2, slot 0
+   made by loadTexture            (how to read any texture)       BindGPUFragmentSamplers
+```
+
+A **sampler** (filtering between texels + wrap mode past the edges) is separate,
+reusable device state, so the renderer owns one shared sampler and pairs it with
+whatever `Texture` it draws. SDL3's resource sets are fixed: vertex uniform buffers
+at `set=1` (the MVP), **fragment sampled textures at `set=2`**; `loadShader` now
+declares the fragment shader's sampler count, and `recordScene` binds the
+texture+sampler once before the traversal (one texture for the whole scene this
+step — per-mesh materials are later). The image asset (`assets/uv_grid.bmp`) is
+copied next to the binary by CMake's `koi_assets` target and loaded at runtime via
+`SDL_GetBasePath()`, mirroring the shader pipeline. Same lifetime rule as meshes: the
+`Texture` is released before the renderer's device in `shutdown()`.
+
 ## Lifecycle & ownership
 
 Startup builds bottom-up, shutdown tears down top-down — the standard RAII
 ordering that keeps resources valid for exactly as long as something uses them:
 
 ```
-init:      SDL_Init → Window → GpuRenderer (claims Window) → buildScene (uploads meshes)
-shutdown:  Scene (frees meshes) → GpuRenderer (releases Window) → Window → SDL_Quit
+init:      SDL_Init → Window → GpuRenderer (claims Window) → buildScene + loadTexture (upload meshes + image)
+shutdown:  Scene + Texture (free GPU resources) → GpuRenderer (releases Window) → Window → SDL_Quit
 ```
 
-Two ordering constraints, both enforced by `Engine` via `std::unique_ptr` resets:
+Two ordering constraints, both enforced by `Engine` via smart-pointer resets:
 `GpuRenderer` must be destroyed before `Window` (it holds the window's swapchain);
-and the **scene** must be destroyed before `GpuRenderer` (each `Mesh` frees its GPU
-buffers through the renderer's device — see the lifetime rule above). So `shutdown()`
-resets `sceneRoot_`, then `renderer_`, then `window_`.
+and the **scene and the texture** must be destroyed before `GpuRenderer` (each `Mesh`
+and `Texture` frees its GPU resource through the renderer's device — see the lifetime
+rule above). So `shutdown()` resets `sceneRoot_` and `texture_`, then `renderer_`,
+then `window_`.
 
 > Implementation note: `Engine`'s constructor and destructor are **defined in the
 > `.cpp`**, not the header. Its `unique_ptr` members point to forward-declared
@@ -239,6 +273,9 @@ CMake (≥ 3.28) with `CMakePresets.json` for one-command builds.
   our code only (not to SDL3 / doctest).
 - `koi_shaders` — a custom target that compiles `shaders/*` to `build/shaders/`
   via `glslc` + `spirv-cross` (see "Shaders & the build-time toolchain" above).
+- `koi_assets` — a custom target that copies `assets/*` (e.g. `uv_grid.bmp`) to
+  `build/assets/` next to the binary, so textures are found at runtime via
+  `SDL_GetBasePath()` (the same convention as the compiled shaders).
 
 **Dependencies:** SDL3 via `find_package(SDL3 CONFIG)` (Homebrew ships the CMake
 package). doctest is fetched as a single header at configure time (we download the
@@ -285,6 +322,11 @@ Future milestones slot into this structure without reshaping it:
   became a **scene graph** — `scene/Transform` + `scene/Node` with parent/child world
   transforms. `Mat4` gained `scaling`. `renderFrame`/`captureFrame` now take a scene
   root and `recordScene` traverses it. (The `begin/draw/end` split was deferred.)
-- **Step 6+:** `Vertex` grows **normals** (and texture coordinates); shaders gain
-  per-fragment **lighting** and **texture** sampling, pulling in samplers and a normal
-  matrix — the first change to the shaders since Step 3.
+- **Step 6 (done):** `Vertex` grew a **uv**; a `Texture` type plus
+  `loadTexture`/`uploadToGpuTexture` and a shared sampler joined `renderer/`; the fragment
+  shader samples a texture (bound at `set=2`); CMake's `koi_assets` copies the image asset.
+  The cube split to 24 vertices for per-face UVs.
+- **Step 7+:** `Vertex` grows **normals**; shaders gain per-fragment **lighting** (a
+  directional light: ambient/diffuse/specular), pulling in a fragment uniform buffer and a
+  normal matrix — the first shader change since this step. The 24-vertex cube already
+  supports the per-face normals it needs.
