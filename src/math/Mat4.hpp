@@ -87,6 +87,19 @@ struct Mat4 {
     return out;
 }
 
+// Scale: stretches a point's coordinates by s per axis. Unlike translation, a
+// scale lives on the diagonal (it multiplies each axis), so a direction (w = 0)
+// is scaled too — only translation distinguishes points from directions. The
+// bottom-right element stays 1 so the homogeneous w is untouched. Used by
+// Transform to give scene-graph nodes a size.
+[[nodiscard]] inline Mat4 scaling(Vec3 s) {
+    Mat4 out = Mat4::identity();
+    out.at(0, 0) = s.x;
+    out.at(1, 1) = s.y;
+    out.at(2, 2) = s.z;
+    return out;
+}
+
 // Rotation about the X axis (spins the Y/Z plane), angle in radians.
 [[nodiscard]] inline Mat4 rotationX(float radiansAngle) {
     const float c = std::cos(radiansAngle);

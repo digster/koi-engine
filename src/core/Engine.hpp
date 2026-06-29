@@ -23,6 +23,7 @@ namespace koi {
 
 class Window;
 class GpuRenderer;
+class Node;  // the scene-graph root; full definition in scene/Node.hpp
 
 class Engine {
 public:
@@ -58,11 +59,28 @@ private:
     // Drain and react to all pending OS/input events for this frame.
     void processEvents();
 
+    // Build the demo scene graph (a ground plane + an animated cube hierarchy).
+    // Called from init() after the renderer is valid, since it uploads meshes
+    // through the renderer. Returns false (after logging) if a mesh upload fails.
+    bool buildScene();
+
     bool running_     = false;
     bool initialized_ = false;
 
     std::unique_ptr<Window>      window_;
     std::unique_ptr<GpuRenderer> renderer_;
+
+    // The scene graph. Declared AFTER renderer_ so default destruction (reverse of
+    // declaration) frees the scene — and thus every Mesh's GPU buffers — BEFORE
+    // the renderer destroys the device those buffers belong to. shutdown() also
+    // enforces this order explicitly.
+    std::unique_ptr<Node> sceneRoot_;
+
+    // Non-owning handles into sceneRoot_'s tree for the nodes we animate each
+    // frame: the hub (its satellites orbit with it) and an inner pivot (its moon
+    // orbits it). Owned by the tree, so these are plain observing pointers.
+    Node* hub_     = nullptr;
+    Node* spinner_ = nullptr;
 
     // The fly camera we drive from input each frame; its view matrix is handed to
     // the renderer. Held by value (it's small and owns no resources).

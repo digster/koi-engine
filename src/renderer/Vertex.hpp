@@ -4,7 +4,7 @@
 //  A "vertex" is one corner of our geometry. Each carries a set of attributes
 //  (here: a 2D position and an RGB color). We store many of these contiguously
 //  in a std::array / C array and upload that block verbatim into a GPU *vertex
-//  buffer* (see GpuRenderer::createGeometry).
+//  buffer* (see GpuRenderer::createMesh and renderer/Primitives.cpp).
 //
 //  WHY THE EXACT BYTE LAYOUT MATTERS
 //  The GPU does not parse C++ types — it reads raw bytes. When we build the

@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meshes &amp; Scene Graph · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html" aria-current="page">Meshes &amp; Scene Graph</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Meshes &amp; a Scene Graph</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 5:</strong> stop hardcoding geometry. Introduce a reusable
+    <strong>mesh</strong> (geometry that lives in its own object, uploaded once and shared)
+    and a <strong>scene graph</strong> (a tree of nodes with parent/child transforms) so
+    objects can be composed, nested, and moved as a group.</p>
+    <p>To show it off, the scene is now a small <em>hierarchy</em>: a spinning hub cube with
+    satellites that orbit it, one of which has its own little moon — plus a ground plane to
+    sit on. Nothing here touches the shaders; it's all about how the CPU organises what to
+    draw.</p>
+  </blockquote>
+
+  <p>Through <a href="05-camera-and-input.html">Step 4</a> the world was a flat, hardcoded
+  list of cube positions, and the geometry itself was baked into the renderer. That doesn't
+  scale: there's no way to add a <em>different</em> shape, and no way to say "this thing is
+  attached to that thing." Step 5 fixes both, with two small abstractions.</p>
+
+  <h2>1. From a list to a tree</h2>
+
+  <p>In Step 4, drawing the scene looked like this — one shape, many placements, looped:</p>
+
+  <pre><code>for (pos : hardcodedCubePositions)
+    draw cube at pos</code></pre>
+
+  <p>That's fine for confetti, but real scenes are <strong>hierarchical</strong>: a wheel is
+  attached to a car, a moon orbits a planet, a hand is attached to an arm. When the car
+  moves, its wheels should move with it <em>for free</em>, without us recomputing each
+  wheel. The data structure that captures "attached to" is a <strong>tree</strong> — and a
+  tree of placed objects is called a <strong>scene graph</strong>.</p>
+
+  <h2>2. What a mesh is</h2>
+
+  <p>A <strong>mesh</strong> is just a named bundle of geometry: a <em>vertex buffer</em>
+  (the corners) plus an <em>index buffer</em> (which corners each triangle uses), living in
+  GPU memory. We met both buffers in <a href="03-vertex-and-index-buffers.html">Step 2</a>;
+  the only new idea is giving them an <strong>owner</strong> — a <code>Mesh</code> object —
+  so they're a thing the engine can hold, pass around, and reuse.</p>
+
+  <p>Reuse is the point. The scene has five cubes, but they're all the <em>same shape</em>.
+  With a mesh, we upload the cube's 8 vertices to the GPU <strong>once</strong> and let every
+  cube node point at that one mesh. Add a second shape (our ground plane) and it's simply a
+  second mesh. The renderer no longer knows or cares what shapes exist — it just draws
+  whatever meshes the scene hands it.</p>
+
+  <h2>3. The Transform: position, rotation, scale</h2>
+
+  <p>Where does a node sit, how is it turned, and how big is it? A <strong>Transform</strong>
+  answers all three with three vectors — <strong>position</strong>, <strong>rotation</strong>
+  (Euler angles, in radians), and <strong>scale</strong> — often abbreviated
+  <strong>TRS</strong>. On its own that's just data; <code>localMatrix()</code> bakes it into
+  the single 4×4 <em>model</em> matrix the GPU consumes (the "M" of the MVP chain from
+  <a href="04-3d-cube-mvp-and-depth.html">Step 3</a>).</p>
+
+  <p>The subtle part is the <strong>order</strong>. We build the matrix as
+  <code>T · R · S</code>, which — because a matrix is applied right-to-left to a point —
+  transforms a vertex like this:</p>
+
+  <pre class="diagram">  localMatrix = translation · rotation · scaling
+
+  applied to a vertex, right-to-left:
+     translate( rotate( scale( vertex ) ) )
+
+  1. SCALE first  — grow/shrink around the object's own origin
+  2. ROTATE next  — spin the resized shape about its own origin
+  3. TRANSLATE last — move the finished shape into place</pre>
+
+  <p>This order is the intuitive one. Get it wrong and you get classic bugs: translate
+  <em>before</em> rotate and the object swings around the world origin like it's on a string,
+  instead of spinning in place. (A worked example pins this down in
+  <a href="../tests/test_transform.cpp">test_transform.cpp</a>.)</p>
+
+  <h2>4. Local space, world space, and the graph</h2>
+
+  <p>Each node's Transform is expressed in its <strong>parent's</strong> coordinate space —
+  its <em>local</em> space. To actually draw a node we need its <strong>world</strong>
+  placement: where it ends up after stacking every ancestor's transform. The rule is one
+  line, and it's the entire scene graph:</p>
+
+  <pre class="diagram">  world(node) = world(parent) · local(node)</pre>
+
+  <p>Here's the hierarchy this step builds. The hub spins; everything under it inherits that
+  spin:</p>
+
+  <pre class="diagram">  root  (a group — no shape, just a parent)
+  ├── ground            (plane mesh, dropped to y = −2)
+  └── hub               (cube; SPINS about Y)
+      ├── satellite A   (cube, offset +X)      ─┐ orbit the hub
+      ├── satellite C   (cube, offset +Z)      ─┘ because the hub turns
+      └── spinner       (cube, offset −X; also SPINS)
+          └── moon      (cube, offset from the spinner)</pre>
+
+  <p>Because <code>moon</code>'s world matrix folds in <code>spinner</code>'s rotation
+  <em>and</em> <code>hub</code>'s rotation, the moon orbits the spinner <strong>while</strong>
+  the spinner orbits the hub — two levels of motion, and we never wrote a line of orbit code.
+  We only spin two nodes; the tree does the rest.</p>
+
+  <h2>5. Two passes per frame</h2>
+
+  <p>A scene graph splits each frame into two clean passes — the same split real engines
+  use:</p>
+
+  <table>
+    <thead>
+      <tr><th>Pass</th><th>What it does</th><th>Where</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>1. Update transforms</strong></td><td>Walk the tree top-down, computing and caching each node's world matrix from <code>world(parent) · local</code>.</td><td><code>Node::updateWorldTransforms</code></td></tr>
+      <tr><td><strong>2. Render</strong></td><td>Walk the tree again; for each node that has a mesh, bind it and draw at the cached world matrix.</td><td><code>GpuRenderer::recordScene</code></td></tr>
+    </tbody>
+  </table>
+
+  <p>Keeping "figure out where everything is" separate from "draw it" is what makes parented
+  motion automatic: the update pass resolves the whole hierarchy first, so by the time we
+  draw, every node already knows its absolute place.</p>
+
+  <h2>6. Shared meshes, group nodes &amp; a lifetime rule</h2>
+
+  <p>Two ownership ideas make the tree behave:</p>
+
+  <ul>
+    <li><strong>Children are owned</strong> (<code>unique_ptr</code>): a node solely owns its
+    sub-tree, so destroying the root frees everything beneath it.</li>
+    <li><strong>Meshes are shared</strong> (<code>shared_ptr</code>): one cube mesh is
+    referenced by many nodes. A node may also have <em>no</em> mesh — a pure
+    <strong>group</strong> (or "pivot") used only to position or spin its children. Our
+    <code>root</code> is exactly that.</li>
+  </ul>
+
+  <p>There's also a RAII lesson worth stating plainly. A <code>Mesh</code> frees its GPU
+  buffers through the <em>device</em> — but the device is owned by the renderer, not the
+  mesh. So:</p>
+
+  <blockquote>
+    <p><strong>Every mesh must be destroyed before the renderer destroys the device.</strong>
+    The engine guarantees this by releasing the scene (and thus all meshes) <em>before</em>
+    the renderer in <code>Engine::shutdown()</code>. Free them in the wrong order and you're
+    asking a dead device to free a buffer — a crash, or worse, a silent one.</p>
+  </blockquote>
+
+  <h2>7. The code</h2>
+
+  <h3>The mesh — <a href="../src/renderer/Mesh.hpp">src/renderer/Mesh.{hpp,cpp}</a></h3>
+  <p>A tiny RAII owner of a vertex buffer, an index buffer, and an index count. It holds a
+  <em>non-owning</em> <code>SDL_GPUDevice*</code> purely to release those buffers in its
+  destructor (hence the lifetime rule above). It's non-copyable and non-movable — copying
+  would double-free the GPU handles.</p>
+
+  <h3>Making meshes — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer::createMesh</a> &amp; <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a></h3>
+  <p>The renderer is now a <strong>factory</strong>: <code>createMesh(vertices, indices)</code>
+  reuses the same staging-buffer upload from Step 2 and wraps the result in a
+  <code>Mesh</code>. <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a> defines the
+  actual shapes — <code>makeCubeMesh</code> (the RGB color cube) and <code>makePlaneMesh</code>
+  (the ground) — so the renderer itself stays geometry-agnostic.</p>
+
+  <h3>The transform — <a href="../src/scene/Transform.hpp">src/scene/Transform.hpp</a></h3>
+  <p>Header-only and SDL-free, like our other math. Just the three vectors and
+  <code>localMatrix()</code> returning <code>translation · rotationZ · rotationY · rotationX ·
+  scaling</code>. (Step 5 also adds <code>scaling()</code> to
+  <a href="../src/math/Mat4.hpp">Mat4.hpp</a>, next to <code>translation()</code>.)</p>
+
+  <h3>The node — <a href="../src/scene/Node.hpp">src/scene/Node.{hpp,cpp}</a></h3>
+  <p>One element of the tree: a <code>Transform</code>, an optional shared <code>Mesh</code>,
+  owned children, and a cached world matrix. The whole scene graph is this five-line
+  recursion:</p>
+
+  <pre><code>void Node::updateWorldTransforms(const Mat4&amp; parentWorld) {
+    world_ = parentWorld * transform_.localMatrix();   // this node's absolute placement
+    for (auto&amp; child : children_)
+        child-&gt;updateWorldTransforms(world_);           // hand it down as the child's parent
+}</code></pre>
+
+  <p>Passing <em>this</em> node's freshly-computed world matrix down as each child's
+  <code>parentWorld</code> is what resolves arbitrarily deep hierarchies in a single pass —
+  no special case for grandchildren; they just work.</p>
+
+  <h3>Drawing the tree — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer::recordScene</a></h3>
+  <p>Bind the one shared pipeline, combine <code>projection · view</code> once, then walk the
+  tree. For each node that has a mesh, bind that mesh's buffers, push
+  <code>(proj·view) · world</code> as the MVP uniform, and draw. Nodes with no mesh contribute
+  only their transform. Both the live path and the headless capture share this one function,
+  so they can never drift.</p>
+
+  <h3>Building &amp; animating — <a href="../src/core/Engine.cpp">src/core/Engine.cpp</a></h3>
+  <p><code>buildScene()</code> assembles the hierarchy from the table above. The loop then
+  nudges two rotations and resolves the tree before drawing:</p>
+
+  <pre><code>hub_-&gt;transform().rotationEuler.y     += 0.6f * dt;   // satellites orbit the hub
+spinner_-&gt;transform().rotationEuler.y += 1.5f * dt;   // the moon orbits the spinner
+sceneRoot_-&gt;updateWorldTransforms();                  // propagate parent → child → grandchild
+renderer_-&gt;renderFrame(clearColor, camera_.viewMatrix(), *sceneRoot_);</code></pre>
+
+  <h2>8. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Re-parent something.</strong> Move <code>satellite A</code> to be a child of
+    <code>spinner</code> instead of <code>hub</code> in
+    <a href="../src/core/Engine.cpp">Engine.cpp</a> and watch its motion change completely —
+    same node, different parent.</li>
+    <li><strong>Add a grandchild's grandchild.</strong> Hang another cube off
+    <code>moon</code>. With no new logic, it inherits three levels of motion.</li>
+    <li><strong>Feel the TRS order.</strong> In <a href="../src/scene/Transform.hpp">Transform.hpp</a>
+    swap the multiply to put <code>translation</code> after <code>scaling</code>/rotation and
+    see offset objects fling around the origin.</li>
+    <li><strong>New primitive.</strong> Add a <code>makePyramidMesh</code> to
+    <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a> and drop one into the scene —
+    the renderer needs no changes at all.</li>
+  </ol>
+
+  <h2>9. What's next</h2>
+
+  <p>➡️ <strong>Step 6 — Textures &amp; Phong lighting.</strong> So far every surface is lit
+  only by its vertex colors. Next we give vertices <strong>normals</strong> and sample
+  <strong>textures</strong>, then shade them with a light — introducing samplers, the normal
+  matrix, and per-fragment lighting. That's the first step that meaningfully changes the
+  shaders again.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

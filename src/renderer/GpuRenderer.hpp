@@ -1,22 +1,34 @@
 // ============================================================================
 //  GpuRenderer.hpp — owns the SDL3 GPU device and renders a frame
 // ----------------------------------------------------------------------------
-//  This is our window into the graphics card. In Step 0 it does the smallest
-//  complete thing a GPU renderer can do: clear the screen to a color every
-//  frame. That sounds trivial, but it already exercises the entire modern GPU
-//  pipeline (device -> swapchain -> command buffer -> render pass -> submit),
-//  which is exactly the plumbing every later feature builds on.
+//  This is our window into the graphics card. It owns the GPU device, the
+//  swapchain, the graphics pipeline, and the per-frame depth buffer — the
+//  plumbing every later feature builds on (device -> swapchain -> command
+//  buffer -> render pass -> submit).
 //
-//  See docs/01-window-and-render-loop.html for a from-first-principles tour of
-//  every concept named below (device, swapchain, command buffer, render pass).
+//  As of Step 5 the renderer no longer owns the geometry. Instead it is a
+//  FACTORY for Mesh objects (createMesh) and a CONSUMER of a scene graph: given
+//  a scene root, it walks the tree and draws each node's mesh at that node's
+//  world transform. This decouples "how to talk to the GPU" (here) from "what's
+//  in the world" (scene/Node).
+//
+//  See docs/01-window-and-render-loop.html for the GPU concepts named below and
+//  docs/06-meshes-and-scene-graph.html for meshes + the scene graph.
 // ============================================================================
 #pragma once
 
 #include <SDL3/SDL.h>
 
+#include <memory>  // std::shared_ptr — meshes are shared, owned via shared_ptr
+#include <span>    // std::span — a (pointer, length) view over caller-owned geometry
+
 #include "math/Mat4.hpp"
+#include "renderer/Vertex.hpp"  // createMesh takes a std::span<const Vertex>
 
 namespace koi {
+
+class Mesh;  // manufactured by createMesh; full definition in renderer/Mesh.hpp
+class Node;  // the scene-graph root we traverse to draw; scene/Node.hpp
 
 // Map a GPU color-target format to the equivalent SDL surface pixel format, so
 // downloaded pixels can be wrapped in an SDL_Surface and saved. Pure function
@@ -26,39 +38,49 @@ namespace koi {
 
 class GpuRenderer {
 public:
-    // Construction creates a GPU "device" (our handle to the graphics card)
-    // and binds it to the given window so we can present images to it.
-    // On failure, isValid() returns false.
+    // Construction creates a GPU "device" (our handle to the graphics card),
+    // binds it to the given window, and builds the graphics pipeline. On failure,
+    // isValid() returns false.
     explicit GpuRenderer(SDL_Window* window);
 
     // Destruction unbinds the window and destroys the device. SDL waits for the
     // GPU to finish any in-flight work before tearing down, so this is safe.
+    // IMPORTANT: any Mesh made by createMesh frees its buffers through this
+    // device, so all meshes must be released BEFORE this renderer (the Engine
+    // tears the scene down first — see Engine::shutdown()).
     ~GpuRenderer();
 
     GpuRenderer(const GpuRenderer&) = delete;
     GpuRenderer& operator=(const GpuRenderer&) = delete;
 
-    // Valid only once the device, the pipeline, AND the geometry buffers are
-    // ready, so the Engine aborts with a clear message if (e.g.) the compiled
-    // shaders are missing or an upload failed, rather than running with nothing
-    // to draw.
+    // Valid once the device AND the pipeline are ready, so the Engine aborts with
+    // a clear message if (e.g.) the compiled shaders are missing. The renderer no
+    // longer owns geometry — meshes are created separately via createMesh.
     [[nodiscard]] bool isValid() const {
-        return device_ != nullptr && trianglePipeline_ != nullptr &&
-               vertexBuffer_ != nullptr && indexBuffer_ != nullptr;
+        return device_ != nullptr && trianglePipeline_ != nullptr;
     }
 
-    // Render exactly one frame: acquire an image from the window's swapchain,
-    // clear it (and the depth buffer), draw the cube cluster as seen through the
-    // given camera `view` matrix, and present it.
-    void renderFrame(const SDL_FColor& clearColor, const Mat4& view);
+    // Upload geometry into a new Mesh and return it (shared, so many scene nodes
+    // can reference one Mesh). `vertices`/`indices` are copied into GPU buffers
+    // via the staging-upload path; indices are 16-bit (Uint16). Returns nullptr
+    // (after logging) on failure. This is the ONLY place meshes are born, because
+    // it's the only thing holding both the device and the upload helper.
+    [[nodiscard]] std::shared_ptr<Mesh> createMesh(std::span<const Vertex> vertices,
+                                                   std::span<const Uint16> indices);
+
+    // Render exactly one frame: acquire a swapchain image, clear it (and the depth
+    // buffer), draw every mesh in `sceneRoot` (each through its own world matrix)
+    // as seen through the camera `view`, and present it.
+    void renderFrame(const SDL_FColor& clearColor, const Mat4& view,
+                     const Node& sceneRoot);
 
     // Render one frame into an OFF-SCREEN texture (not the window), download the
-    // pixels back to the CPU, and save them to `path` as a BMP. This is our
-    // headless visual-debugging tool: it captures exactly what the engine draws
-    // (through `view`) without needing screen-recording access or a visible
-    // window. Returns false (after logging) on failure. See docs / CLAUDE.md.
+    // pixels back to the CPU, and save them to `path` as a BMP. Our headless
+    // visual-debugging tool: it captures exactly what the engine draws (the same
+    // `sceneRoot` through `view`) without a visible window. Returns false (after
+    // logging) on failure. See docs / CLAUDE.md.
     [[nodiscard]] bool captureFrame(const char* path, const SDL_FColor& clearColor,
-                                    const Mat4& view);
+                                    const Mat4& view, const Node& sceneRoot);
 
 private:
     // Build the graphics pipeline (loads + compiles shaders, and describes the
@@ -66,25 +88,26 @@ private:
     // the constructor.
     bool createTrianglePipeline();
 
-    // Create the vertex + index buffers and upload the cube's data into them.
-    // Called once from the constructor, after the pipeline. Leaves the buffers
-    // null on failure so isValid() reports it.
-    bool createGeometry();
-
     // Create one GPU buffer of `usage` (VERTEX or INDEX), upload `size` bytes
     // from `data` into it via a staging transfer buffer + copy pass, and return
     // it. Returns nullptr (after logging) on failure. The shared helper behind
-    // both the vertex and index uploads.
+    // every mesh upload (see createMesh).
     SDL_GPUBuffer* uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
                                      const void* data, Uint32 size);
 
     // Record the whole scene into an already-begun render pass: bind the pipeline
-    // + geometry once, then draw each cube in the cluster with its own
-    // Model-View-Projection uniform (proj·view·model). Shared by the live
-    // (renderFrame) and off-screen (captureFrame) paths so they can't drift.
-    // `cmd` is needed to push the per-cube uniform; `aspect` builds the projection.
+    // once, build the projection from `aspect`, then walk `root` drawing each
+    // node's mesh with its own Model-View-Projection uniform (proj·view·world).
+    // Shared by the live (renderFrame) and off-screen (captureFrame) paths so they
+    // can't drift. `cmd` is needed to push the per-node uniform.
     void recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                     const Mat4& view, float aspect) const;
+                     const Node& root, const Mat4& view, float aspect) const;
+
+    // Recursive worker for recordScene: draw `node`'s mesh (if any) using the
+    // already-combined `projView` matrix, then recurse into its children. Reads
+    // the node's cached world matrix (filled by Node::updateWorldTransforms).
+    void recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                    const Node& node, const Mat4& projView) const;
 
     // Ensure the depth texture exists and matches (w, h), recreating it on resize.
     // Returns false (after logging) if creation fails. Called each frame before
@@ -95,25 +118,18 @@ private:
     SDL_Window*    window_ = nullptr;  // not owned — the Engine owns the Window
     SDL_GPUDevice* device_ = nullptr;  // owned — released in the destructor
 
-    // The graphics pipeline that draws our cube: it bundles the vertex +
+    // The graphics pipeline that draws our meshes: it bundles the vertex +
     // fragment shaders together with fixed-function state (primitive type, the
     // color target's format, the vertex input layout, etc.) into one object the
-    // GPU can switch to quickly.
+    // GPU can switch to quickly. All meshes share this one pipeline; only the
+    // bound buffers and the MVP uniform change per draw.
     SDL_GPUGraphicsPipeline* trianglePipeline_ = nullptr;  // owned
-
-    // The geometry, living in GPU memory. The vertex buffer holds the cube's 8
-    // unique corners; the index buffer holds 36 indices (12 triangles, 2 per
-    // face) that reuse those corners — the index buffer's payoff: 8 vertices, not
-    // 36.
-    SDL_GPUBuffer* vertexBuffer_ = nullptr;  // owned
-    SDL_GPUBuffer* indexBuffer_  = nullptr;  // owned
-    Uint32         indexCount_   = 0;        // how many indices to draw
 
     // The depth buffer: a texture the same size as the color target that stores,
     // per pixel, the depth of the nearest fragment drawn so far. With the depth
-    // test enabled, the GPU keeps a new fragment only if it's closer — that's
-    // how the cube's near faces correctly hide its far faces, regardless of draw
-    // order. Created lazily and resized to match the swapchain.
+    // test enabled, the GPU keeps a new fragment only if it's closer — that's how
+    // near faces correctly hide far ones, regardless of draw order. Created lazily
+    // and resized to match the swapchain.
     SDL_GPUTexture*      depthTexture_ = nullptr;  // owned
     Uint32              depthWidth_   = 0;
     Uint32              depthHeight_  = 0;

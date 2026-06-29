@@ -1,13 +1,15 @@
 #include "renderer/GpuRenderer.hpp"
 
-#include <array>    // std::array for our compile-time geometry
 #include <cstddef>  // offsetof
 #include <cstring>  // std::memcpy
+#include <memory>   // std::make_shared
 
 #include "core/Log.hpp"
 #include "math/Mat4.hpp"
+#include "renderer/Mesh.hpp"
 #include "renderer/Shader.hpp"
 #include "renderer/Vertex.hpp"
+#include "scene/Node.hpp"
 
 namespace koi {
 
@@ -70,7 +72,7 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     KOI_INFO("GPU device ready (backend: %s)", SDL_GetGPUDeviceDriver(device_));
 
     // ------------------------------------------------------------------------
-    //  3. Build the graphics pipeline that draws our cube. If this fails
+    //  3. Build the graphics pipeline that draws our meshes. If this fails
     //     (e.g. compiled shaders missing) isValid() stays false and the Engine
     //     reports it.
     // ------------------------------------------------------------------------
@@ -79,14 +81,9 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     }
     KOI_INFO("Graphics pipeline ready.");
 
-    // ------------------------------------------------------------------------
-    //  4. Upload our geometry (the cube) into GPU buffers. If this fails,
-    //     isValid() stays false and the Engine reports it.
-    // ------------------------------------------------------------------------
-    if (!createGeometry()) {
-        return;
-    }
-    KOI_INFO("Geometry uploaded (vertex + index buffers ready).");
+    // Note: no geometry is uploaded here anymore. The renderer is now a factory
+    // for meshes (createMesh) — the Engine builds the cube + plane after this
+    // constructor returns and hangs them off the scene graph.
 }
 
 // Pick a depth texture format the device supports as a depth-stencil target.
@@ -273,51 +270,30 @@ SDL_GPUBuffer* GpuRenderer::uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
     return buffer;
 }
 
-bool GpuRenderer::createGeometry() {
-    // The cube's 8 unique corners, centered on the origin (±0.5 on each axis) in
-    // MODEL space. Each corner's color is its position shifted into 0..1 — so the
-    // cube is literally the RGB color cube, and every corner is a distinct color
-    // (the (-,-,-) corner is black, (+,+,+) is white). The depth test + rotation
-    // are what make it read as solid and three-dimensional.
-    //
-    //        7───────6        Corner index = bits (x,y,z), - = -0.5, + = +0.5:
-    //       /│      /│          0:(-,-,-) 1:(+,-,-) 2:(+,+,-) 3:(-,+,-)
-    //      4───────5 │          4:(-,-,+) 5:(+,-,+) 6:(+,+,+) 7:(-,+,+)
-    //      │ 3─────│─2
-    //      │/      │/
-    //      0───────1
-    constexpr float n = -0.5f, p = 0.5f;
-    constexpr std::array<Vertex, 8> vertices = {{
-        { { n, n, n }, { 0.0f, 0.0f, 0.0f } },  // 0
-        { { p, n, n }, { 1.0f, 0.0f, 0.0f } },  // 1
-        { { p, p, n }, { 1.0f, 1.0f, 0.0f } },  // 2
-        { { n, p, n }, { 0.0f, 1.0f, 0.0f } },  // 3
-        { { n, n, p }, { 0.0f, 0.0f, 1.0f } },  // 4
-        { { p, n, p }, { 1.0f, 0.0f, 1.0f } },  // 5
-        { { p, p, p }, { 1.0f, 1.0f, 1.0f } },  // 6
-        { { n, p, p }, { 0.0f, 1.0f, 1.0f } },  // 7
-    }};
+std::shared_ptr<Mesh> GpuRenderer::createMesh(std::span<const Vertex> vertices,
+                                              std::span<const Uint16> indices) {
+    // Upload both halves of the geometry through the same staging path the cube
+    // used in earlier steps. size_bytes() is the element count times sizeof, i.e.
+    // exactly the number of bytes to copy into each GPU buffer.
+    SDL_GPUBuffer* vbo = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_VERTEX,
+                                           vertices.data(),
+                                           static_cast<Uint32>(vertices.size_bytes()));
+    SDL_GPUBuffer* ibo = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_INDEX,
+                                           indices.data(),
+                                           static_cast<Uint32>(indices.size_bytes()));
 
-    // 12 triangles (2 per face) referencing the 8 corners — 36 indices reusing
-    // 8 vertices, the index buffer's payoff. Each pair below is one cube face.
-    constexpr std::array<Uint16, 36> indices = {
-        0, 1, 2,  2, 3, 0,   // front  (z = -0.5)
-        1, 5, 6,  6, 2, 1,   // right  (x = +0.5)
-        5, 4, 7,  7, 6, 5,   // back   (z = +0.5)
-        4, 0, 3,  3, 7, 4,   // left   (x = -0.5)
-        3, 2, 6,  6, 7, 3,   // top    (y = +0.5)
-        4, 5, 1,  1, 0, 4,   // bottom (y = -0.5)
-    };
+    if (vbo == nullptr || ibo == nullptr) {
+        // Release whichever upload succeeded so a half-built mesh doesn't leak.
+        if (vbo != nullptr) SDL_ReleaseGPUBuffer(device_, vbo);
+        if (ibo != nullptr) SDL_ReleaseGPUBuffer(device_, ibo);
+        KOI_ERROR("createMesh: geometry upload failed.");
+        return nullptr;
+    }
 
-    vertexBuffer_ = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_VERTEX,
-                                      vertices.data(),
-                                      static_cast<Uint32>(sizeof(vertices)));
-    indexBuffer_  = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_INDEX,
-                                      indices.data(),
-                                      static_cast<Uint32>(sizeof(indices)));
-    indexCount_   = static_cast<Uint32>(indices.size());
-
-    return vertexBuffer_ != nullptr && indexBuffer_ != nullptr;
+    // Hand the two buffers to a Mesh, which now owns them and will free them (via
+    // the same device) when the last shared_ptr to it drops.
+    return std::make_shared<Mesh>(device_, vbo, ibo,
+                                  static_cast<Uint32>(indices.size()));
 }
 
 // Choose a depth texture format the device supports — see chooseDepthFormat above.
@@ -352,65 +328,60 @@ bool GpuRenderer::ensureDepthTexture(Uint32 width, Uint32 height) {
 }
 
 void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                              const Mat4& view, float aspect) const {
-    // A handful of cubes at fixed world positions, purely so flying the camera
-    // around is legible. This is a hardcoded list, NOT a scene graph — that
-    // abstraction (and a real mesh type) arrives in Step 5.
-    static constexpr Vec3 kCubePositions[] = {
-        {  0.0f,  0.0f,  0.0f },
-        {  2.5f,  0.0f, -1.0f },
-        { -2.5f,  0.5f,  1.0f },
-        {  1.5f,  1.5f, -3.0f },
-        { -2.0f, -1.0f, -2.0f },
-        {  3.0f, -0.5f,  2.0f },
-        { -1.5f,  1.0f,  3.0f },
-        {  0.5f, -1.5f, -4.0f },
-    };
-
-    // Bind the pipeline + geometry ONCE. Every cube reuses the same vertex/index
-    // buffers; only the per-cube MVP uniform changes between draws below.
+                              const Node& root, const Mat4& view, float aspect) const {
+    // Bind the one pipeline every mesh shares. Per-mesh vertex/index buffers are
+    // bound inside recordNode, just before each node's draw.
     SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
-    SDL_GPUBufferBinding vertexBinding = {};
-    vertexBinding.buffer = vertexBuffer_;
-    SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vertexBinding, /*num_bindings=*/1);
-    SDL_GPUBufferBinding indexBinding = {};
-    indexBinding.buffer = indexBuffer_;
-    SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
-    // The projection depends only on the viewport; build it once. The view comes
-    // from the camera. Only the model (per-cube placement) varies in the loop.
+    // The projection depends only on the viewport, and the view only on the
+    // camera, so combine them ONCE here. Each node then only adds one multiply by
+    // its own world matrix: mvp = (proj * view) * world.
     const Mat4 projection = perspective(radians(60.0f), aspect, 0.1f, 100.0f);
+    const Mat4 projView   = projection * view;
 
-    int index = 0;
-    for (const Vec3 pos : kCubePositions) {
-        // A fixed per-cube tilt so neighbouring cubes don't look identical.
-        const float tilt = static_cast<float>(index) * 0.5f;
-        const Mat4 model = translation(pos) * rotationY(tilt) * rotationX(tilt * 0.7f);
+    // Walk the scene tree, drawing as we go. The nodes' world matrices were
+    // computed by Node::updateWorldTransforms() before this render pass began.
+    recordNode(cmd, pass, root, projView);
+}
 
-        // The whole point of a uniform buffer: push this cube's MVP, then draw.
-        // Each draw uses the most recently pushed uniform, so N pushes + N draws
-        // render N independently-placed cubes from one set of geometry buffers.
-        const Mat4 mvp = projection * view * model;
+void GpuRenderer::recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                             const Node& node, const Mat4& projView) const {
+    // A node may carry no mesh (a pure group/pivot): it contributes only its
+    // transform to its descendants and draws nothing itself.
+    if (const Mesh* mesh = node.mesh()) {
+        // Bind THIS mesh's geometry. Different meshes (e.g. cube vs. ground plane)
+        // live in different buffers, so we (re)bind per drawn node. Nodes sharing
+        // a mesh rebind the same buffers — correct, if not yet optimal; batching
+        // by mesh is a later optimization.
+        SDL_GPUBufferBinding vertexBinding = {};
+        vertexBinding.buffer = mesh->vertexBuffer();
+        SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vertexBinding, /*num_bindings=*/1);
+        SDL_GPUBufferBinding indexBinding = {};
+        indexBinding.buffer = mesh->indexBuffer();
+        SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+
+        // Push this node's full MVP (proj·view·world) and draw. Because world
+        // already folds in every ancestor's transform, parented objects move as a
+        // group with no special handling here.
+        const Mat4 mvp = projView * node.worldMatrix();
         SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &mvp, sizeof(mvp));
-        SDL_DrawGPUIndexedPrimitives(pass, indexCount_, /*num_instances=*/1,
+        SDL_DrawGPUIndexedPrimitives(pass, mesh->indexCount(), /*num_instances=*/1,
                                      /*first_index=*/0, /*vertex_offset=*/0,
                                      /*first_instance=*/0);
-        ++index;
+    }
+
+    // Recurse into the rest of the subtree.
+    for (const std::unique_ptr<Node>& child : node.children()) {
+        recordNode(cmd, pass, *child, projView);
     }
 }
 
 GpuRenderer::~GpuRenderer() {
     if (device_ != nullptr) {
-        // Release GPU resources we created (geometry buffers + pipeline) before
-        // tearing down the device that owns them.
-        if (vertexBuffer_ != nullptr) {
-            SDL_ReleaseGPUBuffer(device_, vertexBuffer_);
-            vertexBuffer_ = nullptr;
-        }
-        if (indexBuffer_ != nullptr) {
-            SDL_ReleaseGPUBuffer(device_, indexBuffer_);
-            indexBuffer_ = nullptr;
-        }
+        // Release the GPU resources we still own (depth texture + pipeline) before
+        // tearing down the device. Meshes are NOT freed here: each Mesh owns its
+        // own buffers and must already be gone by now — the Engine releases the
+        // scene (and thus every mesh) BEFORE destroying this renderer.
         if (depthTexture_ != nullptr) {
             SDL_ReleaseGPUTexture(device_, depthTexture_);
             depthTexture_ = nullptr;
@@ -430,7 +401,8 @@ GpuRenderer::~GpuRenderer() {
     }
 }
 
-void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view) {
+void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
+                              const Node& sceneRoot) {
     // ------------------------------------------------------------------------
     //  1. Acquire a command buffer.
     //     We don't command the GPU directly; we *record* commands into a buffer
@@ -495,11 +467,11 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view) {
         SDL_GPURenderPass* pass =
             SDL_BeginGPURenderPass(cmd, &colorTarget, /*num_color_targets=*/1, &depthTarget);
 
-        // Draw the cube cluster through the camera's view matrix. The aspect ratio
-        // comes from the actual swapchain size, so the image is never stretched and
+        // Draw the scene through the camera's view matrix. The aspect ratio comes
+        // from the actual swapchain size, so the image is never stretched and
         // adapts automatically when the window is resized.
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-        recordScene(cmd, pass, view, aspect);
+        recordScene(cmd, pass, sceneRoot, view, aspect);
 
         SDL_EndGPURenderPass(pass);
     }
@@ -514,7 +486,7 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view) {
 }
 
 bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
-                               const Mat4& view) {
+                               const Mat4& view, const Node& sceneRoot) {
     // Fixed capture resolution: keeps the output deterministic and small. The
     // aspect ratio (1280/720) feeds the projection so the cube isn't distorted.
     constexpr Uint32 kWidth  = 1280;
@@ -587,7 +559,7 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
     // Draw the same scene the live path does, through the supplied `view` (the
     // camera's default pose) — deterministic because nothing here is time-based.
     constexpr float kCaptureAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
-    recordScene(cmd, pass, view, kCaptureAspect);
+    recordScene(cmd, pass, sceneRoot, view, kCaptureAspect);
     SDL_EndGPURenderPass(pass);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);

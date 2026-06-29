@@ -68,3 +68,19 @@ referenced in `CLAUDE.md`.
   over arrow-key look or both. Movement is WASD + E/Q regardless.
 - Scene content: **a few static cubes** at fixed positions (a hardcoded list, not a
   scene graph), over a single cube — so flying the camera is legible.
+
+**Next milestone request (Step 5):**
+> Work on the next milestone.
+
+**Decisions made (via clarifying question):**
+- Demo scene shape: **minimal animated hierarchy** — a spinning hub cube with a few
+  orbiting satellites, one carrying a grandchild "moon", plus a ground plane — over a
+  richer solar-system scene or a static tree. Shows parent→child→grandchild inheritance
+  with the least demo code (the engine abstractions are identical either way).
+- Layering: `Mesh` placed in **`renderer/`** (it owns GPU buffers, made by the renderer's
+  `createMesh`); `Transform` + `Node` in **`scene/`**, with `Node` referencing a mesh via
+  `shared_ptr<Mesh>` — a documented refinement of ARCHITECTURE's earlier "scene/ grows a
+  mesh type" note.
+- Still **deferred** (per "introduce a subsystem only when needed"): quaternions
+  (`Transform` uses Euler angles, like `Camera`) and the `renderFrame` begin/draw/end
+  split. No shader/vertex-format change — lighting/textures are Step 6.

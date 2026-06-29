@@ -3,9 +3,10 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 4 (window & render loop, the first triangle, geometry in GPU
+through Step 5 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
-buffer, and a fly camera driven by keyboard/mouse input with delta-time).
+buffer, a fly camera driven by keyboard/mouse input with delta-time, and a
+**mesh** abstraction drawn through a **scene graph** of parent/child transforms).
 
 ## Guiding principles
 
@@ -42,12 +43,16 @@ buffer, and a fly camera driven by keyboard/mouse input with delta-time).
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera, runs the game loop, computes delta-time, routes input (events for quit/look, polled key state for movement), controls startup/shutdown order. |
+| `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera + the scene graph, runs the game loop, computes delta-time, routes input, builds the demo scene (`buildScene`), animates + propagates transforms each frame, controls startup/shutdown order. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the graphics pipeline, the cube's vertex + index buffers, and the depth texture; uploads geometry at startup, and per frame takes a camera `view` matrix and records/submits the draw (acquire → ensure depth texture → render pass with color+depth targets → `recordScene`: bind once, then per-cube push `proj·view·model` + indexed draw → submit). |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the graphics pipeline, and the depth texture. Is a **factory** for meshes (`createMesh`) and a **consumer** of a scene: per frame it takes a camera `view` + a scene root and records/submits the draw (acquire → ensure depth texture → render pass → `recordScene`: bind pipeline once, then walk the tree binding each node's mesh + pushing `proj·view·world` + indexed draw → submit). No longer owns geometry. |
+| `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count). Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must be destroyed before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
+| `Primitives` | [src/renderer/Primitives.*](src/renderer/) | Free functions (`makeCubeMesh`, `makePlaneMesh`) that define a shape's vertex/index data and upload it via `createMesh`, keeping the renderer geometry-agnostic. |
+| `Transform` | [src/scene/Transform.hpp](src/scene/Transform.hpp) | Header-only, SDL-free: position / Euler rotation / scale, plus `localMatrix()` returning `T·R·S` (scale → rotate → translate). Unit-tested in `tests/test_transform.cpp`. |
+| `Node` | [src/scene/Node.*](src/scene/) | One element of the scene graph: a local `Transform`, an optional shared `Mesh`, owned children (`unique_ptr`), and a cached world matrix. `updateWorldTransforms` walks the tree computing `world = parentWorld · local`. Scene-graph composition unit-tested in `tests/test_node.cpp`. |
 | `Camera` | [src/scene/Camera.*](src/scene/) | A yaw/pitch fly camera (position + angles). Produces a `view` matrix via `lookAt`; `processKeyboard`/`addMouseLook` update it from input. Lives above the renderer and knows nothing about the GPU; its header is SDL-free. Logic unit-tested in `tests/test_camera.cpp`. |
 | `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
-| `math` (`Vec`, `Mat4`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`) and column-major 4×4 matrix math (translate/rotate/perspective/`lookAt`). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp`. |
+| `math` (`Vec`, `Mat4`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`) and column-major 4×4 matrix math (translate/rotate/**scale**/perspective/`lookAt`). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp`. |
 | `Shader` | [src/renderer/Shader.*](src/renderer/) | Loads a compiled shader for the active backend: `selectShaderVariant` (pure, unit-tested) picks the format/extension/entry point; `loadShader` reads the file and creates the `SDL_GPUShader` (with the right uniform-buffer count). |
 | `Log` | [src/core/Log.hpp](src/core/Log.hpp) | Leveled logging macros over SDL's logger; one place to control verbosity. |
 
@@ -60,12 +65,16 @@ processEvents()  → SDL_PollEvent: Esc/close → stop; mouse motion → camera.
        │
 dt + input       → dt = ΔSDL_GetTicksNS (clamped); camera.processKeyboard(polled keys, dt)
        │
-renderFrame(view)→ in GpuRenderer (view = camera.viewMatrix()):
-                     1. acquire command buffer
+animate + update → spin a couple of nodes (rotationEuler += rate·dt);
+                   sceneRoot.updateWorldTransforms() caches every node's world matrix
+       │
+renderFrame(view, → in GpuRenderer (view = camera.viewMatrix()):
+  sceneRoot)         1. acquire command buffer
                      2. acquire swapchain image (waits for vsync) + its size
                      3. ensure the depth texture matches that size
                      4. begin render pass (color CLEAR + depth CLEAR to 1.0)
-                     5. recordScene: bind once, then per cube push proj·view·model + indexed draw
+                     5. recordScene: bind pipeline once, then walk the tree — per node
+                        with a mesh, bind its buffers + push proj·view·world + indexed draw
                      6. end render pass
                      7. submit command buffer (queues present)
 ```
@@ -73,8 +82,9 @@ renderFrame(view)→ in GpuRenderer (view = camera.viewMatrix()):
 See [docs/01-window-and-render-loop.html](docs/01-window-and-render-loop.html),
 [docs/02-first-triangle.html](docs/02-first-triangle.html),
 [docs/03-vertex-and-index-buffers.html](docs/03-vertex-and-index-buffers.html),
-[docs/04-3d-cube-mvp-and-depth.html](docs/04-3d-cube-mvp-and-depth.html), and
-[docs/05-camera-and-input.html](docs/05-camera-and-input.html) for the
+[docs/04-3d-cube-mvp-and-depth.html](docs/04-3d-cube-mvp-and-depth.html),
+[docs/05-camera-and-input.html](docs/05-camera-and-input.html), and
+[docs/06-meshes-and-scene-graph.html](docs/06-meshes-and-scene-graph.html) for the
 concept-by-concept explanation.
 
 ### Shaders & the build-time toolchain
@@ -106,11 +116,12 @@ Vertex[] in CPU RAM ──memcpy──► transfer (staging) buffer ──copy p
 
 `GpuRenderer::uploadToGpuBuffer()` encapsulates that move (create GPU buffer →
 create + map an UPLOAD transfer buffer → memcpy → copy pass → submit) and is reused
-for both the vertex buffer and the index buffer in `createGeometry()`. This is the
-mirror image of `captureFrame`, which uses a *download* transfer buffer to read
-pixels back. The upload runs once at startup; no fence is needed because command
-buffers execute in submission order, so the later per-frame draw sees the finished
-copy.
+for both the vertex buffer and the index buffer. As of Step 5 the public entry point
+is `createMesh(vertices, indices)`, which runs that upload twice and wraps the two
+buffers in a `Mesh`. This is the mirror image of `captureFrame`, which uses a
+*download* transfer buffer to read pixels back. Uploads run when a mesh is created;
+no fence is needed because command buffers execute in submission order, so the later
+per-frame draw sees the finished copy.
 
 The pipeline carries a **vertex input layout** — a buffer description (slot, pitch =
 `sizeof(Vertex)`, per-vertex rate) plus one attribute per shader input (location,
@@ -161,9 +172,36 @@ motion under SDL **relative mouse mode** (cursor hidden + locked, motion as delt
 feeding `addMouseLook`. Relative mode is enabled only for interactive runs, not the
 headless `KOI_MAX_FRAMES`/`KOI_CAPTURE` paths.
 
-The scene is a small **hardcoded list of cube positions**, drawn by `recordScene`
-binding the geometry once and pushing a per-cube `proj·view·model` uniform before
-each draw. This is deliberately *not* a scene graph — that abstraction is Step 5.
+### Meshes & the scene graph (Step 5)
+
+Step 5 removes the last bit of hardcoding from the renderer. Geometry moved out of
+`GpuRenderer` into reusable **`Mesh`** objects, and the flat cube list became a
+**scene graph**: a tree of **`Node`**s, each with a local **`Transform`** (TRS) and
+an optional shared `Mesh`.
+
+```
+            Mesh (renderer/)             scene graph (scene/)
+   vertices+indices in GPU buffers   Node ── Transform (T·R·S) ── localMatrix()
+   shared_ptr, made by createMesh     │└── shared_ptr<Mesh>   (may be null = group)
+                                       └── unique_ptr children…  → a tree
+```
+
+Two passes per frame keep concerns separate: **(1)** `Node::updateWorldTransforms`
+walks the tree top-down computing each node's world matrix as
+`world = parentWorld · local` (so a parent's motion propagates to all descendants —
+the whole point), then **(2)** `GpuRenderer::recordScene` walks it again and, for each
+node that has a mesh, binds that mesh and draws at `proj·view·world`. Meshes are
+`shared_ptr` (many nodes reuse one cube); children are `unique_ptr` (a node owns its
+subtree). Layering note: `Node` (in `scene/`) references `Mesh` (in `renderer/`) — a
+deliberate dependency, since a node that draws must name *what* geometry to draw;
+`Camera` stays GPU-free. `Mat4` gained `scaling()` to support `Transform`.
+
+> **Lifetime rule (RAII):** a `Mesh` frees its GPU buffers through the renderer's
+> device, which it does *not* own. So every mesh must die before the device. The
+> `Engine` enforces this by releasing the scene **before** the renderer in
+> `shutdown()` (and by declaring `sceneRoot_` after `renderer_`, so default member
+> destruction order agrees). Splitting `renderFrame` into `begin/draw/end` was
+> considered and deliberately deferred — not needed yet.
 
 ## Lifecycle & ownership
 
@@ -171,13 +209,15 @@ Startup builds bottom-up, shutdown tears down top-down — the standard RAII
 ordering that keeps resources valid for exactly as long as something uses them:
 
 ```
-init:      SDL_Init → Window → GpuRenderer (claims Window)
-shutdown:  GpuRenderer (releases Window) → Window → SDL_Quit
+init:      SDL_Init → Window → GpuRenderer (claims Window) → buildScene (uploads meshes)
+shutdown:  Scene (frees meshes) → GpuRenderer (releases Window) → Window → SDL_Quit
 ```
 
-`GpuRenderer` must be destroyed before `Window` because it holds the window's
-swapchain. The `Engine` enforces this by storing them as `std::unique_ptr` and
-resetting the renderer first.
+Two ordering constraints, both enforced by `Engine` via `std::unique_ptr` resets:
+`GpuRenderer` must be destroyed before `Window` (it holds the window's swapchain);
+and the **scene** must be destroyed before `GpuRenderer` (each `Mesh` frees its GPU
+buffers through the renderer's device — see the lifetime rule above). So `shutdown()`
+resets `sceneRoot_`, then `renderer_`, then `window_`.
 
 > Implementation note: `Engine`'s constructor and destructor are **defined in the
 > `.cpp`**, not the header. Its `unique_ptr` members point to forward-declared
@@ -240,6 +280,11 @@ Future milestones slot into this structure without reshaping it:
   became a real `lookAt` camera flown with keyboard/mouse, and a delta-time clock
   drives motion. `Mat4` gained `lookAt`. The renderer now takes a `view` and draws a
   hardcoded cube cluster via `recordScene`.
-- **Step 5+:** `scene/` grows a real **mesh** type and a **node hierarchy** (parent/
-  child transforms) to replace the hardcoded cube list; `renderFrame` likely splits
-  into `begin/draw/end` as the number and variety of draws grows.
+- **Step 5 (done):** geometry moved into reusable `Mesh` objects (made by the
+  renderer's new `createMesh` factory; shapes in `Primitives`), and the hardcoded list
+  became a **scene graph** — `scene/Transform` + `scene/Node` with parent/child world
+  transforms. `Mat4` gained `scaling`. `renderFrame`/`captureFrame` now take a scene
+  root and `recordScene` traverses it. (The `begin/draw/end` split was deferred.)
+- **Step 6+:** `Vertex` grows **normals** (and texture coordinates); shaders gain
+  per-fragment **lighting** and **texture** sampling, pulling in samplers and a normal
+  matrix — the first change to the shaders since Step 3.

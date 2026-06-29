@@ -9,11 +9,12 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 4:** adds a **fly camera** you can move through the scene.
-> This introduces a **view matrix** (hand-rolled `lookAt`), a **delta-time** clock so
-> motion is frame-rate independent, and **input** — polled keyboard state for WASD
-> movement plus SDL relative mouse mode for FPS-style mouse look. The scene is now a
-> small cluster of cubes to fly around.
+> **Current status — Step 5:** adds **meshes** and a **scene graph**. Geometry now lives
+> in reusable `Mesh` objects (uploaded once, shared by many objects) instead of being baked
+> into the renderer, and the world is a **tree of nodes** with parent/child **Transforms**
+> (position / rotation / scale). The demo scene is a small animated hierarchy — a spinning
+> hub cube whose satellites orbit it, one carrying its own moon — above a ground plane. Fly
+> through it with the Step 4 camera.
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 
@@ -55,6 +56,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - [docs/05-camera-and-input.html](docs/05-camera-and-input.html) — the view matrix &
   `lookAt`, a yaw/pitch fly camera, delta-time, and events vs. polled input, mapped to
   the Step 4 code you fly with WASD + mouse.
+- [docs/06-meshes-and-scene-graph.html](docs/06-meshes-and-scene-graph.html) — reusable
+  meshes, the Transform (TRS) and matrix order, and a tree of nodes with parent/child
+  transforms, mapped to the Step 5 code that animates a cube hierarchy.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -66,7 +70,7 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 | ✅ **2** | **Vertex/index buffers** | GPU buffers, transfer buffers, vertex layouts |
 | ✅ **3** | **3D cube + MVP + depth** | hand-rolled `vec`/`mat4`, projection, depth testing |
 | ✅ **4** | **Camera + input movement** | view matrix, delta-time, fly camera |
-| 5 | Meshes & scene graph | model abstraction, node hierarchy |
+| ✅ **5** | **Meshes & scene graph** | mesh abstraction, Transform (TRS), node hierarchy |
 | 6 | Textures + Phong lighting | samplers, normals, uniform buffers |
 | 7+ | Models, shadows, post-fx | glTF loading, shadow maps, post-processing |
 

@@ -91,8 +91,11 @@ add_library(koi_core STATIC
     src/core/Engine.cpp
     src/core/Window.cpp
     src/renderer/GpuRenderer.cpp
+    src/renderer/Mesh.cpp
+    src/renderer/Primitives.cpp
     src/renderer/Shader.cpp
     src/scene/Camera.cpp
+    src/scene/Node.cpp
 )
 
 # PUBLIC include dir: anything linking koi_core (the app, the tests) can
@@ -124,6 +127,8 @@ add_executable(koi-tests
     tests/test_vertex.cpp
     tests/test_math.cpp
     tests/test_camera.cpp
+    tests/test_transform.cpp
+    tests/test_node.cpp
 )
 target_link_libraries(koi-tests PRIVATE koi_core doctest::doctest koi_warnings)
 add_test(NAME koi-tests COMMAND koi-tests)
