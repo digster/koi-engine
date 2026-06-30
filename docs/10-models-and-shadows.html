@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Models &amp; Shadows · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html" aria-current="page">Models &amp; Shadows</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Models &amp; Shadows</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 9:</strong> two things at once. <strong>Load real models</strong>
+    from files (a sphere from glTF, a torus from OBJ) instead of only hand-built cubes, and
+    add <strong>shadow mapping</strong> so objects cast shadows on the floor and each other.</p>
+    <p>This is a bigger step than usual — and the two halves make a deliberate trade: we use
+    LIBRARIES for the model parsing (it's bookkeeping, not graphics) so the from-scratch
+    effort goes into the shadow algorithm.</p>
+  </blockquote>
+
+  <h2>1. Loading real models — with a library, on purpose</h2>
+
+  <p>So far every shape was built by hand in code. Real engines load <strong>model
+  files</strong> exported from tools (Blender, etc.). The two common formats:
+  <strong>OBJ</strong> (old, plain text) and <strong>glTF</strong> (modern, JSON + binary,
+  the "JPEG of 3D"). Parsing them is fiddly — separate index lists in OBJ, typed binary
+  accessors in glTF — with little <em>conceptual</em> payoff. Unlike our hand-rolled math
+  (where writing it <em>is</em> the lesson), here we use small single-header
+  <strong>libraries</strong>: <a href="https://github.com/tinyobjloader/tinyobjloader">tinyobjloader</a>
+  for OBJ and <a href="https://github.com/jkuhlmann/cgltf">cgltf</a> for glTF, downloaded at
+  build time like our <code>doctest</code> header. That keeps the budget on the graphics.</p>
+
+  <p>Our <code>loadModel</code> reads a file's first mesh — positions, normals, UVs,
+  indices — into our <code>Vertex</code> layout and uploads it via the same
+  <code>createMesh</code> a primitive uses. The engine then gives the model its own
+  <code>Material</code> (we read geometry only, not the file's materials).</p>
+
+  <h2>2. One index per vertex (and 32-bit indices)</h2>
+
+  <p>OBJ has a quirk worth understanding: a face references <em>separate</em> indices for
+  position, texture coordinate, and normal (<code>f 5/1/3 …</code>). But the GPU wants
+  <strong>one</strong> index per fully-combined vertex. So the loader
+  <strong>de-duplicates</strong>: each unique <code>(position, uv, normal)</code> triple
+  becomes one <code>Vertex</code>, and a hash map turns repeats into a shared index. (glTF
+  already stores combined vertices, so it skips this.)</p>
+
+  <p>Hand-built shapes fit in 16-bit indices (≤ 65 535 vertices), but a real model can have
+  far more, so <code>Mesh</code> now records whether its index buffer is <strong>16- or
+  32-bit</strong>, and the renderer binds it accordingly.</p>
+
+  <h2>3. Why nothing cast a shadow — until now</h2>
+
+  <p>Lighting (Step 7) darkens a surface that <em>faces away</em> from the light, but it has
+  no idea whether something <em>between</em> the surface and the light is blocking it. That's
+  what a shadow is: occlusion. Computing it needs a global question — "is anything between
+  this point and the light?" — that per-fragment shading can't answer alone.</p>
+
+  <h2>4. Shadow mapping: render from the light, then compare</h2>
+
+  <p>The classic trick is <strong>shadow mapping</strong>, and it's beautifully simple in
+  spirit: <strong>render the scene a first time from the light's point of view</strong>,
+  keeping only depth. That "shadow map" records, for each direction the light looks, how far
+  away the nearest surface is. Then when shading normally, ask: is this fragment
+  <em>farther</em> from the light than what the shadow map saw in that direction? If yes,
+  something was closer — this fragment is in shadow.</p>
+
+  <pre class="diagram">  PASS 1 (from the light)          PASS 2 (from the camera)
+  ┌─ light ─┐                      for each fragment:
+  │  │ │ │   render depth only       project worldPos into the light's view
+  ▼  ▼ ▼ ▼   into the shadow map     d_frag  = its depth from the light
+  ═══════════                        d_near  = shadowMap[that direction]
+   scene                            in shadow  ⇔  d_frag > d_near (+ bias)</pre>
+
+  <h2>5. Pass 1 — depth from the light's view</h2>
+
+  <p>Our light is <strong>directional</strong> (a sun), so its rays are parallel — we view
+  the scene through an <strong>orthographic</strong> box aligned with the light direction
+  (a new <code>orthographic()</code> joins <code>perspective()</code> in the math). The
+  <strong>shadow map</strong> is a depth texture created so it can be both rendered into
+  <em>and</em> sampled later. A dedicated <strong>depth-only pipeline</strong> (a tiny
+  <code>shadow.vert</code> that just positions vertices in the light's clip space, and an
+  <em>empty</em> <code>shadow.frag</code>) renders the scene's depth into it — no color, the
+  GPU writes depth for free.</p>
+
+  <h2>6. Pass 2 — the comparison (bias &amp; PCF)</h2>
+
+  <p>In the main fragment shader we transform the fragment's world position by the
+  <strong>same</strong> light matrix, giving its position in the shadow map and its depth
+  from the light. Compare that depth to the stored one. Two practical wrinkles every shadow
+  map needs:</p>
+
+  <ul>
+    <li><strong>Bias.</strong> Floating-point depth and the shadow map's finite resolution
+    make a surface very slightly "deeper" than its own recorded depth, so it shadows
+    <em>itself</em> in an ugly moiré ("shadow acne"). A small <strong>depth bias</strong>
+    (scaled by how steeply the surface faces the light) nudges the comparison to prevent it.</li>
+    <li><strong>PCF.</strong> A single compare gives hard, jagged edges. Averaging a small
+    <strong>2×2</strong> block of shadow-map taps (Percentage-Closer Filtering) softens
+    them.</li>
+  </ul>
+
+  <p>Shadowed fragments keep their <strong>ambient</strong> term but lose diffuse + specular,
+  so shadows darken rather than turning pure black.</p>
+
+  <h2>7. A binding gotcha worth remembering</h2>
+
+  <p>The main fragment shader now reads <strong>two</strong> textures — the material's image
+  and the shadow map. When we compiled GLSL → SPIR-V → MSL, <code>spirv-cross</code> ordered
+  the two samplers by <em>usage</em> rather than by their <code>layout(binding = N)</code>,
+  silently <strong>swapping</strong> them on Metal — the surface texture sampled the depth
+  map and vice versa, washing the scene to grayscale. The fix is one flag,
+  <code>--msl-decoration-binding</code>, which makes the Metal resource indices follow the
+  GLSL bindings. A good reminder that the cross-compile step has conventions of its own — and
+  that the <strong>headless capture</strong> is what catches such bugs, since they're
+  invisible to the compiler.</p>
+
+  <h2>8. The code</h2>
+
+  <h3>The loader — <a href="../src/renderer/ModelLoader.cpp">src/renderer/ModelLoader.cpp</a></h3>
+  <p>Dispatches by extension: <code>.obj</code> → tinyobjloader (+ dedup), <code>.glb/.gltf</code>
+  → cgltf. The third-party headers are pulled into this one translation unit (compiled with
+  warnings off, since we don't own that code). <code>Mesh</code> gained a 32-bit index path
+  in <a href="../src/renderer/GpuRenderer.cpp">createMesh</a>.</p>
+
+  <h3>The shadow pass — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer</a> &amp; <a href="../shaders/shadow.vert">shadow.vert/.frag</a></h3>
+  <p>The renderer owns the shadow map, a CLAMP sampler, and the depth-only pipeline;
+  <code>renderShadowPass</code> draws the scene's depth from the light before the main pass.
+  <code>recordScene</code> binds the shadow map (fragment slot 1) and pushes the light matrix
+  into the light uniform; <a href="../shaders/triangle.frag">triangle.frag</a> does the
+  lookup, bias, and PCF.</p>
+
+  <h3>The scene — <a href="../src/core/Engine.cpp">Engine</a></h3>
+  <p><code>buildScene</code> loads <code>sphere.glb</code> and <code>torus.obj</code>, gives
+  them glossy materials, and places them flanking the cubes.</p>
+
+  <h2>9. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Drop in a model.</strong> Export any low-poly <code>.obj</code> or
+    <code>.glb</code> from Blender into <code>assets/</code>, re-run CMake, and load it in
+    <a href="../src/core/Engine.cpp">buildScene</a>.</li>
+    <li><strong>Move the sun.</strong> Change the light direction in
+    <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> and watch the shadows swing
+    — the shadow pass and the shading use the same direction, so they stay in sync.</li>
+    <li><strong>See the acne.</strong> Set the depth bias to 0 and look for the shimmering
+    self-shadowing it was preventing.</li>
+    <li><strong>Shrink the shadow map.</strong> Drop it from 2048² to 256² and watch the
+    shadow edges get blocky — the resolution/quality trade-off, visible.</li>
+  </ol>
+
+  <h2>10. What's next</h2>
+
+  <p>➡️ <strong>Post-processing.</strong> The engine now has geometry, a scene graph,
+  textures, materials, lighting, loaded models, and shadows. A natural next step is to render
+  the whole scene into an <strong>offscreen target</strong> and run a <strong>fullscreen
+  pass</strong> over it — tone-mapping, bloom, or anti-aliasing — the gateway to a modern
+  post-processing pipeline.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

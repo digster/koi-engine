@@ -22,6 +22,7 @@
     <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
     <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
     <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
   </div>
 </nav>
 
@@ -86,6 +87,12 @@
       <p>A per-object Material (texture + specular params), per-draw binding, and
       frame-vs-object uniforms — then the Step 8 code that gives each object its own look.</p>
     </a>
+    <a class="card" href="10-models-and-shadows.html">
+      <h3>Models &amp; Shadows →</h3>
+      <p>Loading OBJ/glTF models with single-header libraries, and shadow mapping (a depth
+      pre-pass from the light) — then the Step 9 code that loads a sphere + torus and casts
+      shadows on the floor.</p>
+    </a>
   </div>
 
   <h2>Roadmap</h2>
@@ -107,7 +114,8 @@
       <tr><td>✅ <strong>6</strong></td><td><strong>Textures</strong></td><td>UV coordinates, GPU textures, samplers (filtering &amp; wrap)</td></tr>
       <tr><td>✅ <strong>7</strong></td><td><strong>Phong lighting</strong></td><td>normals, a directional light, ambient/diffuse/specular</td></tr>
       <tr><td>✅ <strong>8</strong></td><td><strong>Materials</strong></td><td>per-object texture + specular params, per-draw binding</td></tr>
-      <tr><td>9+</td><td>Models, shadows, post-fx</td><td>glTF loading, shadow maps, post-processing</td></tr>
+      <tr><td>✅ <strong>9</strong></td><td><strong>Models &amp; shadows</strong></td><td>OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping</td></tr>
+      <tr><td>10+</td><td>Post-processing &amp; beyond</td><td>offscreen targets, tone-mapping, anti-aliasing</td></tr>
     </tbody>
   </table>
 

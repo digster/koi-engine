@@ -128,3 +128,19 @@ referenced in `CLAUDE.md`.
   (`assets/dots.bmp`); demo uses 3 materials (matte floor, glossy cubes, extra-shiny hub —
   same texture, higher shininess). No vertex change. Model loading / shadows / post-fx
   shifted to Step 9+.
+
+**Next milestone request (Step 9):**
+> Okay, work on the next iteration.
+
+**Decisions made (via clarifying questions):**
+- Direction (over hand-rolled OBJ loading / shadows-only / post-fx-only): **use an external
+  library for OBJ + glTF loading, and focus the from-scratch effort on shadow mapping +
+  post-processing.** So model parsing is library-based; the graphics is hand-written.
+- This iteration's scope (over model-loading-only / shadows-first): **model loading +
+  shadow mapping bundled** into one larger step. Post-processing → Step 10.
+- Library (over assimp / OBJ-only): **tinyobjloader + cgltf** (two single headers, downloaded
+  at configure time like `doctest` — keeps the build light).
+- Consequences: `Mesh` gained 16/32-bit index sizes; `Mat4` gained `orthographic`; a
+  depth-only shadow pipeline + 2048² sampleable shadow map; two-pass render (shadow then main);
+  a second fragment sampler. Models generated procedurally (sphere.glb, torus.obj) to avoid
+  copyright. Hit + fixed a `spirv-cross` MSL sampler-swap via `--msl-decoration-binding`.

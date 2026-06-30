@@ -13,8 +13,10 @@
 //      docs/03 for why indexing pays off).
 //    * indexCount — how many indices to draw.
 //  All three already existed inside GpuRenderer; Mesh just gives them an owner
-//  with a clear lifetime. We standardise on 16-bit (Uint16) indices, which the
-//  renderer relies on when it binds the index buffer.
+//  with a clear lifetime. The Mesh also records its index ELEMENT SIZE (16- or
+//  32-bit): hand-built primitives fit in 16-bit indices, but loaded models (Step 9)
+//  can exceed 65 535 vertices and need 32-bit. The renderer reads this when it binds
+//  the index buffer, so both kinds draw correctly.
 //
 //  OWNERSHIP & THE LIFETIME RULE (important, and a recurring RAII lesson)
 //  A Mesh OWNS its two GPU buffers and releases them in its destructor. But GPU
@@ -40,9 +42,12 @@ class Mesh {
 public:
     // Takes ownership of two already-uploaded GPU buffers. `device` is borrowed,
     // not owned — it must outlive this Mesh (see the lifetime rule above).
-    // Normally you don't call this directly: use GpuRenderer::createMesh.
+    // `indexElementSize` records whether the index buffer is 16- or 32-bit so the
+    // renderer binds it correctly. Normally you don't call this directly: use
+    // GpuRenderer::createMesh.
     Mesh(SDL_GPUDevice* device, SDL_GPUBuffer* vertexBuffer,
-         SDL_GPUBuffer* indexBuffer, Uint32 indexCount);
+         SDL_GPUBuffer* indexBuffer, Uint32 indexCount,
+         SDL_GPUIndexElementSize indexElementSize = SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
     // Releases the two GPU buffers via the (borrowed) device.
     ~Mesh();
@@ -57,12 +62,14 @@ public:
     [[nodiscard]] SDL_GPUBuffer* vertexBuffer() const { return vertexBuffer_; }
     [[nodiscard]] SDL_GPUBuffer* indexBuffer()  const { return indexBuffer_; }
     [[nodiscard]] Uint32         indexCount()   const { return indexCount_; }
+    [[nodiscard]] SDL_GPUIndexElementSize indexElementSize() const { return indexElementSize_; }
 
 private:
     SDL_GPUDevice* device_       = nullptr;  // borrowed — owned by GpuRenderer
     SDL_GPUBuffer* vertexBuffer_ = nullptr;  // owned
     SDL_GPUBuffer* indexBuffer_  = nullptr;  // owned
     Uint32         indexCount_   = 0;
+    SDL_GPUIndexElementSize indexElementSize_ = SDL_GPU_INDEXELEMENTSIZE_16BIT;
 };
 
 }  // namespace koi

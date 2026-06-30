@@ -91,9 +91,17 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
         return;
     }
 
+    // ------------------------------------------------------------------------
+    //  5. Create the shadow-mapping resources (shadow map texture, its sampler,
+    //     and the depth-only pipeline). If this fails, isValid() reports it.
+    // ------------------------------------------------------------------------
+    if (!createShadowResources()) {
+        return;
+    }
+
     // Note: no geometry or textures are uploaded here. The renderer is a factory
     // for meshes (createMesh) and textures (loadTexture) — the Engine builds the
-    // cube + plane + texture after this constructor returns and binds them.
+    // scene (geometry + materials) after this constructor returns.
 }
 
 // Pick a depth texture format the device supports as a depth-stencil target.
@@ -120,7 +128,7 @@ bool GpuRenderer::createTrianglePipeline() {
     // The vertex shader declares one uniform buffer (the MVP matrix); the
     // fragment shader declares none.
     SDL_GPUShader* vertexShader   = loadShader(device_, "triangle.vert", SDL_GPU_SHADERSTAGE_VERTEX, /*numUniformBuffers=*/1);
-    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/2, /*numSamplers=*/1);
+    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/2, /*numSamplers=*/2);
     if (vertexShader == nullptr || fragmentShader == nullptr) {
         // loadShader already logged the cause. Clean up whichever did load.
         if (vertexShader != nullptr)   SDL_ReleaseGPUShader(device_, vertexShader);
@@ -240,6 +248,164 @@ bool GpuRenderer::createSampler() {
         return false;
     }
     return true;
+}
+
+// ----------------------------------------------------------------------------
+//  Shadow mapping helpers (file-local).
+// ----------------------------------------------------------------------------
+namespace {
+
+// The shadow map's resolution. Bigger = crisper shadows, more memory/fill. A
+// directional light covers the whole scene with one map, so 2048² is plenty here.
+constexpr Uint32 kShadowSize = 2048;
+
+// The fixed "sun" — the SAME direction the fragment shader lights with, so the
+// shadows line up with the shading.
+Vec3 sunDirection() { return normalize(Vec3{-0.4f, -1.0f, -0.3f}); }
+
+// Build the light's view-projection: an orthographic box (parallel sun rays) looking
+// along the sun direction at the scene center. This one matrix both renders the
+// shadow map (pass 1) and decodes it in the fragment shader (pass 2), so they must
+// agree exactly. The box (±kHalf) and range are sized to enclose the whole scene.
+Mat4 computeLightViewProj() {
+    const Vec3 dir    = sunDirection();
+    const Vec3 center = {0.0f, -0.5f, 0.0f};   // roughly the middle of the scene
+    const float back  = 18.0f;                 // how far back along the sun to place the eye
+    const Vec3 eye    = center - dir * back;
+    const Mat4 view   = lookAt(eye, center, Vec3{0.0f, 1.0f, 0.0f});
+    const float kHalf = 11.0f;                 // half-width of the covered area
+    const Mat4 proj   = orthographic(-kHalf, kHalf, -kHalf, kHalf, 0.1f, back * 2.0f);
+    return proj * view;
+}
+
+}  // namespace
+
+bool GpuRenderer::createShadowResources() {
+    // 1. The shadow map: a depth texture we both RENDER INTO (pass 1) and SAMPLE
+    //    (pass 2). It needs both usages, and the same depth format the main pipeline
+    //    chose so the depth values are comparable.
+    SDL_GPUTextureCreateInfo texInfo = {};
+    texInfo.type                 = SDL_GPU_TEXTURETYPE_2D;
+    texInfo.format               = depthFormat_;
+    texInfo.usage                = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET |
+                                   SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    texInfo.width                = kShadowSize;
+    texInfo.height               = kShadowSize;
+    texInfo.layer_count_or_depth = 1;
+    texInfo.num_levels           = 1;
+    shadowMap_ = SDL_CreateGPUTexture(device_, &texInfo);
+    if (shadowMap_ == nullptr) {
+        KOI_ERROR("Failed to create shadow map texture: %s", SDL_GetError());
+        return false;
+    }
+
+    // 2. The shadow sampler: CLAMP_TO_EDGE so a fragment whose light-space position
+    //    falls outside the map reads the (far) edge and counts as lit, never tiled.
+    SDL_GPUSamplerCreateInfo sInfo = {};
+    sInfo.min_filter     = SDL_GPU_FILTER_LINEAR;
+    sInfo.mag_filter     = SDL_GPU_FILTER_LINEAR;
+    sInfo.mipmap_mode    = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    sInfo.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sInfo.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sInfo.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    shadowSampler_ = SDL_CreateGPUSampler(device_, &sInfo);
+    if (shadowSampler_ == nullptr) {
+        KOI_ERROR("Failed to create shadow sampler: %s", SDL_GetError());
+        return false;
+    }
+
+    // 3. The depth-only pipeline: shadow.vert positions vertices in the light's clip
+    //    space; shadow.frag is empty. NO color target — we only want the depth the
+    //    rasterizer writes. The vertex input reads just position, but at the full
+    //    Vertex stride (the meshes carry color/uv/normal too).
+    SDL_GPUShader* vs = loadShader(device_, "shadow.vert", SDL_GPU_SHADERSTAGE_VERTEX,
+                                   /*numUniformBuffers=*/1);
+    SDL_GPUShader* fs = loadShader(device_, "shadow.frag", SDL_GPU_SHADERSTAGE_FRAGMENT);
+    if (vs == nullptr || fs == nullptr) {
+        if (vs != nullptr) SDL_ReleaseGPUShader(device_, vs);
+        if (fs != nullptr) SDL_ReleaseGPUShader(device_, fs);
+        return false;
+    }
+
+    SDL_GPUVertexBufferDescription vbDesc = {};
+    vbDesc.slot       = 0;
+    vbDesc.pitch      = static_cast<Uint32>(sizeof(Vertex));
+    vbDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    const SDL_GPUVertexAttribute posAttr = {
+        /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+        offsetof(Vertex, position)};
+
+    SDL_GPUGraphicsPipelineCreateInfo info = {};
+    info.vertex_shader   = vs;
+    info.fragment_shader = fs;
+    info.vertex_input_state.vertex_buffer_descriptions = &vbDesc;
+    info.vertex_input_state.num_vertex_buffers         = 1;
+    info.vertex_input_state.vertex_attributes          = &posAttr;
+    info.vertex_input_state.num_vertex_attributes      = 1;
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.depth_stencil_state.enable_depth_test  = true;
+    info.depth_stencil_state.enable_depth_write = true;
+    info.depth_stencil_state.compare_op         = SDL_GPU_COMPAREOP_LESS;
+    // A small depth bias during the shadow pass nudges stored depths away from the
+    // light, reducing "shadow acne" (a surface shadowing itself) at the source.
+    info.rasterizer_state.enable_depth_bias         = true;
+    info.rasterizer_state.depth_bias_constant_factor = 1.25f;
+    info.rasterizer_state.depth_bias_slope_factor    = 1.75f;
+    info.target_info.num_color_targets        = 0;       // depth only — no color
+    info.target_info.has_depth_stencil_target = true;
+    info.target_info.depth_stencil_format     = depthFormat_;
+
+    shadowPipeline_ = SDL_CreateGPUGraphicsPipeline(device_, &info);
+    SDL_ReleaseGPUShader(device_, vs);
+    SDL_ReleaseGPUShader(device_, fs);
+    if (shadowPipeline_ == nullptr) {
+        KOI_ERROR("Failed to create shadow pipeline: %s", SDL_GetError());
+        return false;
+    }
+    return true;
+}
+
+void GpuRenderer::renderShadowPass(SDL_GPUCommandBuffer* cmd, const Node& root,
+                                   const Mat4& lightViewProj) const {
+    // PASS 1: render the scene's depth into the shadow map, from the light's view.
+    // A render pass with a depth target but NO color target. STORE the result — the
+    // main pass samples it.
+    SDL_GPUDepthStencilTargetInfo depthTarget = {};
+    depthTarget.texture          = shadowMap_;
+    depthTarget.clear_depth      = 1.0f;
+    depthTarget.load_op          = SDL_GPU_LOADOP_CLEAR;
+    depthTarget.store_op         = SDL_GPU_STOREOP_STORE;   // sampled next pass → keep it
+    depthTarget.stencil_load_op  = SDL_GPU_LOADOP_DONT_CARE;
+    depthTarget.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    depthTarget.cycle            = true;
+
+    SDL_GPURenderPass* pass =
+        SDL_BeginGPURenderPass(cmd, /*color_targets=*/nullptr, /*num_color=*/0, &depthTarget);
+    SDL_BindGPUGraphicsPipeline(pass, shadowPipeline_);
+    recordShadowNode(cmd, pass, root, lightViewProj);
+    SDL_EndGPURenderPass(pass);
+}
+
+void GpuRenderer::recordShadowNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                                   const Node& node, const Mat4& lightViewProj) const {
+    // Draw whatever has geometry (material/texture irrelevant — we only write depth).
+    if (const Mesh* mesh = node.mesh()) {
+        SDL_GPUBufferBinding vertexBinding = {};
+        vertexBinding.buffer = mesh->vertexBuffer();
+        SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vertexBinding, /*num_bindings=*/1);
+        SDL_GPUBufferBinding indexBinding = {};
+        indexBinding.buffer = mesh->indexBuffer();
+        SDL_BindGPUIndexBuffer(pass, &indexBinding, mesh->indexElementSize());
+
+        const Mat4 lightMvp = lightViewProj * node.worldMatrix();
+        SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &lightMvp, sizeof(lightMvp));
+        SDL_DrawGPUIndexedPrimitives(pass, mesh->indexCount(), /*num_instances=*/1,
+                                     /*first_index=*/0, /*vertex_offset=*/0,
+                                     /*first_instance=*/0);
+    }
+    for (const std::unique_ptr<Node>& child : node.children()) {
+        recordShadowNode(cmd, pass, *child, lightViewProj);
+    }
 }
 
 SDL_GPUBuffer* GpuRenderer::uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
@@ -381,17 +547,17 @@ SDL_GPUTexture* GpuRenderer::uploadToGpuTexture(const void* pixels, Uint32 width
     return texture;
 }
 
-std::shared_ptr<Mesh> GpuRenderer::createMesh(std::span<const Vertex> vertices,
-                                              std::span<const Uint16> indices) {
+std::shared_ptr<Mesh> GpuRenderer::createMeshImpl(std::span<const Vertex> vertices,
+                                                  const void* indexData, Uint32 indexBytes,
+                                                  Uint32 indexCount,
+                                                  SDL_GPUIndexElementSize elemSize) {
     // Upload both halves of the geometry through the same staging path the cube
     // used in earlier steps. size_bytes() is the element count times sizeof, i.e.
     // exactly the number of bytes to copy into each GPU buffer.
     SDL_GPUBuffer* vbo = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_VERTEX,
                                            vertices.data(),
                                            static_cast<Uint32>(vertices.size_bytes()));
-    SDL_GPUBuffer* ibo = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_INDEX,
-                                           indices.data(),
-                                           static_cast<Uint32>(indices.size_bytes()));
+    SDL_GPUBuffer* ibo = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_INDEX, indexData, indexBytes);
 
     if (vbo == nullptr || ibo == nullptr) {
         // Release whichever upload succeeded so a half-built mesh doesn't leak.
@@ -402,9 +568,25 @@ std::shared_ptr<Mesh> GpuRenderer::createMesh(std::span<const Vertex> vertices,
     }
 
     // Hand the two buffers to a Mesh, which now owns them and will free them (via
-    // the same device) when the last shared_ptr to it drops.
-    return std::make_shared<Mesh>(device_, vbo, ibo,
-                                  static_cast<Uint32>(indices.size()));
+    // the same device) when the last shared_ptr to it drops. The element size lets
+    // the renderer bind the index buffer correctly (16- vs 32-bit).
+    return std::make_shared<Mesh>(device_, vbo, ibo, indexCount, elemSize);
+}
+
+std::shared_ptr<Mesh> GpuRenderer::createMesh(std::span<const Vertex> vertices,
+                                              std::span<const Uint16> indices) {
+    return createMeshImpl(vertices, indices.data(),
+                          static_cast<Uint32>(indices.size_bytes()),
+                          static_cast<Uint32>(indices.size()),
+                          SDL_GPU_INDEXELEMENTSIZE_16BIT);
+}
+
+std::shared_ptr<Mesh> GpuRenderer::createMesh(std::span<const Vertex> vertices,
+                                              std::span<const Uint32> indices) {
+    return createMeshImpl(vertices, indices.data(),
+                          static_cast<Uint32>(indices.size_bytes()),
+                          static_cast<Uint32>(indices.size()),
+                          SDL_GPU_INDEXELEMENTSIZE_32BIT);
 }
 
 std::shared_ptr<Texture> GpuRenderer::loadTexture(const char* path) {
@@ -487,30 +669,40 @@ bool GpuRenderer::ensureDepthTexture(Uint32 width, Uint32 height) {
 
 void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                               const Node& root, const Mat4& view, float aspect,
-                              const Vec3& cameraPos) const {
+                              const Vec3& cameraPos, const Mat4& lightViewProj) const {
     // Bind the one pipeline every mesh shares. Per-mesh vertex/index buffers AND
     // per-material textures are now bound inside recordNode, just before each node's
     // draw — different nodes use different materials, so binding can't be hoisted
     // out of the loop the way the single global texture was in Step 7.
     SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
 
+    // Bind the SHADOW MAP at fragment sampler slot 1 (the material texture is bound
+    // per node at slot 0). One shadow map for the whole frame, so bind it once here.
+    SDL_GPUTextureSamplerBinding shadowBinding = {};
+    shadowBinding.texture = shadowMap_;
+    shadowBinding.sampler = shadowSampler_;
+    SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/1, &shadowBinding, /*num_bindings=*/1);
+
     // Push the per-frame lighting uniform (fragment set=3, binding 0): one fixed directional
-    // "sun" plus the camera position (for specular). It's constant across the whole
-    // frame, so we push it ONCE here rather than per node. We use vec4s to match the
-    // shader's std140 layout (a vec3 there pads to 16 bytes anyway).
+    // "sun", the camera position (for specular), and the light's view-projection (so the
+    // fragment shader can look this fragment up in the shadow map). Constant across the
+    // frame, so pushed ONCE here. vec4s match the shader's std140 layout.
     struct LightUniform {
         float lightDir[4];
         float lightColor[4];
         float ambient[4];
         float cameraPos[4];
+        float lightViewProj[16];
     };
-    const Vec3 sun = normalize(Vec3{-0.4f, -1.0f, -0.3f});  // direction the light travels
-    const LightUniform light = {
+    const Vec3 sun = sunDirection();
+    LightUniform light = {
         { sun.x, sun.y, sun.z, 0.0f },
         { 1.0f, 1.0f, 1.0f, 0.0f },              // white light
         { 0.15f, 0.15f, 0.18f, 0.0f },           // soft ambient fill
         { cameraPos.x, cameraPos.y, cameraPos.z, 0.0f },
+        { 0 },
     };
+    std::memcpy(light.lightViewProj, lightViewProj.m, sizeof(light.lightViewProj));
     SDL_PushGPUFragmentUniformData(cmd, /*slot=*/0, &light, sizeof(light));
 
     // The projection depends only on the viewport, and the view only on the
@@ -555,7 +747,7 @@ void GpuRenderer::recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
         SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vertexBinding, /*num_bindings=*/1);
         SDL_GPUBufferBinding indexBinding = {};
         indexBinding.buffer = mesh->indexBuffer();
-        SDL_BindGPUIndexBuffer(pass, &indexBinding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+        SDL_BindGPUIndexBuffer(pass, &indexBinding, mesh->indexElementSize());
 
         // Push the two matrices the vertex shader needs: the full MVP (proj·view·
         // world, to clip space) AND the model/world matrix on its own (so the
@@ -590,6 +782,19 @@ GpuRenderer::~GpuRenderer() {
         if (sampler_ != nullptr) {
             SDL_ReleaseGPUSampler(device_, sampler_);
             sampler_ = nullptr;
+        }
+        // Shadow-mapping resources (Step 9).
+        if (shadowMap_ != nullptr) {
+            SDL_ReleaseGPUTexture(device_, shadowMap_);
+            shadowMap_ = nullptr;
+        }
+        if (shadowSampler_ != nullptr) {
+            SDL_ReleaseGPUSampler(device_, shadowSampler_);
+            shadowSampler_ = nullptr;
+        }
+        if (shadowPipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, shadowPipeline_);
+            shadowPipeline_ = nullptr;
         }
         if (trianglePipeline_ != nullptr) {
             SDL_ReleaseGPUGraphicsPipeline(device_, trianglePipeline_);
@@ -643,6 +848,14 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
     // skip the render pass this frame but still submit the (empty) buffer.
     if (swapchainTexture != nullptr && ensureDepthTexture(width, height)) {
         // --------------------------------------------------------------------
+        //  SHADOW PASS (pass 1): render the scene's depth from the light's view
+        //  into the shadow map, BEFORE the main pass that samples it. Both passes
+        //  use the SAME light matrix, so they agree on what's occluded.
+        // --------------------------------------------------------------------
+        const Mat4 lightViewProj = computeLightViewProj();
+        renderShadowPass(cmd, sceneRoot, lightViewProj);
+
+        // --------------------------------------------------------------------
         //  3. Describe and begin a render pass.
         //     A render pass declares which texture(s) we're drawing into and
         //     what to do with their existing contents:
@@ -676,7 +889,7 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
         // from the actual swapchain size, so the image is never stretched and
         // adapts automatically when the window is resized.
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-        recordScene(cmd, pass, sceneRoot, view, aspect, cameraPos);
+        recordScene(cmd, pass, sceneRoot, view, aspect, cameraPos, lightViewProj);
 
         SDL_EndGPURenderPass(pass);
     }
@@ -742,9 +955,13 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
         return false;
     }
 
-    // 3. Record: draw the cube into the off-screen texture, then a copy pass
-    //    that downloads that texture into the transfer buffer.
+    // 3. Record: shadow pass, then draw the scene into the off-screen texture, then
+    //    a copy pass that downloads that texture into the transfer buffer.
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
+
+    // Shadow pass (pass 1) — exactly as the live path, so the capture shows shadows.
+    const Mat4 lightViewProj = computeLightViewProj();
+    renderShadowPass(cmd, sceneRoot, lightViewProj);
 
     SDL_GPUColorTargetInfo colorTarget = {};
     colorTarget.texture     = target;
@@ -765,7 +982,7 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
     // Draw the same scene the live path does, through the supplied `view` (the
     // camera's default pose) — deterministic because nothing here is time-based.
     constexpr float kCaptureAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
-    recordScene(cmd, pass, sceneRoot, view, kCaptureAspect, cameraPos);
+    recordScene(cmd, pass, sceneRoot, view, kCaptureAspect, cameraPos, lightViewProj);
     SDL_EndGPURenderPass(pass);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);

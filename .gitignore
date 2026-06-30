@@ -23,6 +23,10 @@ _deps/
 *.lib
 *.so
 *.dylib
+
+# ...but Wavefront model files under assets/ are SOURCE, not compiled objects —
+# `*.obj` above would otherwise swallow them (Step 9's assets/torus.obj).
+!assets/*.obj
 *.dll
 *.exe
 

@@ -71,6 +71,31 @@ add_library(doctest INTERFACE)
 target_include_directories(doctest INTERFACE ${DOCTEST_DIR})
 add_library(doctest::doctest ALIAS doctest)
 
+# Model loaders: two single-header libraries, downloaded like doctest (Step 9).
+# tinyobjloader parses Wavefront .obj; cgltf parses glTF (.gltf/.glb). We use a
+# library here — rather than hand-rolling parsers — so the from-scratch effort goes
+# into the graphics. They are header-only: exactly one .cpp (ModelLoader.cpp) defines
+# their *_IMPLEMENTATION, and that file is compiled WITHOUT our strict warnings since
+# we don't control third-party code.
+set(MODELS_DIR ${CMAKE_BINARY_DIR}/_deps/models)
+function(koi_fetch_header url dest)
+    if(NOT EXISTS ${dest})
+        message(STATUS "Downloading ${dest}...")
+        file(DOWNLOAD ${url} ${dest} TLS_VERIFY ON STATUS _st)
+        list(GET _st 0 _code)
+        if(NOT _code EQUAL 0)
+            list(GET _st 1 _msg)
+            message(FATAL_ERROR "Failed to download ${url}: ${_msg}")
+        endif()
+    endif()
+endfunction()
+koi_fetch_header(
+    https://raw.githubusercontent.com/tinyobjloader/tinyobjloader/v1.0.6/tiny_obj_loader.h
+    ${MODELS_DIR}/tiny_obj_loader.h)
+koi_fetch_header(
+    https://raw.githubusercontent.com/jkuhlmann/cgltf/v1.14/cgltf.h
+    ${MODELS_DIR}/cgltf.h)
+
 # ----------------------------------------------------------------------------
 #  Shared warning flags
 #  We apply strict warnings to *our* code only — not to SDL3 or doctest, whose
@@ -92,6 +117,7 @@ add_library(koi_core STATIC
     src/core/Window.cpp
     src/renderer/GpuRenderer.cpp
     src/renderer/Mesh.cpp
+    src/renderer/ModelLoader.cpp
     src/renderer/Primitives.cpp
     src/renderer/Shader.cpp
     src/renderer/Texture.cpp
@@ -102,6 +128,14 @@ add_library(koi_core STATIC
 # PUBLIC include dir: anything linking koi_core (the app, the tests) can
 # #include "core/Engine.hpp" etc. using paths rooted at src/.
 target_include_directories(koi_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# The model-loader headers are PRIVATE (only ModelLoader.cpp uses them). That file
+# also #defines the *_IMPLEMENTATION macros, so it pulls in thousands of lines of
+# third-party code — compile it with warnings off (-w, appended after our flags) so
+# our strict-warning build stays clean and meaningful for the code we own.
+target_include_directories(koi_core PRIVATE ${MODELS_DIR})
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/ModelLoader.cpp
+    PROPERTIES COMPILE_OPTIONS "-w")
 
 # PUBLIC link to SDL3: koi_core's headers expose SDL types, so consumers need
 # SDL3's include paths too — PUBLIC propagates them transitively.
@@ -173,9 +207,14 @@ function(koi_add_shader SHADER_SRC)
         VERBATIM)
 
     # Stage 2: SPIR-V -> MSL (Metal Shading Language) for the Metal backend.
+    # --msl-decoration-binding makes MSL resource indices follow the GLSL
+    # `layout(binding = N)` decorations rather than spirv-cross's default
+    # variable order. SDL binds fragment samplers/uniforms by slot, so without
+    # this a shader with multiple samplers (e.g. the material texture + the shadow
+    # map) can get them swapped in the generated MSL.
     add_custom_command(
         OUTPUT  ${msl}
-        COMMAND ${SPIRV_CROSS} ${spv} --msl --output ${msl}
+        COMMAND ${SPIRV_CROSS} ${spv} --msl --msl-decoration-binding --output ${msl}
         DEPENDS ${spv}
         COMMENT "spirv-cross  ${name} -> MSL"
         VERBATIM)
@@ -186,6 +225,8 @@ endfunction()
 
 koi_add_shader(triangle.vert)
 koi_add_shader(triangle.frag)
+koi_add_shader(shadow.vert)   # Step 9: depth-only pass from the light's point of view
+koi_add_shader(shadow.frag)
 
 # A target that builds all shader outputs, and a dependency so the app always has
 # up-to-date compiled shaders next to it.
@@ -198,14 +239,14 @@ add_dependencies(koi-engine koi_shaders)
 #  source images under assets/ must sit beside the binary in build/assets/. We
 #  mirror the shader setup: a copy command per asset + an ALL target the app
 #  depends on. Since Step 8 uses several textures (per-object materials), we copy
-#  every assets/*.bmp. NOTE: file(GLOB) is evaluated at configure time, so adding a
-#  brand-new texture file needs a re-run of CMake to be picked up.
+#  every assets/*.bmp plus Step 9's model files (*.obj, *.glb). NOTE: file(GLOB) is
+#  evaluated at configure time, so a brand-new asset file needs a re-run of CMake.
 # ----------------------------------------------------------------------------
 set(ASSET_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets)
 set(ASSET_OUT_DIR ${CMAKE_BINARY_DIR}/assets)
 file(MAKE_DIRECTORY ${ASSET_OUT_DIR})
 
-file(GLOB ASSET_FILES ${ASSET_SRC_DIR}/*.bmp)
+file(GLOB ASSET_FILES ${ASSET_SRC_DIR}/*.bmp ${ASSET_SRC_DIR}/*.obj ${ASSET_SRC_DIR}/*.glb)
 set(KOI_ASSET_OUTPUTS "")
 foreach(asset ${ASSET_FILES})
     get_filename_component(asset_name ${asset} NAME)

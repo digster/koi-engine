@@ -1,63 +1,77 @@
 // ============================================================================
-//  triangle.frag — fragment shader (Step 7: textured + Phong lighting)
+//  triangle.frag — fragment shader (textured + Phong lighting + shadows)
 // ----------------------------------------------------------------------------
-//  Runs once per covered pixel. Its color now comes from a TEXTURE shaded by a
-//  LIGHT. We compute the surface's base color (its "albedo" = texture × vertex
-//  tint), then how brightly the light hits it using the classic Phong terms:
-//
-//    * AMBIENT  — a constant fill so faces away from the light aren't pure black
-//                 (a cheap stand-in for light bouncing around the scene).
-//    * DIFFUSE  — Lambert: brightness ∝ how directly the surface faces the light,
-//                 max(dot(normal, lightDir), 0). A face square-on to the sun is
-//                 fully lit; a grazing one is dim.
-//    * SPECULAR — a tight highlight where the surface mirrors the light toward the
-//                 eye. We use the Blinn-Phong "halfway vector" H = normalize(L+V)
-//                 and raise dot(N, H) to a power (shininess) for a compact glint.
-//
-//  All of this happens in WORLD space, using the world position + world normal the
-//  vertex shader handed us (interpolated across the triangle by the rasterizer).
+//  Runs once per covered pixel. The color comes from a TEXTURE shaded by a LIGHT
+//  (Step 7), modulated per-object by a MATERIAL (Step 8). Step 9 adds SHADOWS: we
+//  re-project this fragment's world position into the light's view (the same one
+//  used to build the shadow map) and compare its distance-from-the-light against
+//  the nearest surface the light saw there. If something was closer, this fragment
+//  is occluded — in shadow — so we drop its diffuse + specular (keeping ambient,
+//  so shadows darken rather than turn pure black).
 // ============================================================================
 #version 450
 
-// Inputs from the vertex shader. Each "location" matches a vertex-shader "out".
 layout(location = 0) in vec3 vColor;
 layout(location = 1) in vec2 vUV;
 layout(location = 2) in vec3 vWorldPos;
 layout(location = 3) in vec3 vWorldNormal;
 
-// The texture (combined image+sampler) at FRAGMENT descriptor set 2, slot 0.
+// Fragment samplers: the material's texture (slot 0) and the shadow map (slot 1).
 layout(set = 2, binding = 0) uniform sampler2D uTex;
+layout(set = 2, binding = 1) uniform sampler2D uShadowMap;
 
-// The light + camera, constant for the whole frame, at FRAGMENT uniform-buffer set
-// 3 (samplers are set 2, uniform buffers set 3). Pushed once per frame with
-// SDL_PushGPUFragmentUniformData(cmd, /*slot=*/0, ...). We use vec4s because std140
-// rounds vec3 up to 16-byte alignment anyway — keeping the C++ struct simple.
+// Per-frame light + camera (set 3, binding 0). lightViewProj transforms world space
+// into the light's clip space — the same matrix that built the shadow map.
 layout(set = 3, binding = 0) uniform LightUBO {
-    vec4 lightDir;    // xyz: the direction the light TRAVELS (e.g. sunlight going down)
-    vec4 lightColor;  // rgb: the light's color/intensity
-    vec4 ambient;     // rgb: constant fill light
-    vec4 cameraPos;   // xyz: the eye position, for the specular view direction
+    vec4 lightDir;       // xyz: the direction the light TRAVELS
+    vec4 lightColor;     // rgb
+    vec4 ambient;        // rgb
+    vec4 cameraPos;      // xyz: the eye, for specular
+    mat4 lightViewProj;  // world -> light clip space (Step 9)
 };
 
-// The per-OBJECT material (Step 8), at fragment uniform set 3, binding 1. Unlike the
-// light (one per frame), this is pushed PER DRAW with SDL_PushGPUFragmentUniformData(
-// cmd, /*slot=*/1, ...), so each object can be glossier or duller than the next.
-// Packed into a vec4: x = shininess (highlight tightness), y = specular strength.
+// Per-object material (set 3, binding 1): x = shininess, y = specular strength.
 layout(set = 3, binding = 1) uniform MaterialUBO {
     vec4 material;
 };
 
 layout(location = 0) out vec4 outColor;
 
+// Returns 1.0 (fully lit) .. 0.0 (fully shadowed) for this fragment. `ndotl` (the
+// surface-to-light alignment) scales the depth bias that prevents a surface from
+// shadowing itself ("shadow acne") — steeply-lit surfaces need more.
+float shadowFactor(float ndotl) {
+    vec4 lc = lightViewProj * vec4(vWorldPos, 1.0);
+    vec3 proj = lc.xyz / lc.w;                 // ortho → w = 1
+    vec2 uv = proj.xy * 0.5 + 0.5;             // NDC [-1,1] -> texture [0,1]
+    uv.y = 1.0 - uv.y;                         // texture origin is top-left
+    float current = proj.z;                    // this fragment's depth from the light (0..1)
+
+    // Anything outside the light's box (or beyond its far plane) is treated as lit.
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || current > 1.0) {
+        return 1.0;
+    }
+
+    float bias = max(0.0015, 0.005 * (1.0 - ndotl));
+
+    // 2x2 PCF: average four nearby shadow-map taps for a softer edge than a single
+    // hard compare.
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
+    float sum = 0.0;
+    for (int y = 0; y <= 1; ++y) {
+        for (int x = 0; x <= 1; ++x) {
+            float closest = texture(uShadowMap, uv + vec2(float(x) - 0.5, float(y) - 0.5) * texel).r;
+            sum += (current - bias > closest) ? 0.0 : 1.0;
+        }
+    }
+    return sum * 0.25;
+}
+
 void main() {
-    // Base surface color: the texture, tinted by the interpolated vertex color.
     vec3 albedo = texture(uTex, vUV).rgb * vColor;
 
-    // Re-normalize the interpolated normal (interpolation shortens it).
     vec3 N = normalize(vWorldNormal);
-    // Direction TOWARD the light is the opposite of the direction it travels.
     vec3 L = normalize(-lightDir.xyz);
-    // Direction toward the camera, and the Blinn-Phong halfway vector.
     vec3 V = normalize(cameraPos.xyz - vWorldPos);
     vec3 H = normalize(L + V);
 
@@ -65,12 +79,14 @@ void main() {
     float specStrength = material.y;
 
     float diffuse  = max(dot(N, L), 0.0);
-    // Only add specular where the surface actually faces the light (diffuse > 0),
-    // so back faces don't sprout highlights.
     float specular = (diffuse > 0.0) ? pow(max(dot(N, H), 0.0), shininess) : 0.0;
 
-    vec3 lit = albedo * (ambient.rgb + lightColor.rgb * diffuse)
-             + lightColor.rgb * (specStrength * specular);
+    // How much direct light reaches this fragment (1 = lit, 0 = occluded).
+    float shadow = shadowFactor(diffuse);
+
+    // Ambient is unconditional; diffuse + specular are gated by the shadow.
+    vec3 lit = albedo * (ambient.rgb + shadow * lightColor.rgb * diffuse)
+             + shadow * lightColor.rgb * (specStrength * specular);
 
     outColor = vec4(lit, 1.0);
 }

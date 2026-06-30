@@ -93,6 +93,22 @@ TEST_CASE("perspective maps the near/far planes to z in [0, 1]") {
     CHECK(farClip.z / farClip.w == doctest::Approx(1.0f));
 }
 
+TEST_CASE("orthographic maps its box to clip space (z in [0, 1], no w-divide)") {
+    // Box: x in [-2, 2], y in [-1, 1], distance [1, 11] along -Z.
+    const Mat4 O = orthographic(-2.0f, 2.0f, -1.0f, 1.0f, 1.0f, 11.0f);
+
+    // Near plane (view z = -1) → clip z 0; far plane (view z = -11) → clip z 1.
+    CHECK((O * Vec4{0, 0, -1, 1}).z == doctest::Approx(0.0f));
+    CHECK((O * Vec4{0, 0, -11, 1}).z == doctest::Approx(1.0f));
+
+    // The box corners map to the NDC cube edges, and w stays 1 (no perspective).
+    const Vec4 corner = O * Vec4{2, 1, -1, 1};
+    CHECK(corner.x == doctest::Approx(1.0f));
+    CHECK(corner.y == doctest::Approx(1.0f));
+    CHECK(corner.w == doctest::Approx(1.0f));
+    CHECK((O * Vec4{-2, -1, -1, 1}).x == doctest::Approx(-1.0f));
+}
+
 TEST_CASE("lookAt puts the world into the camera's frame") {
     // A camera at (0,0,5) looking at the origin, with +Y up.
     const Mat4 V = lookAt(Vec3{0, 0, 5}, Vec3{0, 0, 0}, Vec3{0, 1, 0});

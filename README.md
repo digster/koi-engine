@@ -9,13 +9,12 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 8:** adds **per-object materials**. A `Material` bundles a
-> surface's **texture** and its **specular parameters** (shininess, strength); each scene
-> node references one, so the renderer binds each object's texture + params **per draw**
-> instead of one global texture for the whole scene. The demo gives the floor a matte
-> checker, the cubes a glossy polka-dot texture, and the hub an extra-shiny variant (same
-> texture, tighter highlight) — cleanly separating an object's **shape** (mesh),
-> **placement** (transform), and **appearance** (material).
+> **Current status — Step 9:** adds **model loading** and **shadow mapping**. Real models
+> load from files — a sphere from `.glb` (via **cgltf**) and a torus from `.obj` (via
+> **tinyobjloader**), both single-header libraries downloaded at build time — and render
+> beside the hand-built cubes. **Shadow mapping** renders the scene's depth from the light's
+> point of view into a shadow map, then samples it in the main pass so every object casts a
+> real shadow on the floor (and on its neighbours).
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 
@@ -69,6 +68,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - [docs/09-materials.html](docs/09-materials.html) — a per-object Material (texture +
   specular params), per-draw binding, and frame-vs-object uniforms, mapped to the Step 8
   code that gives each object its own look.
+- [docs/10-models-and-shadows.html](docs/10-models-and-shadows.html) — loading OBJ/glTF
+  models with single-header libraries, and shadow mapping (a depth pre-pass from the light),
+  mapped to the Step 9 code that loads a sphere + torus and casts shadows.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -84,7 +86,8 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 | ✅ **6** | **Textures** | UV coordinates, GPU textures, samplers (filtering & wrap) |
 | ✅ **7** | **Phong lighting** | normals, a directional light, ambient/diffuse/specular |
 | ✅ **8** | **Materials** | per-object texture + specular params, per-draw binding |
-| 9+ | Models, shadows, post-fx | glTF loading, shadow maps, post-processing |
+| ✅ **9** | **Models & shadows** | OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping |
+| 10+ | Post-processing & beyond | offscreen targets, tone-mapping, anti-aliasing |
 
 ## Requirements
 

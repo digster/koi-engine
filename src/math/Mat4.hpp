@@ -155,6 +155,28 @@ struct Mat4 {
     return out;
 }
 
+// Orthographic projection (Step 9 — used for the directional light's shadow map).
+//
+//  Unlike perspective, an orthographic projection has NO foreshortening: parallel
+//  lines stay parallel and an object's on-screen size doesn't change with distance.
+//  That's exactly right for a DIRECTIONAL light (a "sun"), whose rays are parallel —
+//  we render the scene's depth through a box-shaped frustum aligned with the light.
+//
+//  Same conventions as perspective(): right-handed (looks down -Z) and depth mapped
+//  to z ∈ [0, 1] (near plane → 0, far plane → 1), matching SDL3's NDC. The box is
+//  [l, r] × [b, t] in x/y and [n, f] in distance along the view's -Z.
+[[nodiscard]] inline Mat4 orthographic(float l, float r, float b, float t,
+                                       float n, float f) {
+    Mat4 out = Mat4::identity();
+    out.at(0, 0) = 2.0f / (r - l);
+    out.at(1, 1) = 2.0f / (t - b);
+    out.at(2, 2) = -1.0f / (f - n);       // view z -n → 0, -f → 1
+    out.at(0, 3) = -(r + l) / (r - l);
+    out.at(1, 3) = -(t + b) / (t - b);
+    out.at(2, 3) = -n / (f - n);
+    return out;
+}
+
 // Look-at view matrix — the "camera" transform.
 //
 //  There is no camera in the GPU; the vertex shader only knows clip space. To

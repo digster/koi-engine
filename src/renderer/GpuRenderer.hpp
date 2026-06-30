@@ -59,16 +59,20 @@ public:
     // The renderer owns no geometry or textures — those are created separately via
     // createMesh / loadTexture.
     [[nodiscard]] bool isValid() const {
-        return device_ != nullptr && trianglePipeline_ != nullptr && sampler_ != nullptr;
+        return device_ != nullptr && trianglePipeline_ != nullptr && sampler_ != nullptr &&
+               shadowPipeline_ != nullptr && shadowMap_ != nullptr && shadowSampler_ != nullptr;
     }
 
     // Upload geometry into a new Mesh and return it (shared, so many scene nodes
-    // can reference one Mesh). `vertices`/`indices` are copied into GPU buffers
-    // via the staging-upload path; indices are 16-bit (Uint16). Returns nullptr
-    // (after logging) on failure. This is the ONLY place meshes are born, because
-    // it's the only thing holding both the device and the upload helper.
+    // can reference one Mesh). `vertices`/`indices` are copied into GPU buffers via
+    // the staging-upload path. Two index widths: 16-bit (Uint16) for hand-built
+    // primitives, 32-bit (Uint32) for loaded models that exceed 65 535 vertices.
+    // Returns nullptr (after logging) on failure. This is the ONLY place meshes are
+    // born, because it's the only thing holding both the device and the upload helper.
     [[nodiscard]] std::shared_ptr<Mesh> createMesh(std::span<const Vertex> vertices,
                                                    std::span<const Uint16> indices);
+    [[nodiscard]] std::shared_ptr<Mesh> createMesh(std::span<const Vertex> vertices,
+                                                   std::span<const Uint32> indices);
 
     // Load an image file (BMP) from `path` and upload it into a new GPU Texture
     // (shared, so it could be reused by many draws). Returns nullptr (after logging)
@@ -105,6 +109,13 @@ private:
     SDL_GPUBuffer* uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
                                      const void* data, Uint32 size);
 
+    // Shared body of the two createMesh overloads: upload the vertices + raw index
+    // bytes and wrap them in a Mesh tagged with `elemSize` (16- or 32-bit).
+    std::shared_ptr<Mesh> createMeshImpl(std::span<const Vertex> vertices,
+                                         const void* indexData, Uint32 indexBytes,
+                                         Uint32 indexCount,
+                                         SDL_GPUIndexElementSize elemSize);
+
     // Create a 2D sampled texture (R8G8B8A8_UNORM) of (width, height) and upload
     // `pixels` (tightly packed RGBA, 4 bytes/texel) into it via a staging transfer
     // buffer + copy pass — the 2D mirror of uploadToGpuBuffer. Returns nullptr
@@ -115,15 +126,32 @@ private:
     // REPEAT wrap so tiled UVs work). Called once from the constructor.
     bool createSampler();
 
-    // Record the whole scene into an already-begun render pass: bind the pipeline,
-    // push the per-frame light uniform (using `cameraPos`), build the projection
-    // from `aspect`, then walk `root` drawing each node — binding its material's
-    // texture + pushing its {mvp, model} and material uniforms. Shared by the live
-    // (renderFrame) and off-screen (captureFrame) paths so they can't drift. `cmd`
-    // pushes the uniforms.
+    // Create the shadow-mapping resources (Step 9): a depth texture that is both a
+    // render target and sampleable (the "shadow map"), a CLAMP sampler to read it,
+    // and a depth-only pipeline (shadow.vert/.frag). Called once from the ctor,
+    // after the main pipeline (it reuses the chosen depth format).
+    bool createShadowResources();
+
+    // PASS 1 of shadow mapping: render the scene's depth from the light's point of
+    // view into the shadow map. Begins its own depth-only render pass, walks the
+    // tree pushing lightViewProj·world per node, ends. Done before the main pass.
+    void renderShadowPass(SDL_GPUCommandBuffer* cmd, const Node& root,
+                          const Mat4& lightViewProj) const;
+
+    // Recursive worker for the shadow pass: draw `node`'s mesh (depth only) under
+    // `lightViewProj`, then recurse. (No material/texture needed — only depth.)
+    void recordShadowNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                          const Node& node, const Mat4& lightViewProj) const;
+
+    // Record the whole scene into an already-begun (main) render pass: bind the
+    // pipeline, bind the shadow map, push the per-frame light uniform (with
+    // `cameraPos` + `lightViewProj`), build the projection from `aspect`, then walk
+    // `root` drawing each node — binding its material's texture + pushing its
+    // {mvp, model} and material uniforms. Shared by the live (renderFrame) and
+    // off-screen (captureFrame) paths so they can't drift.
     void recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                      const Node& root, const Mat4& view, float aspect,
-                     const Vec3& cameraPos) const;
+                     const Vec3& cameraPos, const Mat4& lightViewProj) const;
 
     // Recursive worker for recordScene: draw `node`'s mesh (if any) using the
     // already-combined `projView` matrix, then recurse into its children. Reads
@@ -162,6 +190,15 @@ private:
     Uint32              depthWidth_   = 0;
     Uint32              depthHeight_  = 0;
     SDL_GPUTextureFormat depthFormat_ = SDL_GPU_TEXTUREFORMAT_INVALID;  // chosen at pipeline build
+
+    // Shadow mapping (Step 9). The shadow map is a fixed-size depth texture we
+    // render the scene's depth INTO from the light's view (pass 1) and SAMPLE in
+    // the main pass (pass 2) to decide what's occluded. The shadow pipeline is a
+    // depth-only pipeline (no color target); the shadow sampler reads the map with
+    // CLAMP addressing so fragments outside the light's box read as lit.
+    SDL_GPUGraphicsPipeline* shadowPipeline_ = nullptr;  // owned
+    SDL_GPUTexture*          shadowMap_      = nullptr;  // owned
+    SDL_GPUSampler*          shadowSampler_  = nullptr;  // owned
 };
 
 }  // namespace koi

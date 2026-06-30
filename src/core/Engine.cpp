@@ -9,6 +9,7 @@
 #include "core/Window.hpp"
 #include "renderer/GpuRenderer.hpp"
 #include "renderer/Mesh.hpp"
+#include "renderer/ModelLoader.hpp"
 #include "renderer/Primitives.hpp"
 #include "scene/Material.hpp"
 #include "scene/Node.hpp"
@@ -104,6 +105,18 @@ bool Engine::buildScene() {
     auto cubeMat  = std::make_shared<Material>(Material{dotsTex,     48.0f, 0.50f});
     auto hubMat   = std::make_shared<Material>(Material{dotsTex,    128.0f, 0.90f});
 
+    // Step 9: load two MODELS from files (geometry only — we give them our own
+    // materials). sphere.glb exercises the cgltf loader; torus.obj the tinyobjloader
+    // one. Both produce a Mesh exactly like a primitive does.
+    std::shared_ptr<Mesh> sphere = loadModel(*renderer_, (base + "assets/sphere.glb").c_str());
+    std::shared_ptr<Mesh> torus  = loadModel(*renderer_, (base + "assets/torus.obj").c_str());
+    if (!sphere || !torus) {
+        KOI_ERROR("buildScene: failed to load one or more models.");
+        return false;
+    }
+    auto sphereMat = std::make_shared<Material>(Material{checkerTex, 96.0f, 0.70f});
+    auto torusMat  = std::make_shared<Material>(Material{dotsTex,    64.0f, 0.60f});
+
     // The root is a pure GROUP node (no mesh/material): a stable parent for the world.
     sceneRoot_ = std::make_unique<Node>();
 
@@ -144,7 +157,19 @@ bool Engine::buildScene() {
     moon->transform().scale    = {0.6f, 0.6f, 0.6f};
     spinner_->addChild(std::move(moon));
 
-    KOI_INFO("Scene built: ground + cube hierarchy with 3 materials (matte floor, glossy cubes, shiny hub).");
+    // The two loaded models, flanking the cube hierarchy and resting on the floor.
+    auto sphereNode = std::make_unique<Node>(sphere, sphereMat);
+    sphereNode->transform().position = {-3.8f, -0.8f, 0.0f};
+    sphereNode->transform().scale    = {1.2f, 1.2f, 1.2f};
+    sceneRoot_->addChild(std::move(sphereNode));
+
+    auto torusNode = std::make_unique<Node>(torus, torusMat);
+    torusNode->transform().position      = {3.8f, -0.3f, 0.0f};
+    torusNode->transform().scale         = {1.2f, 1.2f, 1.2f};
+    torusNode->transform().rotationEuler = {radians(90.0f), 0.0f, 0.0f};  // stand the donut up
+    sceneRoot_->addChild(std::move(torusNode));
+
+    KOI_INFO("Scene built: ground + cube hierarchy + 2 loaded models (sphere.glb, torus.obj).");
     return true;
 }
 
