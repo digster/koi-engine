@@ -9,11 +9,13 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 7:** adds **Phong lighting**. Each vertex gains a **normal**, a
-> single **directional light** ("sun") shades every fragment with **ambient + diffuse +
-> specular** (Blinn-Phong), and the lighting modulates the Step 6 texture as the surface's
-> base color. Faces toward the light are bright, faces away are dim (but not black, thanks
-> to ambient) — so the spinning cubes now read as solid, lit form.
+> **Current status — Step 8:** adds **per-object materials**. A `Material` bundles a
+> surface's **texture** and its **specular parameters** (shininess, strength); each scene
+> node references one, so the renderer binds each object's texture + params **per draw**
+> instead of one global texture for the whole scene. The demo gives the floor a matte
+> checker, the cubes a glossy polka-dot texture, and the hub an extra-shiny variant (same
+> texture, tighter highlight) — cleanly separating an object's **shape** (mesh),
+> **placement** (transform), and **appearance** (material).
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 
@@ -64,6 +66,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - [docs/08-lighting-and-normals.html](docs/08-lighting-and-normals.html) — surface normals,
   a directional light, and the Phong terms (ambient/diffuse/specular) in world space,
   mapped to the Step 7 code that shades the textured scene.
+- [docs/09-materials.html](docs/09-materials.html) — a per-object Material (texture +
+  specular params), per-draw binding, and frame-vs-object uniforms, mapped to the Step 8
+  code that gives each object its own look.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -78,7 +83,8 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 | ✅ **5** | **Meshes & scene graph** | mesh abstraction, Transform (TRS), node hierarchy |
 | ✅ **6** | **Textures** | UV coordinates, GPU textures, samplers (filtering & wrap) |
 | ✅ **7** | **Phong lighting** | normals, a directional light, ambient/diffuse/specular |
-| 8+ | Models, shadows, post-fx | glTF loading, shadow maps, post-processing |
+| ✅ **8** | **Materials** | per-object texture + specular params, per-draw binding |
+| 9+ | Models, shadows, post-fx | glTF loading, shadow maps, post-processing |
 
 ## Requirements
 

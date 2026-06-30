@@ -25,9 +25,10 @@
 //  OWNERSHIP
 //    * children: std::unique_ptr — a Node solely owns its children, so the whole
 //      tree frees itself when the root is destroyed.
-//    * mesh: std::shared_ptr — meshes are SHARED. Many nodes can point at one
-//      cube Mesh (uploaded to the GPU just once). A node may also have NO mesh:
-//      a pure "group"/"pivot" used only to position or spin its children.
+//    * mesh / material: std::shared_ptr — both are SHARED. Many nodes can point at
+//      one cube Mesh (uploaded once) and one Material (Step 8). A node may have NO
+//      mesh: a pure "group"/"pivot" used only to position or spin its children. A
+//      node draws only if it has BOTH a mesh (shape) and a material (appearance).
 // ============================================================================
 #pragma once
 
@@ -35,7 +36,8 @@
 #include <vector>
 
 #include "math/Mat4.hpp"
-#include "renderer/Mesh.hpp"   // Node references GPU geometry → scene depends on renderer here
+#include "renderer/Mesh.hpp"     // Node references GPU geometry → scene depends on renderer here
+#include "scene/Material.hpp"    // the surface appearance a node draws with
 #include "scene/Transform.hpp"
 
 namespace koi {
@@ -48,6 +50,9 @@ public:
     // A node that draws `mesh`. Pass nullptr for a group node (same as Node()).
     explicit Node(std::shared_ptr<Mesh> mesh);
 
+    // A node that draws `mesh` with `material` — the usual drawable node.
+    Node(std::shared_ptr<Mesh> mesh, std::shared_ptr<Material> material);
+
     // Mutable access to the local placement, so callers (and the animation loop)
     // can read/tweak position, rotation, and scale directly.
     [[nodiscard]] Transform&       transform()       { return transform_; }
@@ -56,6 +61,11 @@ public:
     // The geometry this node draws, or nullptr for a group node.
     void setMesh(std::shared_ptr<Mesh> mesh) { mesh_ = std::move(mesh); }
     [[nodiscard]] const Mesh* mesh() const { return mesh_.get(); }
+
+    // The appearance this node draws with, or nullptr if not set. A node is only
+    // drawn when it has both a mesh and a material.
+    void setMaterial(std::shared_ptr<Material> material) { material_ = std::move(material); }
+    [[nodiscard]] const Material* material() const { return material_.get(); }
 
     // Attach a child (this node takes ownership). Returns a non-owning pointer to
     // the child so callers can keep building the tree / animate it later.
@@ -73,7 +83,8 @@ public:
 private:
     Transform                          transform_;                     // local (relative to parent)
     Mat4                               world_ = Mat4::identity();      // cached absolute placement
-    std::shared_ptr<Mesh>              mesh_;                          // shared; may be null
+    std::shared_ptr<Mesh>              mesh_;                          // shared shape; may be null
+    std::shared_ptr<Material>          material_;                      // shared appearance; may be null
     std::vector<std::unique_ptr<Node>> children_;                     // owned subtree
 };
 

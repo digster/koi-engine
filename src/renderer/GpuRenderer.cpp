@@ -120,7 +120,7 @@ bool GpuRenderer::createTrianglePipeline() {
     // The vertex shader declares one uniform buffer (the MVP matrix); the
     // fragment shader declares none.
     SDL_GPUShader* vertexShader   = loadShader(device_, "triangle.vert", SDL_GPU_SHADERSTAGE_VERTEX, /*numUniformBuffers=*/1);
-    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/1, /*numSamplers=*/1);
+    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/2, /*numSamplers=*/1);
     if (vertexShader == nullptr || fragmentShader == nullptr) {
         // loadShader already logged the cause. Clean up whichever did load.
         if (vertexShader != nullptr)   SDL_ReleaseGPUShader(device_, vertexShader);
@@ -487,20 +487,14 @@ bool GpuRenderer::ensureDepthTexture(Uint32 width, Uint32 height) {
 
 void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                               const Node& root, const Mat4& view, float aspect,
-                              const Texture& texture, const Vec3& cameraPos) const {
-    // Bind the one pipeline every mesh shares. Per-mesh vertex/index buffers are
-    // bound inside recordNode, just before each node's draw.
+                              const Vec3& cameraPos) const {
+    // Bind the one pipeline every mesh shares. Per-mesh vertex/index buffers AND
+    // per-material textures are now bound inside recordNode, just before each node's
+    // draw — different nodes use different materials, so binding can't be hoisted
+    // out of the loop the way the single global texture was in Step 7.
     SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
 
-    // Bind the texture + sampler ONCE for the whole scene (every mesh samples the
-    // same texture in this step). The pair goes to fragment sampler slot 0, which
-    // the fragment shader reads as the sampler2D at set=2, binding=0.
-    SDL_GPUTextureSamplerBinding samplerBinding = {};
-    samplerBinding.texture = texture.handle();
-    samplerBinding.sampler = sampler_;
-    SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, &samplerBinding, /*num_bindings=*/1);
-
-    // Push the per-frame lighting uniform (fragment set=3): one fixed directional
+    // Push the per-frame lighting uniform (fragment set=3, binding 0): one fixed directional
     // "sun" plus the camera position (for specular). It's constant across the whole
     // frame, so we push it ONCE here rather than per node. We use vec4s to match the
     // shader's std140 layout (a vec3 there pads to 16 bytes anyway).
@@ -532,13 +526,30 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
 
 void GpuRenderer::recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                              const Node& node, const Mat4& projView) const {
-    // A node may carry no mesh (a pure group/pivot): it contributes only its
-    // transform to its descendants and draws nothing itself.
-    if (const Mesh* mesh = node.mesh()) {
+    const Mesh*     mesh     = node.mesh();
+    const Material* material = node.material();
+    // A node is drawn only if it has BOTH a shape (mesh) and an appearance
+    // (material). Pure group/pivot nodes have neither and just pass their transform
+    // down to their children.
+    if (mesh != nullptr && material != nullptr) {
+        // Bind THIS material's texture (+ the shared sampler) for the upcoming draw.
+        // Unlike Step 7's single global texture, each node can use a different one,
+        // so the texture is (re)bound per draw — the same per-node rhythm we already
+        // use for the mesh buffers below.
+        SDL_GPUTextureSamplerBinding samplerBinding = {};
+        samplerBinding.texture = material->texture->handle();
+        samplerBinding.sampler = sampler_;
+        SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, &samplerBinding, /*num_bindings=*/1);
+
+        // Push this material's parameters (fragment set=3, binding 1): a vec4 with
+        // shininess in x and specular strength in y. Per draw, so each object can be
+        // glossier or duller than the next.
+        const float materialParams[4] = { material->shininess, material->specStrength,
+                                          0.0f, 0.0f };
+        SDL_PushGPUFragmentUniformData(cmd, /*slot=*/1, materialParams, sizeof(materialParams));
+
         // Bind THIS mesh's geometry. Different meshes (e.g. cube vs. ground plane)
-        // live in different buffers, so we (re)bind per drawn node. Nodes sharing
-        // a mesh rebind the same buffers — correct, if not yet optimal; batching
-        // by mesh is a later optimization.
+        // live in different buffers, so we (re)bind per drawn node.
         SDL_GPUBufferBinding vertexBinding = {};
         vertexBinding.buffer = mesh->vertexBuffer();
         SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vertexBinding, /*num_bindings=*/1);
@@ -596,8 +607,7 @@ GpuRenderer::~GpuRenderer() {
 }
 
 void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
-                              const Node& sceneRoot, const Texture& texture,
-                              const Vec3& cameraPos) {
+                              const Node& sceneRoot, const Vec3& cameraPos) {
     // ------------------------------------------------------------------------
     //  1. Acquire a command buffer.
     //     We don't command the GPU directly; we *record* commands into a buffer
@@ -666,7 +676,7 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
         // from the actual swapchain size, so the image is never stretched and
         // adapts automatically when the window is resized.
         const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-        recordScene(cmd, pass, sceneRoot, view, aspect, texture, cameraPos);
+        recordScene(cmd, pass, sceneRoot, view, aspect, cameraPos);
 
         SDL_EndGPURenderPass(pass);
     }
@@ -682,7 +692,7 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
 
 bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
                                const Mat4& view, const Node& sceneRoot,
-                               const Texture& texture, const Vec3& cameraPos) {
+                               const Vec3& cameraPos) {
     // Fixed capture resolution: keeps the output deterministic and small. The
     // aspect ratio (1280/720) feeds the projection so the cube isn't distorted.
     constexpr Uint32 kWidth  = 1280;
@@ -755,7 +765,7 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
     // Draw the same scene the live path does, through the supplied `view` (the
     // camera's default pose) — deterministic because nothing here is time-based.
     constexpr float kCaptureAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
-    recordScene(cmd, pass, sceneRoot, view, kCaptureAspect, texture, cameraPos);
+    recordScene(cmd, pass, sceneRoot, view, kCaptureAspect, cameraPos);
     SDL_EndGPURenderPass(pass);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);

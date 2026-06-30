@@ -114,3 +114,17 @@ referenced in `CLAUDE.md`.
   position threads through `renderFrame`/`captureFrame` for specular. World normal uses
   `mat3(model)` (correct for the scene's uniform scale; inverse-transpose normal matrix
   deferred). The Step 6 24-vertex cube already supplied per-face normals.
+
+**Next milestone request (Step 8):**
+> Okay, work on the next step.
+
+**Decision made (via clarifying question — materials vs model loading vs shadows):**
+- Step 8 = **per-object materials** (over model loading or shadow mapping). A `Material`
+  (`scene/Material.hpp`: texture + shininess + specStrength) is referenced per `Node` and
+  bound **per draw**, retiring the single global texture + hardcoded shader constants.
+  Completes the shape (`Mesh`) / placement (`Transform`) / appearance (`Material`) split.
+- Fragment shader gained a **second** uniform buffer (material at `set=3,binding=1`, beside
+  the light at binding 0); texture binding moved into `recordNode`. Added a second texture
+  (`assets/dots.bmp`); demo uses 3 materials (matte floor, glossy cubes, extra-shiny hub —
+  same texture, higher shininess). No vertex change. Model loading / shadows / post-fx
+  shifted to Step 9+.

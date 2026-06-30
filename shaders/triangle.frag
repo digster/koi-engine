@@ -39,12 +39,15 @@ layout(set = 3, binding = 0) uniform LightUBO {
     vec4 cameraPos;   // xyz: the eye position, for the specular view direction
 };
 
-layout(location = 0) out vec4 outColor;
+// The per-OBJECT material (Step 8), at fragment uniform set 3, binding 1. Unlike the
+// light (one per frame), this is pushed PER DRAW with SDL_PushGPUFragmentUniformData(
+// cmd, /*slot=*/1, ...), so each object can be glossier or duller than the next.
+// Packed into a vec4: x = shininess (highlight tightness), y = specular strength.
+layout(set = 3, binding = 1) uniform MaterialUBO {
+    vec4 material;
+};
 
-// Tightness of the specular highlight and how strong it is. Constants for now; a
-// real material system would make these per-object.
-const float kShininess    = 32.0;
-const float kSpecStrength = 0.4;
+layout(location = 0) out vec4 outColor;
 
 void main() {
     // Base surface color: the texture, tinted by the interpolated vertex color.
@@ -58,13 +61,16 @@ void main() {
     vec3 V = normalize(cameraPos.xyz - vWorldPos);
     vec3 H = normalize(L + V);
 
+    float shininess    = material.x;
+    float specStrength = material.y;
+
     float diffuse  = max(dot(N, L), 0.0);
     // Only add specular where the surface actually faces the light (diffuse > 0),
     // so back faces don't sprout highlights.
-    float specular = (diffuse > 0.0) ? pow(max(dot(N, H), 0.0), kShininess) : 0.0;
+    float specular = (diffuse > 0.0) ? pow(max(dot(N, H), 0.0), shininess) : 0.0;
 
     vec3 lit = albedo * (ambient.rgb + lightColor.rgb * diffuse)
-             + lightColor.rgb * (kSpecStrength * specular);
+             + lightColor.rgb * (specStrength * specular);
 
     outColor = vec4(lit, 1.0);
 }

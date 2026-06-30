@@ -3,11 +3,12 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 7 (window & render loop, the first triangle, geometry in GPU
+through Step 8 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
-**textures** sampled onto those surfaces, and **Phong lighting** that shades them).
+**textures** sampled onto those surfaces, **Phong lighting** that shades them, and
+per-object **materials** that give each object its own look).
 
 ## Guiding principles
 
@@ -44,14 +45,15 @@ abstraction drawn through a **scene graph** of parent/child transforms,
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera + the scene graph, runs the game loop, computes delta-time, routes input, builds the demo scene (`buildScene`), animates + propagates transforms each frame, controls startup/shutdown order. |
+| `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera + the scene graph, runs the game loop, computes delta-time, routes input, builds the demo scene (`buildScene`: meshes + textures + materials, assigned to nodes), animates + propagates transforms each frame, controls startup/shutdown order. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the graphics pipeline, the depth texture, and one shared **sampler**. Is a **factory** for meshes (`createMesh`) and textures (`loadTexture`) and a **consumer** of a scene: per frame it takes a camera `view`, a scene root, and a texture, then records/submits the draw (acquire → ensure depth texture → render pass → `recordScene`: bind pipeline + texture/sampler once, then walk the tree binding each node's mesh + pushing `proj·view·world` + indexed draw → submit). Owns no geometry or texture data. |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the graphics pipeline, the depth texture, and one shared **sampler**. Is a **factory** for meshes (`createMesh`) and textures (`loadTexture`) and a **consumer** of a scene: per frame it takes a camera `view`, a scene root, and the camera position, then records/submits the draw (acquire → ensure depth texture → render pass → `recordScene`: bind pipeline + push the light once, then walk the tree — per node binding its **material's** texture + mesh buffers and pushing `{mvp,model}` + material params → indexed draw → submit). Owns no geometry or texture data. |
+| `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: a `shared_ptr<Texture>` + specular params (shininess, strength). Forward-declares `Texture` (stores it by `shared_ptr`). Shared by `shared_ptr`; a `Node` references one. The renderer binds it per draw. |
 | `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count). Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must be destroyed before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
 | `Texture` | [src/renderer/Texture.*](src/renderer/) | RAII owner of one `SDL_GPUTexture` (sampled image). Same non-owning-device lifetime rule as `Mesh`. Created via `GpuRenderer::loadTexture` (load BMP → convert → upload); held by `shared_ptr`. A *sampler* (how to read it) is separate, reusable device state owned by the renderer. |
 | `Primitives` | [src/renderer/Primitives.*](src/renderer/) | Free functions (`makeCubeMesh`, `makePlaneMesh`) that define a shape's vertex/index data and upload it via `createMesh`, keeping the renderer geometry-agnostic. |
 | `Transform` | [src/scene/Transform.hpp](src/scene/Transform.hpp) | Header-only, SDL-free: position / Euler rotation / scale, plus `localMatrix()` returning `T·R·S` (scale → rotate → translate). Unit-tested in `tests/test_transform.cpp`. |
-| `Node` | [src/scene/Node.*](src/scene/) | One element of the scene graph: a local `Transform`, an optional shared `Mesh`, owned children (`unique_ptr`), and a cached world matrix. `updateWorldTransforms` walks the tree computing `world = parentWorld · local`. Scene-graph composition unit-tested in `tests/test_node.cpp`. |
+| `Node` | [src/scene/Node.*](src/scene/) | One element of the scene graph: a local `Transform`, an optional shared `Mesh` (shape) + `Material` (appearance), owned children (`unique_ptr`), and a cached world matrix. Draws only with both a mesh and a material. `updateWorldTransforms` walks the tree computing `world = parentWorld · local`. Unit-tested in `tests/test_node.cpp`. |
 | `Camera` | [src/scene/Camera.*](src/scene/) | A yaw/pitch fly camera (position + angles). Produces a `view` matrix via `lookAt`; `processKeyboard`/`addMouseLook` update it from input. Lives above the renderer and knows nothing about the GPU; its header is SDL-free. Logic unit-tested in `tests/test_camera.cpp`. |
 | `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color + uv + normal). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
 | `math` (`Vec`, `Mat4`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`) and column-major 4×4 matrix math (translate/rotate/**scale**/perspective/`lookAt`). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp`. |
@@ -72,12 +74,13 @@ animate + update → spin a couple of nodes (rotationEuler += rate·dt);
        │
 renderFrame(view, → in GpuRenderer (view = camera.viewMatrix()):
   sceneRoot,           1. acquire command buffer
-  texture,             2. acquire swapchain image (waits for vsync) + its size
-  cameraPos)           3. ensure the depth texture matches that size
+  cameraPos)           2. acquire swapchain image (waits for vsync) + its size
+                     3. ensure the depth texture matches that size
                      4. begin render pass (color CLEAR + depth CLEAR to 1.0)
-                     5. recordScene: bind pipeline + texture/sampler, push the light
-                        uniform (set=3) once, then walk the tree — per node with a mesh,
-                        bind its buffers + push {mvp, model} (set=1) + indexed draw
+                     5. recordScene: bind pipeline, push the light uniform (set=3,b=0)
+                        once, then walk the tree — per drawable node, bind its material's
+                        texture + push material params (set=3,b=1), bind its mesh buffers
+                        + push {mvp,model} (set=1) + indexed draw
                      6. end render pass
                      7. submit command buffer (queues present)
 ```
@@ -264,6 +267,32 @@ threaded through `renderFrame`/`captureFrame` (from `Camera::position()`) for th
 specular term. Light parameters are constants for now — a per-object **material** is the
 natural next refinement.
 
+### Materials (Step 8)
+
+Step 8 removes the "one global texture / hardcoded shininess" limitation so objects
+can look different. A **`Material`** (in `scene/`) bundles a surface's appearance — a
+`shared_ptr<Texture>` plus specular params — and a `Node` references one alongside its
+mesh. This completes a clean three-way split: a drawn object is a **shape** (`Mesh`),
+a **placement** (`Transform`/`Node`), and an **appearance** (`Material`), each varying
+independently (the demo's hub and satellites share a texture but differ in shininess).
+
+```
+   Node ─┬─ Mesh        (shape)
+         ├─ Transform   (placement)
+         └─ Material ─→ Texture + shininess/specStrength   (appearance)
+```
+
+The binding model shifts accordingly: the texture, which Step 7 bound **once per
+frame**, now binds **per draw** inside `recordNode` (different nodes use different
+textures) — the same per-node rhythm already used for mesh buffers. The fragment
+shader gains a **second** uniform buffer: light at `set=3,binding=0` (frame-constant,
+pushed once in `recordScene`) and **material at `set=3,binding=1`** (per-draw, pushed
+in `recordNode`); `loadShader` declares two fragment uniform buffers. The single
+global `Engine::texture_` is gone — textures now live in materials owned by the scene,
+so the existing "reset `sceneRoot_` before `renderer_`" teardown frees them in order.
+The cost (rebinding per draw even when many objects share a material) is real;
+batching/sorting by material is a deferred optimization.
+
 ## Lifecycle & ownership
 
 Startup builds bottom-up, shutdown tears down top-down — the standard RAII
@@ -358,7 +387,11 @@ Future milestones slot into this structure without reshaping it:
   matrix (to light in world space) and the fragment shader a **Blinn-Phong** light at a
   fragment uniform buffer (`set=3`), pushed per frame with the camera position. Per-face
   normals fell out of the Step 6 24-vertex cube for free.
-- **Step 8+:** a per-object **material** (its own texture + shininess) lifts the single
-  global texture/light into the scene; then real **model loading** (glTF), **shadows**
-  (depth from the light's view), and **post-processing** (render to an offscreen target,
-  then a fullscreen pass).
+- **Step 8 (done):** a per-object **`Material`** (texture + specular params) replaced the
+  single global texture; the fragment shader gained a second uniform buffer (material at
+  `set=3,b=1`), bound per draw. Nodes now carry shape + placement + appearance.
+- **Step 9+:** real **model loading** (glTF/OBJ — arbitrary indexed geometry + the
+  materials a file carries), then **shadows** (a depth pass from the light's view sampled
+  in the main pass) and **post-processing** (render to an offscreen target, then a
+  fullscreen pass). Richer surface maps (normal/roughness/metalness) extend `Material`
+  toward PBR.

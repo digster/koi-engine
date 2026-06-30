@@ -4,6 +4,9 @@ namespace koi {
 
 Node::Node(std::shared_ptr<Mesh> mesh) : mesh_(std::move(mesh)) {}
 
+Node::Node(std::shared_ptr<Mesh> mesh, std::shared_ptr<Material> material)
+    : mesh_(std::move(mesh)), material_(std::move(material)) {}
+
 Node* Node::addChild(std::unique_ptr<Node> child) {
     Node* raw = child.get();
     children_.push_back(std::move(child));

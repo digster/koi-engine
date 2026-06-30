@@ -77,12 +77,11 @@ public:
     [[nodiscard]] std::shared_ptr<Texture> loadTexture(const char* path);
 
     // Render exactly one frame: acquire a swapchain image, clear it (and the depth
-    // buffer), bind `texture`, draw every mesh in `sceneRoot` (each through its own
-    // world matrix) as seen through the camera `view`, and present it. `cameraPos`
-    // (the eye in world space) feeds the lighting's specular highlight.
+    // buffer), draw every mesh in `sceneRoot` (each through its own world matrix and
+    // its node's material) as seen through the camera `view`, and present it.
+    // `cameraPos` (the eye in world space) feeds the lighting's specular highlight.
     void renderFrame(const SDL_FColor& clearColor, const Mat4& view,
-                     const Node& sceneRoot, const Texture& texture,
-                     const Vec3& cameraPos);
+                     const Node& sceneRoot, const Vec3& cameraPos);
 
     // Render one frame into an OFF-SCREEN texture (not the window), download the
     // pixels back to the CPU, and save them to `path` as a BMP. Our headless
@@ -91,7 +90,7 @@ public:
     // false (after logging) on failure. See docs / CLAUDE.md.
     [[nodiscard]] bool captureFrame(const char* path, const SDL_FColor& clearColor,
                                     const Mat4& view, const Node& sceneRoot,
-                                    const Texture& texture, const Vec3& cameraPos);
+                                    const Vec3& cameraPos);
 
 private:
     // Build the graphics pipeline (loads + compiles shaders, and describes the
@@ -116,14 +115,15 @@ private:
     // REPEAT wrap so tiled UVs work). Called once from the constructor.
     bool createSampler();
 
-    // Record the whole scene into an already-begun render pass: bind the pipeline
-    // and the texture once, push the per-frame light uniform (using `cameraPos`),
-    // build the projection from `aspect`, then walk `root` drawing each node's mesh
-    // with its own {mvp, model} uniform. Shared by the live (renderFrame) and
-    // off-screen (captureFrame) paths so they can't drift. `cmd` pushes the uniforms.
+    // Record the whole scene into an already-begun render pass: bind the pipeline,
+    // push the per-frame light uniform (using `cameraPos`), build the projection
+    // from `aspect`, then walk `root` drawing each node — binding its material's
+    // texture + pushing its {mvp, model} and material uniforms. Shared by the live
+    // (renderFrame) and off-screen (captureFrame) paths so they can't drift. `cmd`
+    // pushes the uniforms.
     void recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                      const Node& root, const Mat4& view, float aspect,
-                     const Texture& texture, const Vec3& cameraPos) const;
+                     const Vec3& cameraPos) const;
 
     // Recursive worker for recordScene: draw `node`'s mesh (if any) using the
     // already-combined `projView` matrix, then recurse into its children. Reads

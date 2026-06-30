@@ -101,3 +101,16 @@ TEST_CASE("a parent's scale also scales its children's offsets") {
     CHECK(p.y == doctest::Approx(0.0f));
     CHECK(p.z == doctest::Approx(0.0f));
 }
+
+TEST_CASE("a node stores and returns its material (Step 8)") {
+    // A node holds an appearance (Material) alongside its shape. The Material here
+    // has a null texture — fine, since we're only testing the Node plumbing, no GPU.
+    Node node;
+    CHECK(node.material() == nullptr);  // none by default
+
+    auto mat = std::make_shared<Material>(Material{nullptr, 64.0f, 0.5f});
+    node.setMaterial(mat);
+    REQUIRE(node.material() != nullptr);
+    CHECK(node.material()->shininess == doctest::Approx(64.0f));
+    CHECK(node.material()->specStrength == doctest::Approx(0.5f));
+}

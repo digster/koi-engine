@@ -10,7 +10,7 @@
 #include "renderer/GpuRenderer.hpp"
 #include "renderer/Mesh.hpp"
 #include "renderer/Primitives.hpp"
-#include "renderer/Texture.hpp"
+#include "scene/Material.hpp"
 #include "scene/Node.hpp"
 
 namespace koi {
@@ -59,19 +59,9 @@ bool Engine::init(const Config& config) {
         return false;
     }
 
-    // The renderer is ready, so it can now manufacture meshes. Build the scene
-    // graph that the main loop will animate and the renderer will draw.
+    // The renderer is ready, so it can now manufacture meshes and textures. Build
+    // the scene graph (geometry + materials) that the loop animates and draws.
     if (!buildScene()) {
-        shutdown();
-        return false;
-    }
-
-    // Load the texture the scene is sampled from (a checkerboard / UV grid),
-    // resolved relative to the executable — the same convention the shaders use.
-    const std::string texturePath =
-        std::string(SDL_GetBasePath() ? SDL_GetBasePath() : "") + "assets/uv_grid.bmp";
-    texture_ = renderer_->loadTexture(texturePath.c_str());
-    if (!texture_) {
         shutdown();
         return false;
     }
@@ -93,28 +83,49 @@ bool Engine::buildScene() {
         return false;
     }
 
-    // The root is a pure GROUP node (no mesh): a stable parent for the whole world.
+    // Two textures, resolved relative to the executable (same convention as the
+    // shaders). They become the albedo images of the materials below.
+    const std::string base = SDL_GetBasePath() ? SDL_GetBasePath() : "";
+    auto checkerTex = renderer_->loadTexture((base + "assets/uv_grid.bmp").c_str());
+    auto dotsTex    = renderer_->loadTexture((base + "assets/dots.bmp").c_str());
+    if (!checkerTex || !dotsTex) {
+        KOI_ERROR("buildScene: failed to load one or more textures.");
+        return false;
+    }
+
+    // Three materials (texture + shininess + specular strength). They show that
+    // appearance varies PER OBJECT — and that a material's PARAMETERS vary
+    // independently of its texture:
+    //   * floorMat — the cool checker, matte (low shininess).
+    //   * cubeMat  — the warm dots, glossy.
+    //   * hubMat   — the SAME dots texture as cubeMat, but extra shiny (a tighter,
+    //                brighter highlight), so the parameter-only difference is obvious.
+    auto floorMat = std::make_shared<Material>(Material{checkerTex,   8.0f, 0.15f});
+    auto cubeMat  = std::make_shared<Material>(Material{dotsTex,     48.0f, 0.50f});
+    auto hubMat   = std::make_shared<Material>(Material{dotsTex,    128.0f, 0.90f});
+
+    // The root is a pure GROUP node (no mesh/material): a stable parent for the world.
     sceneRoot_ = std::make_unique<Node>();
 
-    // A ground plane, dropped a couple of units below the cubes so they sit above
-    // it. (Its own local transform places it; the mesh itself is centered at y=0.)
-    auto ground = std::make_unique<Node>(plane);
+    // A ground plane (checker, matte), dropped a couple of units below the cubes so
+    // they sit above it. (Its own local transform places it; the mesh is centered.)
+    auto ground = std::make_unique<Node>(plane, floorMat);
     ground->transform().position = {0.0f, -2.0f, 0.0f};
     sceneRoot_->addChild(std::move(ground));
 
-    // The HUB: a cube at the origin that spins about Y (animated in run()). Every
-    // node below is placed in the hub's space, so they orbit it as it turns — the
-    // whole point of a scene graph.
-    hub_ = sceneRoot_->addChild(std::make_unique<Node>(cube));
+    // The HUB: a cube at the origin that spins about Y (animated in run()), with the
+    // extra-shiny material. Every node below is placed in the hub's space, so they
+    // orbit it as it turns — the whole point of a scene graph.
+    hub_ = sceneRoot_->addChild(std::make_unique<Node>(cube, hubMat));
 
-    // Two small satellites at fixed offsets in the hub's space. As the hub spins,
-    // they sweep around it in a circle, though their OWN transforms never change.
-    auto satA = std::make_unique<Node>(cube);
+    // Two small satellites (glossy dots) at fixed offsets in the hub's space. As the
+    // hub spins, they sweep around it, though their OWN transforms never change.
+    auto satA = std::make_unique<Node>(cube, cubeMat);
     satA->transform().position = {2.5f, 0.0f, 0.0f};
     satA->transform().scale    = {0.5f, 0.5f, 0.5f};
     hub_->addChild(std::move(satA));
 
-    auto satC = std::make_unique<Node>(cube);
+    auto satC = std::make_unique<Node>(cube, cubeMat);
     satC->transform().position = {0.0f, 0.0f, 2.5f};
     satC->transform().scale    = {0.5f, 0.5f, 0.5f};
     hub_->addChild(std::move(satC));
@@ -123,17 +134,17 @@ bool Engine::buildScene() {
     // grandchild "moon" offset from it. Result: the moon orbits the spinner
     // (because the spinner turns) WHILE the spinner orbits the hub (because the
     // hub turns) — two levels of inherited motion, with no special code.
-    auto pivot = std::make_unique<Node>(cube);
+    auto pivot = std::make_unique<Node>(cube, cubeMat);
     pivot->transform().position = {-2.5f, 0.0f, 0.0f};
     pivot->transform().scale    = {0.6f, 0.6f, 0.6f};
     spinner_ = hub_->addChild(std::move(pivot));
 
-    auto moon = std::make_unique<Node>(cube);
+    auto moon = std::make_unique<Node>(cube, cubeMat);
     moon->transform().position = {2.0f, 0.0f, 0.0f};
     moon->transform().scale    = {0.6f, 0.6f, 0.6f};
     spinner_->addChild(std::move(moon));
 
-    KOI_INFO("Scene built: ground plane + animated cube hierarchy (hub, 3 satellites, 1 moon).");
+    KOI_INFO("Scene built: ground + cube hierarchy with 3 materials (matte floor, glossy cubes, shiny hub).");
     return true;
 }
 
@@ -147,7 +158,7 @@ void Engine::run() {
         // this captures the deterministic t = 0 pose) before drawing it off-screen.
         sceneRoot_->updateWorldTransforms();
         if (renderer_->captureFrame(capturePath, kClearColor, camera_.viewMatrix(),
-                                    *sceneRoot_, *texture_, camera_.position())) {
+                                    *sceneRoot_, camera_.position())) {
             KOI_INFO("Captured frame to '%s'.", capturePath);
         } else {
             KOI_ERROR("Frame capture failed.");
@@ -206,7 +217,7 @@ void Engine::run() {
         // Propagate transforms down the tree (parent → child → grandchild) so every
         // node's cached world matrix is current, THEN draw.
         sceneRoot_->updateWorldTransforms();
-        renderer_->renderFrame(kClearColor, camera_.viewMatrix(), *sceneRoot_, *texture_,
+        renderer_->renderFrame(kClearColor, camera_.viewMatrix(), *sceneRoot_,
                                camera_.position());
 
         if (maxFrames != 0 && ++frame >= maxFrames) {
@@ -261,14 +272,13 @@ void Engine::shutdown() {
         return;  // already torn down (or never initialized)
     }
 
-    // Destroy in reverse order of creation. The ORDER HERE MATTERS: the scene and
-    // the texture each hold GPU resources freed through the renderer's device — so
-    // they must die BEFORE the renderer destroys that device. (Resetting a smart
-    // pointer runs the held object's destructor immediately.)
-    sceneRoot_.reset();      // frees all nodes + meshes (the meshes' GPU buffers)
+    // Destroy in reverse order of creation. The ORDER HERE MATTERS: the scene holds
+    // GPU resources — the meshes' buffers AND the materials' textures — freed
+    // through the renderer's device, so it must die BEFORE the renderer destroys
+    // that device. (Resetting a smart pointer runs the held object's destructor.)
+    sceneRoot_.reset();      // frees all nodes, meshes, and materials' textures
     hub_     = nullptr;      // dangling now that the tree is gone
     spinner_ = nullptr;
-    texture_.reset();        // frees the texture's GPU image
     renderer_.reset();       // detaches the swapchain, then destroys the device
     window_.reset();
 

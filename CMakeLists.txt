@@ -194,22 +194,29 @@ add_dependencies(koi-engine koi_shaders)
 
 # ----------------------------------------------------------------------------
 #  Assets — copied (not compiled) next to the executable.
-#  Step 6 loads a texture image at runtime via SDL_GetBasePath() + "assets/...",
-#  so the source image under assets/ must sit beside the binary in build/assets/.
-#  We mirror the shader setup: a copy command per asset + an ALL target the app
-#  depends on, so the asset is always present and up to date.
+#  Textures are loaded at runtime via SDL_GetBasePath() + "assets/...", so the
+#  source images under assets/ must sit beside the binary in build/assets/. We
+#  mirror the shader setup: a copy command per asset + an ALL target the app
+#  depends on. Since Step 8 uses several textures (per-object materials), we copy
+#  every assets/*.bmp. NOTE: file(GLOB) is evaluated at configure time, so adding a
+#  brand-new texture file needs a re-run of CMake to be picked up.
 # ----------------------------------------------------------------------------
 set(ASSET_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets)
 set(ASSET_OUT_DIR ${CMAKE_BINARY_DIR}/assets)
 file(MAKE_DIRECTORY ${ASSET_OUT_DIR})
 
-add_custom_command(
-    OUTPUT  ${ASSET_OUT_DIR}/uv_grid.bmp
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${ASSET_SRC_DIR}/uv_grid.bmp ${ASSET_OUT_DIR}/uv_grid.bmp
-    DEPENDS ${ASSET_SRC_DIR}/uv_grid.bmp
-    COMMENT "copy  uv_grid.bmp -> build/assets"
-    VERBATIM)
+file(GLOB ASSET_FILES ${ASSET_SRC_DIR}/*.bmp)
+set(KOI_ASSET_OUTPUTS "")
+foreach(asset ${ASSET_FILES})
+    get_filename_component(asset_name ${asset} NAME)
+    add_custom_command(
+        OUTPUT  ${ASSET_OUT_DIR}/${asset_name}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${asset} ${ASSET_OUT_DIR}/${asset_name}
+        DEPENDS ${asset}
+        COMMENT "copy  ${asset_name} -> build/assets"
+        VERBATIM)
+    list(APPEND KOI_ASSET_OUTPUTS ${ASSET_OUT_DIR}/${asset_name})
+endforeach()
 
-add_custom_target(koi_assets ALL DEPENDS ${ASSET_OUT_DIR}/uv_grid.bmp)
+add_custom_target(koi_assets ALL DEPENDS ${KOI_ASSET_OUTPUTS})
 add_dependencies(koi-engine koi_assets)

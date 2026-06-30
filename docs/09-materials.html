@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Materials · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html" aria-current="page">Materials</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Materials</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 8:</strong> let objects look <em>different</em>. Introduce a
+    <strong>Material</strong> — a bundle of surface appearance (its texture + how shiny it
+    is) — that each scene node references, so the renderer can give every object its own
+    look instead of one texture and one shininess for the whole scene.</p>
+    <p>The demo: a matte checker floor, glossy polka-dot cubes, and an extra-shiny hub
+    (same texture as the other cubes, just a tighter highlight).</p>
+  </blockquote>
+
+  <p>Through <a href="08-lighting-and-normals.html">Step 7</a> the renderer bound
+  <strong>one</strong> texture for the whole frame and the fragment shader hardcoded the
+  shininess. So everything necessarily looked the same. That's the limitation this step
+  removes — and in doing so it draws a clean line the engine has been missing.</p>
+
+  <h2>1. Shape, placement, appearance</h2>
+
+  <p>A drawn object is really <strong>three independent things</strong>, and the engine now
+  has a type for each:</p>
+
+  <table>
+    <thead>
+      <tr><th>Question</th><th>Answered by</th><th>Since</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>What is its <strong>shape</strong>?</td><td><code>Mesh</code> (vertex + index buffers)</td><td>Step 5</td></tr>
+      <tr><td>Where is it / how oriented &amp; scaled? (its <strong>placement</strong>)</td><td><code>Transform</code> on a <code>Node</code></td><td>Step 5</td></tr>
+      <tr><td>What does it look like? (its <strong>appearance</strong>)</td><td><code>Material</code></td><td><strong>Step 8</strong></td></tr>
+    </tbody>
+  </table>
+
+  <p>These are orthogonal: the same cube <em>mesh</em> can appear at many <em>placements</em>
+  with different <em>appearances</em>. Keeping them separate is exactly why one cube Mesh,
+  uploaded once, serves five differently-placed, differently-textured cubes.</p>
+
+  <h2>2. What a material is</h2>
+
+  <p>A <strong>Material</strong> is just the appearance bundle:</p>
+
+  <pre><code>struct Material {
+    shared_ptr&lt;Texture&gt; texture;       // the image sampled as the base color
+    float shininess    = 32.0f;        // specular exponent (higher = tighter highlight)
+    float specStrength = 0.4f;         // how bright the highlight is
+};</code></pre>
+
+  <p>It only <em>describes</em> appearance — it owns no GPU object of its own beyond a
+  shared reference to a <code>Texture</code>. (The <strong>sampler</strong> — <em>how</em> to
+  read a texture — stays renderer-owned and shared, since it rarely needs to vary.)
+  Materials are themselves shared: every cube can point at one <code>Material</code>, just
+  as they point at one <code>Mesh</code>. A node now draws only if it has <strong>both</strong>
+  a mesh (shape) and a material (appearance).</p>
+
+  <h2>3. Binding per draw, not per frame</h2>
+
+  <p>With one global texture, the renderer bound it <strong>once</strong> before walking the
+  scene. Now different nodes use different textures, so the texture bind moves
+  <strong>inside</strong> the per-node loop — bound just before each draw, right alongside
+  that node's vertex/index buffers (which were already rebound per node). Same rhythm, one
+  more resource:</p>
+
+  <pre class="diagram">  recordScene:  bind pipeline · push light (once) · walk tree
+    recordNode (per drawn node):
+        bind material.texture (+ sampler)   ← NEW: was once-per-frame
+        push material params  (shininess…)  ← NEW
+        bind mesh.vertex / index buffers
+        push { mvp, model }
+        draw</pre>
+
+  <p>There's a real cost here: more bindings and uniform pushes than the single global
+  texture. Engines claw it back later by <strong>sorting</strong> draws so objects sharing a
+  material are drawn together (fewer switches). We keep it simple and correct for now —
+  optimization is a later concern.</p>
+
+  <h2>4. Frame-constant vs per-object uniforms</h2>
+
+  <p>The fragment shader now reads <strong>two</strong> uniform buffers, and the split is
+  meaningful: one changes per frame, the other per object.</p>
+
+  <table>
+    <thead>
+      <tr><th>Uniform</th><th>Set / binding</th><th>Pushed</th><th>Holds</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Light</td><td><code>set=3, binding=0</code></td><td>once per frame (<code>recordScene</code>)</td><td>light dir/color/ambient + camera</td></tr>
+      <tr><td>Material</td><td><code>set=3, binding=1</code></td><td>per draw (<code>recordNode</code>)</td><td>shininess, specular strength</td></tr>
+    </tbody>
+  </table>
+
+  <p>SDL maps push <em>slot N</em> → <em>binding N</em>, so we push the light to slot 0 and
+  each material to slot 1 (telling SDL the fragment shader has two uniform buffers when we
+  load it). The shader just reads <code>material.x</code> / <code>.y</code> where it used to
+  use the hardcoded constants.</p>
+
+  <h2>5. The demo: appearance varies — and so do its parameters</h2>
+
+  <p>Three materials make the point on two axes:</p>
+
+  <ul>
+    <li><strong>Floor</strong> — the cool checker texture, <em>matte</em> (low shininess).</li>
+    <li><strong>Satellites &amp; moon</strong> — a different, warm polka-dot texture,
+    <em>glossy</em>.</li>
+    <li><strong>Hub</strong> — the <em>same</em> polka-dot texture as the satellites, but
+    <strong>extra shiny</strong> (a tighter, brighter highlight).</li>
+  </ul>
+
+  <p>The floor-vs-cubes difference shows different <em>textures</em>; the hub-vs-satellites
+  difference shows that a material's <em>parameters</em> vary independently of its texture.
+  Both fall out of the same Material abstraction.</p>
+
+  <h2>6. The code</h2>
+
+  <h3>The material — <a href="../src/scene/Material.hpp">src/scene/Material.hpp</a></h3>
+  <p>A header-only struct (texture + two floats). It lives in <code>scene/</code> next to
+  <code>Node</code> and forward-declares <code>Texture</code> (it only stores a
+  <code>shared_ptr</code> to one), so it stays lightweight.</p>
+
+  <h3>The node — <a href="../src/scene/Node.hpp">src/scene/Node.{hpp,cpp}</a></h3>
+  <p>Gains a <code>shared_ptr&lt;Material&gt;</code> beside its mesh, with
+  <code>setMaterial</code>/<code>material()</code> and a <code>(mesh, material)</code>
+  constructor — mirroring the existing mesh plumbing (verified in
+  <a href="../tests/test_node.cpp">test_node.cpp</a>).</p>
+
+  <h3>Binding it — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer</a> &amp; <a href="../shaders/triangle.frag">triangle.frag</a></h3>
+  <p><code>recordNode</code> binds the node's material texture and pushes its params per
+  draw; <code>recordScene</code> no longer binds a global texture (it still pushes the
+  light). The fragment shader adds the material UBO at <code>set=3, binding=1</code>.</p>
+
+  <h3>Building them — <a href="../src/core/Engine.cpp">Engine</a> &amp; <a href="../CMakeLists.txt">CMake</a></h3>
+  <p><code>buildScene</code> loads the two textures, makes the three materials, and assigns
+  them to nodes — the scene owns them, so the old global <code>texture_</code> is gone.
+  CMake's <code>koi_assets</code> now copies <em>every</em> <code>assets/*.bmp</code> next to
+  the binary.</p>
+
+  <h2>7. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Make a mirror.</strong> Crank a material's <code>shininess</code> to 256 and
+    <code>specStrength</code> up — watch the highlight shrink to a sharp glint.</li>
+    <li><strong>Swap textures.</strong> Give the floor the dots and the cubes the checker in
+    <a href="../src/core/Engine.cpp">buildScene</a> — one line each.</li>
+    <li><strong>Add a third texture.</strong> Drop a new <code>.bmp</code> in
+    <code>assets/</code>, re-run CMake (the glob picks it up), and build a material from it.</li>
+    <li><strong>Find the cost.</strong> Give all five cubes the <em>same</em> material and
+    note that the renderer still rebinds it per draw — the motivation for sorting by
+    material later.</li>
+  </ol>
+
+  <h2>8. What's next</h2>
+
+  <p>➡️ <strong>Models &amp; beyond.</strong> The engine now cleanly separates shape,
+  placement, and appearance — exactly what a real <strong>model file</strong> (glTF/OBJ)
+  carries. Next steps load such models (real geometry instead of hand-built cubes), then add
+  <strong>shadows</strong> (objects occluding the light) and <strong>post-processing</strong>.
+  A material is also the natural home for the richer surface data those bring — normal maps,
+  roughness, metalness — on the road toward physically based rendering.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>
