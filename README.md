@@ -87,22 +87,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 
 ## Roadmap
 
-| Step | Milestone | New concepts |
-|------|-----------|--------------|
-| ✅ **0** | **Window + clear screen** | GPU device, swapchain, command buffer, render pass |
-| ✅ **1** | **First triangle** | Shaders, graphics pipeline, shader toolchain (`glslc` + `spirv-cross`) |
-| ✅ **2** | **Vertex/index buffers** | GPU buffers, transfer buffers, vertex layouts |
-| ✅ **3** | **3D cube + MVP + depth** | hand-rolled `vec`/`mat4`, projection, depth testing |
-| ✅ **4** | **Camera + input movement** | view matrix, delta-time, fly camera |
-| ✅ **5** | **Meshes & scene graph** | mesh abstraction, Transform (TRS), node hierarchy |
-| ✅ **6** | **Textures** | UV coordinates, GPU textures, samplers (filtering & wrap) |
-| ✅ **7** | **Phong lighting** | normals, a directional light, ambient/diffuse/specular |
-| ✅ **8** | **Materials** | per-object texture + specular params, per-draw binding |
-| ✅ **9** | **Models & shadows** | OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping |
-| ✅ **10** | **Post-processing** | offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA |
-| ✅ **11** | **Multiple lights** | directional/point/spot lights, distance attenuation, spot cones |
-| ✅ **12** | **PBR materials** | Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation |
-| 13+ | Texture maps, IBL & more shadows | metallic-roughness/normal maps, image-based lighting, shadow cascades & point-light shadows |
+The engine grows one runnable milestone at a time. See **[ROADMAP.md](ROADMAP.md)** for the full
+picture — every completed step (0–12) and the phased plan beyond: numbered next steps, then themed
+tracks across rendering, animation, physics, audio, tooling, and gameplay.
 
 ## Requirements
 

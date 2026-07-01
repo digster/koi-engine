@@ -563,7 +563,8 @@ Future milestones slot into this structure without reshaping it:
   per-light body uses GGX/Smith/Fresnel with energy conservation; pure BRDF helpers live in
   `renderer/Pbr.hpp` (unit-tested). No vertex/texture/binding changes — the material uniform
   lanes were repurposed.
-- **Step 13+:** **texture maps** (per-pixel metallic/roughness + **normal maps**, which add a
-  per-vertex tangent to `Vertex`), **image-based lighting (IBL)** for ambient + metal reflections,
-  more shadow casters (sun cascades, point-light cube maps), and eventually deferred/clustered
-  shading for many lights; glTF file materials/animation also open.
+- **Step 13+:** the next features — texture/normal maps (a per-vertex tangent joins `Vertex`),
+  **image-based lighting** for ambient + metal reflections, more shadow casters (sun cascades,
+  point-light cube maps), and eventually deferred/clustered shading — slot into this same layering
+  without reshaping it. See [`ROADMAP.md`](ROADMAP.md) for the sequenced plan and the wider
+  engine-systems tracks (animation, physics, audio, tooling, gameplay) that grow alongside the renderer.

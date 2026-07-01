@@ -208,3 +208,23 @@ replacing Blinn-Phong.
   errors); capture shows the metal sphere as a dark, albedo-tinted metal with a sharp bright
   reflection (vs Step 11's matte sphere), glossy dielectric torus, shadows intact. Texture maps /
   IBL / more shadow casters → Step 13+.
+
+**Roadmap request:**
+> Create a roadmap for the engine and save it in ROADMAP.md
+
+**Decisions made (via clarifying questions):** phased horizon with non-graphics engine systems as
+**first-class** tracks (not a "someday" tier); **recap** the completed steps AND **remove the roadmap
+table from `docs/index.html`**; number the next few steps then theme the rest.
+- New **`ROADMAP.md`** (repo root): records the **Step N ↔ `docs/(N+1)-*.html`** numbering offset
+  (`00-getting-started` is a prerequisites page → next is Step 13 = `docs/14-*.html`); recap table of
+  Steps 0–12; numbered next milestones **13 texture & normal maps → 14 skybox/env maps → 15 IBL**
+  (each with goal / concepts / files-touched / why-here, in strict dependency order); then first-class
+  themed tracks — Rendering (shadows, scaling/deferred, image quality, geometry) and Engine systems
+  (math/quaternions, animation, scene/ECS, physics, audio, input, UI/tools, gameplay, platform) —
+  plus an exploratory tier, a suggested dependency-ordered path, and a "how steps get added" section.
+- **Single source of truth:** removed the `<table>` from `docs/index.html` (kept the `Roadmap`
+  heading + a pointer to `../ROADMAP.md`, matching the existing `../README.md`/`../ARCHITECTURE.md`
+  links); replaced `README.md`'s duplicate table with a pointer; redirected `ARCHITECTURE.md`'s
+  "Step 13+" bullet to ROADMAP.md while keeping its architectural claim.
+- Verified: **0 `<table>`** left in `index.html`; all 14 repo-relative links in ROADMAP.md resolve;
+  docs-only change (no C++/shader/CMake) → build + 49-test suite unaffected.
