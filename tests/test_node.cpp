@@ -108,9 +108,9 @@ TEST_CASE("a node stores and returns its material (Step 8)") {
     Node node;
     CHECK(node.material() == nullptr);  // none by default
 
-    auto mat = std::make_shared<Material>(Material{nullptr, 64.0f, 0.5f});
+    auto mat = std::make_shared<Material>(Material{nullptr, /*metallic=*/1.0f, /*roughness=*/0.25f});
     node.setMaterial(mat);
     REQUIRE(node.material() != nullptr);
-    CHECK(node.material()->shininess == doctest::Approx(64.0f));
-    CHECK(node.material()->specStrength == doctest::Approx(0.5f));
+    CHECK(node.material()->metallic == doctest::Approx(1.0f));
+    CHECK(node.material()->roughness == doctest::Approx(0.25f));
 }

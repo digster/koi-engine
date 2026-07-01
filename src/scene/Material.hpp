@@ -16,6 +16,20 @@
 //  renderer-owned and shared). Materials are themselves shared (many cubes can use
 //  one), so nodes hold a std::shared_ptr<Material>.
 //
+//  Step 12 (PBR): the ad-hoc Blinn-Phong knobs (shininess/specStrength) are replaced
+//  by the two parameters of the industry-standard **metallic-roughness** model:
+//
+//    * metallic  — is this surface a METAL (1) or a non-metal / "dielectric" (0)?
+//      Metals tint their reflection with the albedo and have NO diffuse colour;
+//      dielectrics (plastic, wood, stone) reflect a dim, white-ish 4% and keep a
+//      diffuse albedo. Real surfaces are one or the other, so this is usually 0 or 1.
+//    * roughness — how MICROSCOPICALLY rough the surface is (0 = mirror-smooth, tight
+//      bright highlight; 1 = matte, highlight spread out and dim). This is the single
+//      most useful, intuitive material dial.
+//
+//  These feed the Cook-Torrance BRDF in triangle.frag (mirrored, for tests, by the
+//  pure helpers in renderer/Pbr.hpp). The albedo texture is unchanged.
+//
 //  Header-only: it's a plain data struct. We only store a shared_ptr<Texture>, so
 //  a forward declaration is enough here — no need to pull in the SDL-heavy header.
 // ============================================================================
@@ -28,9 +42,9 @@ namespace koi {
 class Texture;  // the albedo image; full definition in renderer/Texture.hpp
 
 struct Material {
-    std::shared_ptr<Texture> texture;        // the image sampled as the base color
-    float                    shininess    = 32.0f;  // specular exponent — higher = tighter, glossier highlight
-    float                    specStrength = 0.4f;   // how bright the specular highlight is
+    std::shared_ptr<Texture> texture;             // the image sampled as the base color (albedo)
+    float                    metallic  = 0.0f;    // 0 = dielectric (non-metal), 1 = metal
+    float                    roughness = 0.5f;    // 0 = mirror-smooth, 1 = fully matte
 };
 
 }  // namespace koi

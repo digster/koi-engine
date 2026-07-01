@@ -1,18 +1,22 @@
 // ============================================================================
-//  triangle.frag — fragment shader (textured + multi-light Phong + shadows)
+//  triangle.frag — fragment shader (textured + multi-light PBR + shadows)
 // ----------------------------------------------------------------------------
-//  Runs once per covered pixel. The color comes from a TEXTURE shaded by LIGHTS,
-//  modulated per-object by a MATERIAL (Step 8). Step 11 upgrades the single
-//  hardcoded "sun" into an ARRAY of lights we loop over and ACCUMULATE:
+//  Runs once per covered pixel. The color comes from a TEXTURE (albedo) shaded by
+//  an ARRAY of LIGHTS (Step 11), which we loop over and ACCUMULATE. Step 12 replaces
+//  the ad-hoc Blinn-Phong shading with a physically-based **Cook-Torrance** BRDF
+//  driven by the material's METALLIC and ROUGHNESS parameters:
 //
-//    * DIRECTIONAL lights (the sun) shine with parallel rays — a direction, no
-//      position, no distance falloff.
-//    * POINT lights sit at a position and fall off with distance (attenuation).
-//    * SPOT lights are point lights confined to a cone (a flashlight).
+//    * a microfacet SPECULAR term = D·G·F / (4·(N·V)(N·L)), where D (GGX) is the
+//      distribution of mirror-facets, G (Smith) their self-shadowing, and F
+//      (Fresnel) the angle-dependent reflectance.
+//    * a Lambertian DIFFUSE term = albedo/π, kept only for non-metals and scaled so
+//      the surface never reflects more light than it receives (energy conservation).
 //
-//  Each light's diffuse + specular is added together; ambient is added ONCE. Only
-//  the directional sun (light 0) casts a shadow — shadowing every light needs many
-//  shadow maps (cube maps / cascades), a later step. See docs/12-multiple-lights.html.
+//  Each light's contribution is summed; ambient is added ONCE as a crude fill (real
+//  ambient / metal reflections want image-based lighting — a later step, which is why
+//  metals look dark here away from the highlights). Only the directional sun (light 0)
+//  casts a shadow. The three BRDF terms mirror renderer/Pbr.hpp. See the D/G/F helpers
+//  below and docs/13-pbr-materials.html.
 // ============================================================================
 #version 450
 
@@ -49,10 +53,14 @@ layout(set = 3, binding = 0) uniform LightUBO {
     GpuLight lights[MAX_LIGHTS];
 };
 
-// Per-object material (set 3, binding 1): x = shininess, y = specular strength.
+// Per-object material (set 3, binding 1): x = metallic (0=dielectric, 1=metal),
+// y = roughness (0=mirror-smooth, 1=matte). Repurposed Blinn-Phong's x/y lanes, so
+// the buffer size is unchanged.
 layout(set = 3, binding = 1) uniform MaterialUBO {
     vec4 material;
 };
+
+const float PI = 3.14159265359;
 
 layout(location = 0) out vec4 outColor;
 
@@ -99,20 +107,52 @@ float attenuation(float dist, float range) {
     return window / (dist * dist + 1.0);
 }
 
+// --- Cook-Torrance BRDF terms (CPU twins in renderer/Pbr.hpp) ----------------
+
+// D — GGX/Trowbridge-Reitz: the fraction of microfacets aligned with the halfway
+// vector H. Peaks when nDotH = 1 (a mirror facet); rougher = a lower, wider peak.
+float distributionGGX(float nDotH, float roughness) {
+    float a     = roughness * roughness;
+    float a2    = a * a;
+    float d     = nDotH * nDotH * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * d * d, 1e-7);
+}
+
+// One half of Smith's geometry term (Schlick-GGX), for a single direction (N·V or
+// N·L). k is the direct-lighting roughness remap.
+float geometrySchlickGGX(float nDotX, float roughness) {
+    float r = roughness + 1.0;
+    float k = (r * r) / 8.0;
+    return nDotX / (nDotX * (1.0 - k) + k);
+}
+
+// G — Smith: microfacet self-shadowing on the way IN (light) and OUT (view).
+float geometrySmith(float nDotV, float nDotL, float roughness) {
+    return geometrySchlickGGX(nDotV, roughness) * geometrySchlickGGX(nDotL, roughness);
+}
+
+// F — Fresnel-Schlick: reflectance climbs from F0 (head-on) to 1 at grazing angles.
+// Runs per RGB channel (F0 is a vec3: 0.04 for dielectrics, the albedo for metals).
+vec3 fresnelSchlick(float cosTheta, vec3 f0) {
+    return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
 void main() {
     vec3 albedo = texture(uTex, vUV).rgb * vColor;
 
     vec3 N = normalize(vWorldNormal);
     vec3 V = normalize(cameraPos.xyz - vWorldPos);
+    float nDotV = max(dot(N, V), 0.0);
 
-    float shininess    = material.x;
-    float specStrength = material.y;
+    float metallic  = clamp(material.x, 0.0, 1.0);
+    float roughness = clamp(material.y, 0.04, 1.0);  // a floor avoids a zero-width, unstable highlight
 
-    // Ambient is unconditional and added ONCE (it stands in for bounced light that
-    // reaches surfaces regardless of any direct source).
-    vec3 result = albedo * ambient.rgb;
+    // Base reflectance F0: dielectrics reflect a dim ~4% (grey), metals reflect their
+    // own albedo (tinted). `mix` interpolates for the rare in-between.
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
-    // Accumulate every active light's direct contribution.
+    // Accumulate every active light's direct contribution (the reflectance equation).
+    vec3 Lo = vec3(0.0);
     int count = min(lightCount.x, MAX_LIGHTS);
     for (int i = 0; i < count; ++i) {
         GpuLight lt = lights[i];
@@ -140,19 +180,31 @@ void main() {
             }
         }
 
-        // Blinn-Phong terms for THIS light.
-        float ndotl    = max(dot(N, L), 0.0);
-        vec3  H        = normalize(L + V);
-        float specular = (ndotl > 0.0) ? pow(max(dot(N, H), 0.0), shininess) : 0.0;
+        vec3  H     = normalize(L + V);
+        float nDotL = max(dot(N, L), 0.0);
 
-        // The sun (a directional light at index 0) is the only shadow caster.
-        float shadow = (i == 0 && type == 0) ? shadowFactor(ndotl) : 1.0;
-
-        // radiance = color * intensity * distance/cone attenuation.
+        // radiance = light color * intensity * distance/cone attenuation.
         vec3 radiance = lt.colorIntensity.rgb * lt.colorIntensity.a * atten;
 
-        result += shadow * radiance * (albedo * ndotl + specStrength * specular);
+        // Cook-Torrance specular = D·G·F / (4·(N·V)(N·L)).
+        float D = distributionGGX(max(dot(N, H), 0.0), roughness);
+        float G = geometrySmith(nDotV, nDotL, roughness);
+        vec3  F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+        vec3  specular = (D * G * F) / max(4.0 * nDotV * nDotL, 1e-4);
+
+        // Energy conservation: light not reflected specularly (1 - F) is available to
+        // diffuse — and metals (which absorb all refracted light) have no diffuse.
+        vec3 kd = (vec3(1.0) - F) * (1.0 - metallic);
+
+        // The sun (a directional light at index 0) is the only shadow caster.
+        float shadow = (i == 0 && type == 0) ? shadowFactor(nDotL) : 1.0;
+
+        Lo += shadow * (kd * albedo / PI + specular) * radiance * nDotL;
     }
 
-    outColor = vec4(result, 1.0);
+    // Ambient fill added ONCE — a crude stand-in for bounced/environment light
+    // (proper ambient + metal reflections need IBL, a later step).
+    vec3 color = ambient.rgb * albedo + Lo;
+
+    outColor = vec4(color, 1.0);
 }

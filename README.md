@@ -9,13 +9,13 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 11:** adds **multiple lights**. The single hardcoded "sun" becomes a
-> **list of lights** of different kinds — a **directional** sun, coloured **point** lights (bulbs
-> that fade with distance), and a **spot** light (a cone) — that the fragment shader **loops over**
-> and adds together. Along the way: distance **attenuation** (windowed inverse-square) and the
-> soft **spot cone**. One point light orbits the scene, and each light group toggles at runtime.
-> (Only the directional sun casts a shadow for now; shadowing the rest — cascades / cube maps —
-> is a later step.)
+> **Current status — Step 12:** adds **PBR materials**. The ad-hoc Blinn-Phong shading is replaced
+> by the physically-based **Cook-Torrance metallic-roughness** model: every surface is described by
+> two intuitive dials — **metallic** (metal vs. non-metal) and **roughness** (polished vs. matte) —
+> that feed a microfacet BRDF (GGX distribution, Smith geometry, Fresnel) with proper **energy
+> conservation**. Metals reflect their albedo and have no diffuse; dielectrics reflect a dim 4% over
+> a matte body. (Metals look dark away from the highlights until **IBL** — a later step — gives them
+> an environment to reflect.)
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
@@ -80,6 +80,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - [docs/12-multiple-lights.html](docs/12-multiple-lights.html) — directional/point/spot lights,
   distance attenuation, the spot cone, and accumulating many lights in a shader loop, mapped to
   the Step 11 code that lights the scene with a sun plus coloured point and spot lights.
+- [docs/13-pbr-materials.html](docs/13-pbr-materials.html) — the Cook-Torrance metallic-roughness
+  model: the microfacet BRDF (GGX, Smith, Fresnel), the metallic workflow, and energy conservation,
+  mapped to the Step 12 code that swaps Blinn-Phong for physically-based shading.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -98,7 +101,8 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 | ✅ **9** | **Models & shadows** | OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping |
 | ✅ **10** | **Post-processing** | offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA |
 | ✅ **11** | **Multiple lights** | directional/point/spot lights, distance attenuation, spot cones |
-| 12+ | PBR & more shadows | roughness/metalness, normal maps, shadow cascades & point-light shadows |
+| ✅ **12** | **PBR materials** | Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation |
+| 13+ | Texture maps, IBL & more shadows | metallic-roughness/normal maps, image-based lighting, shadow cascades & point-light shadows |
 
 ## Requirements
 

@@ -1103,10 +1103,10 @@ void GpuRenderer::recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
         samplerBinding.sampler = sampler_;
         SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, &samplerBinding, /*num_bindings=*/1);
 
-        // Push this material's parameters (fragment set=3, binding 1): a vec4 with
-        // shininess in x and specular strength in y. Per draw, so each object can be
-        // glossier or duller than the next.
-        const float materialParams[4] = { material->shininess, material->specStrength,
+        // Push this material's PBR parameters (fragment set=3, binding 1): a vec4 with
+        // metallic in x and roughness in y. Per draw, so each object can be a rough
+        // dielectric or a polished metal independently of the next.
+        const float materialParams[4] = { material->metallic, material->roughness,
                                           0.0f, 0.0f };
         SDL_PushGPUFragmentUniformData(cmd, /*slot=*/1, materialParams, sizeof(materialParams));
 

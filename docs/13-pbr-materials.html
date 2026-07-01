@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PBR Materials · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html" aria-current="page">PBR Materials</a>
+  </div>
+</nav>
+
+<main>
+  <h1>PBR Materials</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 12:</strong> replace the ad-hoc <strong>Blinn-Phong</strong> shading
+    with a <strong>physically-based</strong> one — the industry-standard <strong>Cook-Torrance
+    metallic-roughness</strong> model. Instead of fiddly "shininess" and "specular strength"
+    knobs, every surface is described by two intuitive dials: <strong>metallic</strong> (is it a
+    metal?) and <strong>roughness</strong> (how polished is it?).</p>
+    <p>This changes only what happens <em>inside</em> the Step 11 light loop — no new vertex data,
+    no new textures. But the ideas behind it (the microfacet BRDF, the metallic workflow, energy
+    conservation) are the foundation every modern renderer is built on.</p>
+  </blockquote>
+
+  <h2>1. Why replace Blinn-Phong?</h2>
+
+  <p>Blinn-Phong (Step 7) gave us a believable highlight from a <code>shininess</code> exponent
+  and a <code>specStrength</code> fudge factor. It looks fine, but it's <strong>made up</strong>:
+  the numbers don't correspond to anything physical, a material tuned under one light looks wrong
+  under another, and nothing stops a surface from reflecting <em>more</em> light than hits it
+  (breaking conservation of energy). Artists had to re-tune everything per scene.</p>
+
+  <p><strong>Physically-based rendering (PBR)</strong> fixes this by modelling how light actually
+  interacts with a surface. Its promise: a material authored once looks correct under <em>any</em>
+  lighting, and its parameters mean something real. The near-universal parameterisation is
+  <strong>metallic-roughness</strong>, and it needs just two numbers per surface — which is what
+  our <code>Material</code> now stores.</p>
+
+  <h2>2. The reflectance equation (the shape of the problem)</h2>
+
+  <p>All the shading we do is an approximation of one integral, the <strong>reflectance
+  equation</strong>: the light leaving a point toward the eye is the sum, over every incoming
+  light direction, of <em>incoming light × how much this surface bounces light from that
+  direction to the eye</em>. That "how much" function is the <strong>BRDF</strong>
+  (Bidirectional Reflectance Distribution Function).</p>
+
+  <p>We already do the "sum over lights" part — that's the Step 11 loop. PBR just gives us a
+  better, physically-grounded BRDF to evaluate inside it. Our BRDF has two pieces added together:
+  a <strong>diffuse</strong> term (light that penetrates and scatters back out, soft and
+  view-independent) and a <strong>specular</strong> term (light that reflects off the surface,
+  the shaped highlight).</p>
+
+  <h2>3. Microfacets &amp; roughness</h2>
+
+  <p>The key mental model for the specular term is <strong>microfacet theory</strong>: zoom in
+  far enough and any surface is a field of tiny perfect mirrors ("microfacets") tilted at
+  different angles. A ray reflects toward your eye only from the facets whose normal happens to
+  point along the <strong>halfway vector</strong> <code>H</code> (halfway between the light and
+  the view). <strong>Roughness</strong> is simply how <em>disordered</em> those facet angles
+  are:</p>
+
+  <pre class="diagram">  roughness ≈ 0 (smooth)          roughness ≈ 1 (rough)
+   ───────────────                 ╱╲╱╲╱‾╲╱╲╱‾╲╱╲
+   facets nearly aligned →         facets point everywhere →
+   a tight, bright highlight       a broad, dim highlight</pre>
+
+  <p>A smooth surface has all its facets aligned, so the reflections agree and you get a small,
+  intense highlight. A rough one scatters reflections everywhere, spreading the same energy into
+  a large, faint one. This single dial replaces Blinn-Phong's unintuitive exponent.</p>
+
+  <h2>4. The Cook-Torrance specular term: D · G · F</h2>
+
+  <p>The specular BRDF is <code>(D · G · F) / (4 · (N·V) · (N·L))</code> — three functions
+  multiplied together, each answering one physical question. (Their exact formulas live in the
+  shader and, mirrored for tests, in <a href="../src/renderer/Pbr.hpp">renderer/Pbr.hpp</a>.)</p>
+
+  <ul>
+    <li><strong>D — Normal Distribution (GGX).</strong> Of all the microfacets, what fraction are
+    aligned with <code>H</code> and so reflect the light at the eye? This is the term roughness
+    drives directly: it's a lobe that <strong>peaks when the surface faces H</strong> and widens
+    as roughness grows. GGX (a.k.a. Trowbridge-Reitz) is the standard choice for its realistic
+    long "tail".</li>
+    <li><strong>G — Geometry (Smith).</strong> Those aligned facets aren't all useful: at grazing
+    angles, facets <strong>shadow and mask each other</strong>, blocking light on the way in and
+    the reflection on the way out. G is a visibility factor in <code>[0,1]</code> that accounts
+    for this, and it shrinks as roughness rises.</li>
+    <li><strong>F — Fresnel (Schlick).</strong> <em>Every</em> surface becomes a near-perfect
+    mirror at a glancing angle (look across this page at a shallow angle — it turns shiny). F rises
+    from <code>F0</code> (the head-on reflectance) toward 1.0 as the view grazes. Schlick's
+    approximation makes this cheap.</li>
+  </ul>
+
+  <p>The <code>4 · (N·V) · (N·L)</code> denominator is a normalisation factor that falls out of
+  the microfacet derivation. Together, D shapes the highlight, G dims it at grazing angles, and F
+  tints and strengthens it toward the edges.</p>
+
+  <h2>5. The metallic workflow &amp; energy conservation</h2>
+
+  <p>Here's where <code>metallic</code> earns its keep. It selects between two physically distinct
+  behaviours via the base reflectance <strong>F0</strong> and the diffuse term:</p>
+
+  <ul>
+    <li><strong>Dielectrics</strong> (non-metals: plastic, wood, stone, skin) reflect only a dim,
+    <em>colourless</em> ~4% specularly (<code>F0 = 0.04</code>) and show a <strong>diffuse
+    colour</strong> underneath — the albedo you'd expect.</li>
+    <li><strong>Metals</strong> reflect strongly and <em>tint</em> that reflection with their own
+    colour (<code>F0 = albedo</code>), and have <strong>no diffuse at all</strong> — a metal's
+    colour comes entirely from its tinted reflections.</li>
+  </ul>
+
+  <p>So in the shader <code>F0 = mix(0.04, albedo, metallic)</code>, and the diffuse term is
+  scaled by <code>(1 - metallic)</code> so metals lose it entirely. <strong>Energy
+  conservation</strong> adds one more rule: light reflected specularly can't <em>also</em> come
+  back as diffuse, so we weight diffuse by <code>kd = (1 - F)</code>. And the Lambertian diffuse
+  is divided by <code>π</code> (the correct normalisation so a surface never re-emits more than it
+  receives). That <code>/π</code> is exactly why our light intensities are larger this step than in
+  the Blinn-Phong era — same brightness, honest math.</p>
+
+  <pre class="diagram">  per light in the loop (radiance = color · intensity · attenuation):
+     F0   = mix(0.04, albedo, metallic)
+     spec = D·G·F / (4·(N·V)·(N·L))
+     kd   = (1 - F) · (1 - metallic)        // metals: no diffuse
+     Lo  += shadow · (kd · albedo/π + spec) · radiance · (N·L)</pre>
+
+  <h2>6. Why the metals look dark (and what IBL will fix)</h2>
+
+  <p>Run the engine and the metal sphere is mostly dark except where a light reflects in it. That's
+  <strong>correct</strong>: a metal has no diffuse, so with only a few direct lights it can only
+  show those lights' sharp reflections — everywhere else it's reflecting the (empty, dark) room.
+  A real metal object looks bright because it reflects a whole <em>environment</em>.</p>
+
+  <p>Supplying that environment is <strong>image-based lighting (IBL)</strong> — pre-filtering an
+  environment map into the ambient diffuse and specular a surface would see from all directions.
+  It's the natural next step, and the reason our ambient term here is deliberately a crude
+  <code>ambient · albedo</code> placeholder. Seeing metals go dark <em>is</em> the lesson: it's
+  what motivates IBL.</p>
+
+  <h2>7. The code</h2>
+
+  <h3>The material — <a href="../src/scene/Material.hpp">scene/Material.hpp</a></h3>
+  <p><code>shininess</code>/<code>specStrength</code> became <code>metallic</code> +
+  <code>roughness</code> (both 0..1); the albedo texture is unchanged. The renderer pushes them in
+  the same material uniform's two <code>vec4</code> lanes it already used, so no binding or buffer
+  size changes — <code>recordNode</code> just sends <code>{metallic, roughness}</code>.</p>
+
+  <h3>The BRDF math — <a href="../shaders/triangle.frag">triangle.frag</a> + <a href="../src/renderer/Pbr.hpp">Pbr.hpp</a></h3>
+  <p>The shader's per-light body swapped Blinn-Phong for the Cook-Torrance terms above; the vertex
+  shader and the Step 11 light loop/uniform are untouched. The three sub-terms
+  (<code>distributionGGX</code>, <code>geometrySmith</code>, <code>fresnelSchlick</code>) have pure
+  CPU twins in <code>Pbr.hpp</code>, unit-tested in
+  <a href="../tests/test_pbr.cpp">test_pbr.cpp</a> — the shader stays the runtime source of truth,
+  the header lets us pin the math's shape headlessly.</p>
+
+  <h3>The demo — <a href="../src/core/Engine.cpp">Engine.cpp</a></h3>
+  <p><code>buildScene</code> assigns contrasting materials — a rough dielectric floor, a metal hub
+  and a shiny metal sphere, a glossy dielectric torus — so the metallic/roughness axes are visible
+  side by side. <code>setupLights</code> bumps the light intensities to suit the energy-conserving
+  math.</p>
+
+  <h2>8. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Slide the roughness.</strong> Change a material's <code>roughness</code> in
+    <a href="../src/core/Engine.cpp">Engine.cpp</a> from <code>0.1</code> to <code>0.9</code> and
+    rebuild: watch the highlight go from a tight glint to a broad sheen.</li>
+    <li><strong>Flip metallic.</strong> Set the torus <code>metallic = 1.0</code>: its bright
+    diffuse body collapses to dark metal with sharp coloured reflections — the metal/dielectric
+    difference in one edit.</li>
+    <li><strong>Watch Fresnel.</strong> Fly the camera so a surface is nearly edge-on to a light;
+    the rim brightens as F climbs toward 1 — the grazing-angle mirror effect.</li>
+    <li><strong>Feel the <code>/π</code>.</strong> Remove the <code>/ PI</code> from the diffuse
+    term and the scene blows out — a quick way to see what energy conservation buys you.</li>
+  </ol>
+
+  <h2>9. What's next</h2>
+
+  <p>➡️ <strong>Texture the material and light the environment.</strong> Two directions build
+  straight on this: <strong>texture maps</strong> — per-pixel <code>metallic</code>/
+  <code>roughness</code> and <strong>normal maps</strong> (which need per-vertex tangents) for real
+  surface detail; and <strong>IBL</strong>, which finally gives ambient and metals a world to
+  reflect. Better shadows (sun cascades, point-light cube maps) also remain open.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

@@ -25,6 +25,7 @@
     <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
     <a class="navlink" href="11-post-processing.html">Post-processing</a>
     <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
   </div>
 </nav>
 
@@ -107,6 +108,12 @@
       accumulating many lights in a shader loop — then the Step 11 code that lights the scene with
       a sun plus coloured point and spot lights.</p>
     </a>
+    <a class="card" href="13-pbr-materials.html">
+      <h3>PBR Materials →</h3>
+      <p>The Cook-Torrance metallic-roughness model: the microfacet BRDF (GGX, Smith, Fresnel),
+      the metallic workflow, and energy conservation — then the Step 12 code that swaps Blinn-Phong
+      for physically-based shading of metals and dielectrics.</p>
+    </a>
   </div>
 
   <h2>Roadmap</h2>
@@ -131,7 +138,8 @@
       <tr><td>✅ <strong>9</strong></td><td><strong>Models &amp; shadows</strong></td><td>OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping</td></tr>
       <tr><td>✅ <strong>10</strong></td><td><strong>Post-processing</strong></td><td>offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA</td></tr>
       <tr><td>✅ <strong>11</strong></td><td><strong>Multiple lights</strong></td><td>directional/point/spot lights, distance attenuation, spot cones</td></tr>
-      <tr><td>12+</td><td>PBR &amp; more shadows</td><td>roughness/metalness, normal maps, shadow cascades &amp; point-light shadows</td></tr>
+      <tr><td>✅ <strong>12</strong></td><td><strong>PBR materials</strong></td><td>Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation</td></tr>
+      <tr><td>13+</td><td>Texture maps, IBL &amp; more shadows</td><td>metallic-roughness/normal maps, image-based lighting, shadow cascades &amp; point-light shadows</td></tr>
     </tbody>
   </table>
 

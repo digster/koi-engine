@@ -166,6 +166,7 @@ add_executable(koi-tests
     tests/test_node.cpp
     tests/test_post.cpp
     tests/test_light.cpp
+    tests/test_pbr.cpp
 )
 target_link_libraries(koi-tests PRIVATE koi_core doctest::doctest koi_warnings)
 add_test(NAME koi-tests COMMAND koi-tests)

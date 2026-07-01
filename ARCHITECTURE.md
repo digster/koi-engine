@@ -3,15 +3,16 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 11 (window & render loop, the first triangle, geometry in GPU
+through Step 12 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
-**textures** sampled onto those surfaces, **Phong lighting** that shades them,
-per-object **materials**, **model loading** from OBJ/glTF files, **shadow
-mapping**, a **post-processing** chain — an off-screen HDR target run through
-bloom, tone-mapping, and FXAA before it reaches the screen — and **multiple
-lights** of different kinds (directional/point/spot) accumulated in the shader).
+**textures** sampled onto those surfaces, lighting that shades them, per-object
+**materials**, **model loading** from OBJ/glTF files, **shadow mapping**, a
+**post-processing** chain — an off-screen HDR target run through bloom,
+tone-mapping, and FXAA before it reaches the screen — **multiple lights** of
+different kinds (directional/point/spot) accumulated in the shader, and
+physically-based **PBR** shading via a Cook-Torrance metallic-roughness BRDF).
 
 ## Guiding principles
 
@@ -52,7 +53,8 @@ lights** of different kinds (directional/point/spot) accumulated in the shader).
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
 | `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler**, the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, and the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
 | `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the Engine drives from input and hands to the renderer, plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
-| `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: a `shared_ptr<Texture>` + specular params (shininess, strength). Forward-declares `Texture` (stores it by `shared_ptr`). Shared by `shared_ptr`; a `Node` references one. The renderer binds it per draw. |
+| `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: a `shared_ptr<Texture>` (albedo) + **PBR** params `metallic` and `roughness` (Step 12, replacing Blinn-Phong's shininess/specStrength). Forward-declares `Texture` (stores it by `shared_ptr`). Shared by `shared_ptr`; a `Node` references one. The renderer binds it per draw. |
+| `Pbr` | [src/renderer/Pbr.hpp](src/renderer/Pbr.hpp) | Header-only, SDL-free (Step 12): pure CPU mirrors of the Cook-Torrance BRDF sub-terms — `distributionGGX` (D), `geometrySmith`/`geometrySchlickGGX` (G), `fresnelSchlick` (F), plus `kPi`. The shader in `triangle.frag` is the runtime truth; these exist so the microfacet math's shape is unit-tested headlessly (`tests/test_pbr.cpp`), the same pattern as `PostProcess.hpp`/`Light.hpp`. |
 | `Light` | [src/scene/Light.hpp](src/scene/Light.hpp) | Header-only, SDL-free (Step 11): a `Light` struct (type = directional/point/spot, position, direction, colour, intensity, range, spot-cone cosines, an `enabled` flag) plus pure helpers (`attenuation`, `spotFactor`, `activeLightCount`) that mirror the shader math for headless tests (`tests/test_light.cpp`). The `Engine` owns a `std::vector<Light>` and hands it to the renderer each frame, exactly like the camera + `PostSettings`. `MAX_LIGHTS` matches the shader's fixed array size. |
 | `ModelLoader` | [src/renderer/ModelLoader.*](src/renderer/) | `loadModel(path)` reads a model file into a `Mesh` (positions/normals/UVs/indices, vertex color = white): `.obj` via **tinyobjloader** (de-duplicating its separate v/vt/vn indices), `.glb/.gltf` via **cgltf**. The single TU that pulls in those third-party headers — compiled warning-free (`-w`). |
 | `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count + element size: 16-bit for primitives, 32-bit for big loaded models). Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must die before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
@@ -411,6 +413,38 @@ needs six — a cube map), so this step keeps the single Step-9 shadow map, driv
 The fixed-array loop is also why "hundreds of lights" is a *different* architecture
 (deferred / clustered shading) — a deliberate future milestone, not this step.
 
+### PBR materials (Step 12)
+
+The shading *inside* the Step 11 light loop switches from ad-hoc **Blinn-Phong** to a
+physically-based **Cook-Torrance metallic-roughness** BRDF. This is a deliberately
+contained change: no new vertex attributes, no new textures, no binding changes — the
+`Material`'s two Blinn-Phong scalars (shininess/specStrength) simply become
+`metallic`/`roughness`, pushed through the *same* material-uniform `vec4` lanes.
+
+```
+   scene/Material.hpp            shader (triangle.frag) per light:
+   {texture, metallic,           F0   = mix(0.04, albedo, metallic)
+    roughness}                   spec = D·G·F / (4·(N·V)(N·L))   (GGX/Smith/Fresnel)
+   renderer/Pbr.hpp  ── mirror ─► kd   = (1-F)(1-metallic)        (metals: no diffuse)
+   D/G/F helpers (unit-tested)   Lo  += shadow·(kd·albedo/π + spec)·radiance·(N·L)
+```
+
+The **specular** term is the microfacet BRDF: `D` (GGX/Trowbridge-Reitz) is how many
+facets face the halfway vector — roughness widens this lobe; `G` (Smith with
+Schlick-GGX) is microfacet self-shadowing; `F` (Fresnel-Schlick) is the grazing-angle
+reflectance rise. The **metallic** parameter selects behaviour via the base
+reflectance `F0`: dielectrics reflect a colourless ~4% and keep a diffuse albedo;
+metals reflect their *own* albedo and have **no diffuse** (`kd` scaled by
+`1-metallic`). **Energy conservation** weights diffuse by `1-F` and divides the
+Lambertian term by `π` — which is why `setupLights`' intensities are larger than the
+Blinn-Phong era (same brightness, honest math). The three D/G/F terms have pure CPU
+twins in `renderer/Pbr.hpp`, unit-tested in `tests/test_pbr.cpp`.
+
+The ambient term is a crude `ambient·albedo` fill: with only direct lights, **metals
+look dark** away from their sharp reflections (a metal has no diffuse and no
+environment to reflect). That is physically correct and is exactly what **image-based
+lighting (IBL)** — a natural future step — would supply.
+
 ## Lifecycle & ownership
 
 Startup builds bottom-up, shutdown tears down top-down — the standard RAII
@@ -524,6 +558,12 @@ Future milestones slot into this structure without reshaping it:
   spot + pure attenuation/spot-cone helpers) replaced the single hardcoded sun; the fragment
   shader loops over a fixed-size std140 light array, the `Engine` owns + animates + toggles a
   `std::vector<Light>` threaded through the render calls, and only the sun still casts a shadow.
-- **Step 12+:** richer surfaces toward **PBR** (roughness/metalness + normal maps extending
-  `Material`), more shadow casters (sun cascades, point-light cube maps), and eventually
-  deferred/clustered shading for many lights; glTF file materials/animation also open.
+- **Step 12 (done):** **PBR materials** — Blinn-Phong shading replaced by a Cook-Torrance
+  metallic-roughness BRDF. `Material` now carries `metallic`/`roughness`; the fragment shader's
+  per-light body uses GGX/Smith/Fresnel with energy conservation; pure BRDF helpers live in
+  `renderer/Pbr.hpp` (unit-tested). No vertex/texture/binding changes — the material uniform
+  lanes were repurposed.
+- **Step 13+:** **texture maps** (per-pixel metallic/roughness + **normal maps**, which add a
+  per-vertex tangent to `Vertex`), **image-based lighting (IBL)** for ambient + metal reflections,
+  more shadow casters (sun cascades, point-light cube maps), and eventually deferred/clustered
+  shading for many lights; glTF file materials/animation also open.

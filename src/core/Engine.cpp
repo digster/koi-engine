@@ -100,16 +100,16 @@ bool Engine::buildScene() {
         return false;
     }
 
-    // Three materials (texture + shininess + specular strength). They show that
-    // appearance varies PER OBJECT — and that a material's PARAMETERS vary
-    // independently of its texture:
-    //   * floorMat — the cool checker, matte (low shininess).
-    //   * cubeMat  — the warm dots, glossy.
-    //   * hubMat   — the SAME dots texture as cubeMat, but extra shiny (a tighter,
-    //                brighter highlight), so the parameter-only difference is obvious.
-    auto floorMat = std::make_shared<Material>(Material{checkerTex,   8.0f, 0.15f});
-    auto cubeMat  = std::make_shared<Material>(Material{dotsTex,     48.0f, 0.50f});
-    auto hubMat   = std::make_shared<Material>(Material{dotsTex,    128.0f, 0.90f});
+    // Three PBR materials (texture + metallic + roughness). They show that appearance
+    // varies PER OBJECT across the two axes of the metallic-roughness model:
+    //   * floorMat — a rough DIELECTRIC (non-metal): matte checker, soft dim highlight.
+    //   * cubeMat  — a mid-roughness dielectric: the warm dots, a broader gloss.
+    //   * hubMat   — a polished METAL (same dots texture): tints its reflection with
+    //                the albedo and has no diffuse, so the metal/dielectric split is
+    //                obvious against cubeMat's identical texture.
+    auto floorMat = std::make_shared<Material>(Material{checkerTex, 0.0f, 0.85f});
+    auto cubeMat  = std::make_shared<Material>(Material{dotsTex,    0.0f, 0.55f});
+    auto hubMat   = std::make_shared<Material>(Material{dotsTex,    1.0f, 0.30f});
 
     // Step 9: load two MODELS from files (geometry only — we give them our own
     // materials). sphere.glb exercises the cgltf loader; torus.obj the tinyobjloader
@@ -120,8 +120,12 @@ bool Engine::buildScene() {
         KOI_ERROR("buildScene: failed to load one or more models.");
         return false;
     }
-    auto sphereMat = std::make_shared<Material>(Material{checkerTex, 96.0f, 0.70f});
-    auto torusMat  = std::make_shared<Material>(Material{dotsTex,    64.0f, 0.60f});
+    // The loaded models flank the cubes and headline the two material extremes:
+    //   * sphereMat — a smooth METAL (the checker as its reflected tint): crisp,
+    //                 bright light reflections that sharpen as you orbit it.
+    //   * torusMat  — a glossy DIELECTRIC: a tight white specular over a matte body.
+    auto sphereMat = std::make_shared<Material>(Material{checkerTex, 1.0f, 0.20f});
+    auto torusMat  = std::make_shared<Material>(Material{dotsTex,    0.0f, 0.25f});
 
     // The root is a pure GROUP node (no mesh/material): a stable parent for the world.
     sceneRoot_ = std::make_unique<Node>();
@@ -183,14 +187,15 @@ void Engine::setupLights() {
     lights_.clear();
 
     // Light 0 — the SUN: a directional light (parallel rays, no distance falloff).
-    // Its direction matches the scene's pre-Step-11 sun, so with only the sun on the
-    // shading and shadows look exactly as before. This is the ONLY shadow caster —
-    // by convention it lives at index 0, which the renderer/shader rely on.
+    // This is the ONLY shadow caster — by convention it lives at index 0, which the
+    // renderer/shader rely on. Step 12 note: the PBR shading divides diffuse by π and
+    // conserves energy, so intensities are larger than the Blinn-Phong era to land at
+    // a comparable brightness.
     Light sun;
     sun.type      = LightType::Directional;
     sun.direction = {-0.4f, -1.0f, -0.3f};  // the direction the rays TRAVEL
     sun.color     = {1.0f, 1.0f, 1.0f};
-    sun.intensity = 1.0f;
+    sun.intensity = 3.0f;
     lights_.push_back(sun);
 
     // Light 1 — a warm POINT light off to the right, pooling orange light on the
@@ -200,7 +205,7 @@ void Engine::setupLights() {
     warm.type      = LightType::Point;
     warm.position  = {3.6f, 1.2f, 2.2f};
     warm.color     = {1.0f, 0.45f, 0.15f};
-    warm.intensity = 9.0f;
+    warm.intensity = 24.0f;
     warm.range     = 9.0f;
     lights_.push_back(warm);
 
@@ -211,7 +216,7 @@ void Engine::setupLights() {
     cool.type      = LightType::Point;
     cool.position  = {-3.6f, 1.3f, 2.2f};
     cool.color     = {0.25f, 0.5f, 1.0f};
-    cool.intensity = 9.0f;
+    cool.intensity = 24.0f;
     cool.range     = 9.0f;
     lights_.push_back(cool);
 
@@ -224,7 +229,7 @@ void Engine::setupLights() {
     spot.position       = {0.0f, 4.5f, 1.0f};
     spot.direction      = {0.0f, -1.0f, -0.15f};  // mostly straight down
     spot.color          = {0.7f, 1.0f, 0.7f};
-    spot.intensity      = 14.0f;
+    spot.intensity      = 40.0f;
     spot.range          = 16.0f;
     spot.innerCutoffCos = std::cos(radians(14.0f));
     spot.outerCutoffCos = std::cos(radians(22.0f));

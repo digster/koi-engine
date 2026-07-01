@@ -184,3 +184,27 @@ directional sun.
 - Verified: clean build under strict warnings; 46 tests pass; headless smoke (no GPU validation
   errors); A/B capture (all lights vs sun-only) confirms each light contributes, shadows intact.
   PBR / normal maps / more shadow casters → Step 12+.
+
+**Next milestone request (Step 12):**
+> Work on the next milestone.
+
+**Decision made (via clarifying question — which slice of "Step 12+"):** user chose **PBR
+materials** (over normal mapping / better shadows). So Step 12 = Cook-Torrance metallic-roughness,
+replacing Blinn-Phong.
+- `scene/Material.hpp`: `shininess`/`specStrength` → `metallic` + `roughness` (both 0..1); albedo
+  texture unchanged.
+- New `renderer/Pbr.hpp` (header-only, SDL-free): pure `distributionGGX` (D), `geometrySmith`/
+  `geometrySchlickGGX` (G), `fresnelSchlick` (F), `kPi` — mirrors the shader, unit-tested in
+  `tests/test_pbr.cpp`.
+- `triangle.frag`: per-light Blinn-Phong body swapped for Cook-Torrance `spec = D·G·F/(4·NdotV·NdotL)`,
+  `F0 = mix(0.04, albedo, metallic)`, `kd = (1-F)(1-metallic)`, Lambert `albedo/π`. Vertex shader,
+  light loop, and the material uniform's binding/size all UNCHANGED (only the x/y lanes repurposed
+  → no `loadShader` edit). Ambient stays a crude `ambient·albedo` fill (metals dark without IBL).
+- `recordNode` pushes `{metallic, roughness}`. `buildScene` materials retuned to showcase metal vs
+  dielectric + rough vs smooth (metal sphere/hub, dielectric floor/torus). `setupLights` intensities
+  bumped (sun 1→3, points 9→24, spot 14→40) to offset the energy-conserving `/π`.
+- Also fixed `tests/test_node.cpp` (used the removed shininess/specStrength fields).
+- Verified: clean build under strict warnings; **49 tests pass**; headless smoke (no GPU validation
+  errors); capture shows the metal sphere as a dark, albedo-tinted metal with a sharp bright
+  reflection (vs Step 11's matte sphere), glossy dielectric torus, shadows intact. Texture maps /
+  IBL / more shadow casters → Step 13+.
