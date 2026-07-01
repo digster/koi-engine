@@ -27,23 +27,24 @@ Two principles shape the plan:
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
 post-processed shading of loaded models under many lights. Each step has a concept-first tutorial —
-browse them from [`docs/index.html`](docs/index.html).
+linked per row below (note how the doc number runs one ahead of the step), and all collected in
+[`docs/index.html`](docs/index.html).
 
-| Step | Milestone | Key concepts |
-|------|-----------|--------------|
-| **0** | Window + clear screen | GPU device, swapchain, command buffer, render pass |
-| **1** | First triangle | shaders, graphics pipeline, shader toolchain (`glslc` + `spirv-cross`) |
-| **2** | Vertex/index buffers | GPU buffers, transfer buffers, vertex layouts |
-| **3** | 3D cube + MVP + depth | hand-rolled `vec`/`mat4`, projection, depth testing |
-| **4** | Camera + input movement | view matrix, delta-time, fly camera |
-| **5** | Meshes & scene graph | mesh abstraction, Transform (TRS), node hierarchy |
-| **6** | Textures | UV coordinates, GPU textures, samplers (filtering & wrap) |
-| **7** | Phong lighting | normals, a directional light, ambient/diffuse/specular |
-| **8** | Materials | per-object texture + specular params, per-draw binding |
-| **9** | Models & shadows | OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping |
-| **10** | Post-processing | offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA |
-| **11** | Multiple lights | directional/point/spot lights, distance attenuation, spot cones |
-| **12** | PBR materials | Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation |
+| Step | Milestone | Key concepts | Tutorial |
+|------|-----------|--------------|----------|
+| **0** | Window + clear screen | GPU device, swapchain, command buffer, render pass | [docs/01](docs/01-window-and-render-loop.html) |
+| **1** | First triangle | shaders, graphics pipeline, shader toolchain (`glslc` + `spirv-cross`) | [docs/02](docs/02-first-triangle.html) |
+| **2** | Vertex/index buffers | GPU buffers, transfer buffers, vertex layouts | [docs/03](docs/03-vertex-and-index-buffers.html) |
+| **3** | 3D cube + MVP + depth | hand-rolled `vec`/`mat4`, projection, depth testing | [docs/04](docs/04-3d-cube-mvp-and-depth.html) |
+| **4** | Camera + input movement | view matrix, delta-time, fly camera | [docs/05](docs/05-camera-and-input.html) |
+| **5** | Meshes & scene graph | mesh abstraction, Transform (TRS), node hierarchy | [docs/06](docs/06-meshes-and-scene-graph.html) |
+| **6** | Textures | UV coordinates, GPU textures, samplers (filtering & wrap) | [docs/07](docs/07-textures-and-samplers.html) |
+| **7** | Phong lighting | normals, a directional light, ambient/diffuse/specular | [docs/08](docs/08-lighting-and-normals.html) |
+| **8** | Materials | per-object texture + specular params, per-draw binding | [docs/09](docs/09-materials.html) |
+| **9** | Models & shadows | OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping | [docs/10](docs/10-models-and-shadows.html) |
+| **10** | Post-processing | offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA | [docs/11](docs/11-post-processing.html) |
+| **11** | Multiple lights | directional/point/spot lights, distance attenuation, spot cones | [docs/12](docs/12-multiple-lights.html) |
+| **12** | PBR materials | Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation | [docs/13](docs/13-pbr-materials.html) |
 
 > The prerequisites page [`docs/00-getting-started.html`](docs/00-getting-started.html) (building,
 > running, testing, project layout) is not a numbered step.
