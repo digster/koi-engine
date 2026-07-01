@@ -25,6 +25,20 @@ SDL_PixelFormat gpuColorFormatToPixelFormat(SDL_GPUTextureFormat format) {
     }
 }
 
+namespace {
+// Post-processing (Step 10) constants.
+// The off-screen scene is rendered in HDR — 16-bit float per channel — so highlights
+// can exceed 1.0. That extra range is what gives tone-mapping real work to do and what
+// makes bloom's "bright-pass" meaningful (an 8-bit target would clamp it all away).
+constexpr SDL_GPUTextureFormat kSceneHdrFormat = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+// How many horizontal+vertical blur iterations the bloom glow gets (more = wider/softer).
+constexpr int kBloomBlurPasses = 4;
+// Vignette darkening strength when enabled (screen corners end up ~1 - strength bright).
+constexpr float kVignetteStrength = 0.5f;
+// Clear colour for intermediate post targets (only used when a pass needs a defined fill).
+constexpr SDL_FColor kPostClearBlack = {0.0f, 0.0f, 0.0f, 1.0f};
+}  // namespace
+
 GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     // ------------------------------------------------------------------------
     //  1. Create the GPU device.
@@ -99,6 +113,15 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
         return;
     }
 
+    // ------------------------------------------------------------------------
+    //  6. Create the post-processing resources (Step 10): the shared sampler and
+    //     the four fullscreen pipelines (bloom bright-pass, blur, tone-map
+    //     composite, FXAA). If this fails, isValid() reports it.
+    // ------------------------------------------------------------------------
+    if (!createPostResources()) {
+        return;
+    }
+
     // Note: no geometry or textures are uploaded here. The renderer is a factory
     // for meshes (createMesh) and textures (loadTexture) — the Engine builds the
     // scene (geometry + materials) after this constructor returns.
@@ -137,10 +160,21 @@ bool GpuRenderer::createTrianglePipeline() {
     }
 
     // A graphics pipeline bakes the shaders together with fixed-function state.
-    // We must tell it the pixel format of what we render into; it has to match
-    // the swapchain so the colors are written correctly.
+    // We must tell it the pixel format of what we render into. Since Step 10 the
+    // scene no longer renders straight to the swapchain — it renders into our own
+    // off-screen HDR target (kSceneHdrFormat) that the post-processing chain then
+    // tone-maps down to the swapchain. So the pipeline's color format is the HDR one.
+    if (!SDL_GPUTextureSupportsFormat(device_, kSceneHdrFormat, SDL_GPU_TEXTURETYPE_2D,
+                                      SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                                      SDL_GPU_TEXTUREUSAGE_SAMPLER)) {
+        KOI_ERROR("HDR scene format (R16G16B16A16_FLOAT) is not a supported sampleable "
+                  "color target on this device.");
+        SDL_ReleaseGPUShader(device_, vertexShader);
+        SDL_ReleaseGPUShader(device_, fragmentShader);
+        return false;
+    }
     SDL_GPUColorTargetDescription colorTargetDesc = {};
-    colorTargetDesc.format = SDL_GetGPUSwapchainTextureFormat(device_, window_);
+    colorTargetDesc.format = kSceneHdrFormat;
 
     // Choose (once) the depth-buffer format this pipeline — and our per-frame
     // depth textures — will use. The pipeline must know it up front so its depth
@@ -406,6 +440,295 @@ void GpuRenderer::recordShadowNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass*
     for (const std::unique_ptr<Node>& child : node.children()) {
         recordShadowNode(cmd, pass, *child, lightViewProj);
     }
+}
+
+// ----------------------------------------------------------------------------
+//  Post-processing (Step 10).
+// ----------------------------------------------------------------------------
+
+SDL_GPUTexture* GpuRenderer::createColorTarget(Uint32 width, Uint32 height,
+                                               SDL_GPUTextureFormat format) {
+    // A texture we can BOTH render into and later SAMPLE — the defining trait of an
+    // off-screen post-processing target.
+    SDL_GPUTextureCreateInfo info = {};
+    info.type                 = SDL_GPU_TEXTURETYPE_2D;
+    info.format               = format;
+    info.usage                = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                                SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    info.width                = width;
+    info.height               = height;
+    info.layer_count_or_depth = 1;
+    info.num_levels           = 1;
+    return SDL_CreateGPUTexture(device_, &info);
+}
+
+SDL_GPUGraphicsPipeline* GpuRenderer::buildFullscreenPipeline(SDL_GPUShader* vs,
+                                                              const char* frag,
+                                                              SDL_GPUTextureFormat targetFormat,
+                                                              Uint32 numSamplers) {
+    // Each post pass shares fullscreen.vert and adds its own fragment shader. Every
+    // post fragment shader declares exactly one uniform buffer (its parameters).
+    SDL_GPUShader* fs = loadShader(device_, frag, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                                   /*numUniformBuffers=*/1, numSamplers);
+    if (fs == nullptr) {
+        return nullptr;  // loadShader already logged the cause
+    }
+
+    SDL_GPUColorTargetDescription colorDesc = {};
+    colorDesc.format = targetFormat;
+
+    SDL_GPUGraphicsPipelineCreateInfo info = {};
+    info.vertex_shader   = vs;
+    info.fragment_shader = fs;
+    // No vertex input at all: the fullscreen triangle is generated from gl_VertexIndex,
+    // so there is no vertex buffer, no attributes, and we draw 3 vertices non-indexed.
+    info.vertex_input_state.num_vertex_buffers    = 0;
+    info.vertex_input_state.num_vertex_attributes = 0;
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    // No depth: a post pass just paints over every pixel; visibility was already
+    // resolved when the scene was drawn into the HDR target.
+    info.target_info.num_color_targets         = 1;
+    info.target_info.color_target_descriptions = &colorDesc;
+    info.target_info.has_depth_stencil_target  = false;
+
+    SDL_GPUGraphicsPipeline* pipe = SDL_CreateGPUGraphicsPipeline(device_, &info);
+    SDL_ReleaseGPUShader(device_, fs);  // the pipeline keeps what it needs
+    if (pipe == nullptr) {
+        KOI_ERROR("Failed to create fullscreen pipeline (%s): %s", frag, SDL_GetError());
+    }
+    return pipe;
+}
+
+bool GpuRenderer::createPostResources() {
+    // 1. The sampler all post passes read through: LINEAR (so half-res bloom upsamples
+    //    smoothly) and CLAMP_TO_EDGE (a fullscreen pass must never wrap a tap off one
+    //    edge to the opposite side). No mipmaps — these targets have a single level.
+    SDL_GPUSamplerCreateInfo si = {};
+    si.min_filter     = SDL_GPU_FILTER_LINEAR;
+    si.mag_filter     = SDL_GPU_FILTER_LINEAR;
+    si.mipmap_mode    = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    si.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    si.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    postSampler_ = SDL_CreateGPUSampler(device_, &si);
+    if (postSampler_ == nullptr) {
+        KOI_ERROR("Failed to create post sampler: %s", SDL_GetError());
+        return false;
+    }
+
+    // 2. Load the shared fullscreen vertex shader once, build all four pipelines from
+    //    it, then release it (each pipeline copies what it needs).
+    SDL_GPUShader* vs = loadShader(device_, "fullscreen.vert", SDL_GPU_SHADERSTAGE_VERTEX);
+    if (vs == nullptr) {
+        return false;
+    }
+
+    // Bloom passes write HDR (so a bright glow stays bright through the blur); the
+    // composite and FXAA passes write the swapchain's LDR format (the final image).
+    const SDL_GPUTextureFormat swap = SDL_GetGPUSwapchainTextureFormat(device_, window_);
+    brightPipeline_    = buildFullscreenPipeline(vs, "bright.frag",    kSceneHdrFormat, /*numSamplers=*/1);
+    blurPipeline_      = buildFullscreenPipeline(vs, "blur.frag",      kSceneHdrFormat, /*numSamplers=*/1);
+    compositePipeline_ = buildFullscreenPipeline(vs, "composite.frag", swap,            /*numSamplers=*/2);
+    fxaaPipeline_      = buildFullscreenPipeline(vs, "fxaa.frag",      swap,            /*numSamplers=*/1);
+    SDL_ReleaseGPUShader(device_, vs);
+
+    if (brightPipeline_ == nullptr || blurPipeline_ == nullptr ||
+        compositePipeline_ == nullptr || fxaaPipeline_ == nullptr) {
+        return false;  // buildFullscreenPipeline already logged which one failed
+    }
+    return true;
+}
+
+bool GpuRenderer::ensureSceneTargets(Uint32 width, Uint32 height) {
+    // The depth buffer tracks the same size (it's attached to the scene pass).
+    if (!ensureDepthTexture(width, height)) {
+        return false;
+    }
+    // Reuse existing targets if the size hasn't changed.
+    if (sceneHdr_ != nullptr && postWidth_ == width && postHeight_ == height) {
+        return true;
+    }
+
+    // Size changed (or first use): drop the old targets and rebuild the whole set.
+    SDL_ReleaseGPUTexture(device_, sceneHdr_);  // SDL tolerates a null argument
+    SDL_ReleaseGPUTexture(device_, ldr_);
+    SDL_ReleaseGPUTexture(device_, bloomA_);
+    SDL_ReleaseGPUTexture(device_, bloomB_);
+    sceneHdr_ = ldr_ = bloomA_ = bloomB_ = nullptr;
+
+    // Full-res scene (HDR) + final LDR (swapchain format, ready for FXAA to copy out).
+    const SDL_GPUTextureFormat swap = SDL_GetGPUSwapchainTextureFormat(device_, window_);
+    sceneHdr_ = createColorTarget(width, height, kSceneHdrFormat);
+    ldr_      = createColorTarget(width, height, swap);
+
+    // Bloom runs at HALF resolution: a blur hides the lost detail and the cost drops ~4x.
+    bloomWidth_  = halfExtent(width);
+    bloomHeight_ = halfExtent(height);
+    bloomA_ = createColorTarget(bloomWidth_, bloomHeight_, kSceneHdrFormat);
+    bloomB_ = createColorTarget(bloomWidth_, bloomHeight_, kSceneHdrFormat);
+
+    if (sceneHdr_ == nullptr || ldr_ == nullptr || bloomA_ == nullptr || bloomB_ == nullptr) {
+        KOI_ERROR("Failed to create one or more post targets (%ux%u): %s", width, height,
+                  SDL_GetError());
+        return false;
+    }
+    postWidth_  = width;
+    postHeight_ = height;
+    return true;
+}
+
+void GpuRenderer::drawFullscreen(SDL_GPURenderPass* pass) {
+    // Draw the fullscreen triangle: 3 vertices, NO buffers bound — the vertex shader
+    // synthesizes the corners from gl_VertexIndex.
+    SDL_DrawGPUPrimitives(pass, /*num_vertices=*/3, /*num_instances=*/1,
+                          /*first_vertex=*/0, /*first_instance=*/0);
+}
+
+SDL_GPURenderPass* GpuRenderer::beginColorPass(SDL_GPUCommandBuffer* cmd,
+                                               SDL_GPUTexture* target,
+                                               SDL_GPULoadOp loadOp, bool cycle) const {
+    SDL_GPUColorTargetInfo ci = {};
+    ci.texture     = target;
+    ci.clear_color = kPostClearBlack;
+    ci.load_op     = loadOp;
+    ci.store_op    = SDL_GPU_STOREOP_STORE;
+    // `cycle` rotates to a fresh internal allocation so this frame's write doesn't
+    // stall on the previous frame still sampling the same target (same trick the
+    // shadow map uses). We cycle our own intermediate targets, but NOT the swapchain
+    // image (SDL manages that one).
+    ci.cycle = cycle;
+    return SDL_BeginGPURenderPass(cmd, &ci, /*num_color_targets=*/1, /*depth=*/nullptr);
+}
+
+void GpuRenderer::bindPostSampler(SDL_GPURenderPass* pass, Uint32 slot,
+                                  SDL_GPUTexture* tex) const {
+    SDL_GPUTextureSamplerBinding b = {};
+    b.texture = tex;
+    b.sampler = postSampler_;
+    SDL_BindGPUFragmentSamplers(pass, slot, &b, /*num_bindings=*/1);
+}
+
+void GpuRenderer::runPostChain(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* finalColor,
+                               Uint32 width, Uint32 height, const PostSettings& post) const {
+    // ---- Bloom: extract bright areas, then blur them into a soft glow -----------
+    if (post.bloom) {
+        // Bright-pass: sceneHdr_ -> bloomA_ (half-res). The pass covers every texel,
+        // so DON'T_CARE the old contents.
+        {
+            SDL_GPURenderPass* p = beginColorPass(cmd, bloomA_, SDL_GPU_LOADOP_DONT_CARE, true);
+            SDL_BindGPUGraphicsPipeline(p, brightPipeline_);
+            bindPostSampler(p, /*slot=*/0, sceneHdr_);
+            const float bright[4] = {post.bloomThreshold, 0.0f, 0.0f, 0.0f};
+            SDL_PushGPUFragmentUniformData(cmd, /*slot=*/0, bright, sizeof(bright));
+            drawFullscreen(p);
+            SDL_EndGPURenderPass(p);
+        }
+        // Separable Gaussian, ping-ponging A<->B: horizontal then vertical, repeated.
+        const float tx = 1.0f / static_cast<float>(bloomWidth_);
+        const float ty = 1.0f / static_cast<float>(bloomHeight_);
+        for (int i = 0; i < kBloomBlurPasses; ++i) {
+            {   // horizontal: bloomA_ -> bloomB_
+                SDL_GPURenderPass* p = beginColorPass(cmd, bloomB_, SDL_GPU_LOADOP_DONT_CARE, true);
+                SDL_BindGPUGraphicsPipeline(p, blurPipeline_);
+                bindPostSampler(p, 0, bloomA_);
+                const float dir[4] = {tx, 0.0f, 0.0f, 0.0f};
+                SDL_PushGPUFragmentUniformData(cmd, 0, dir, sizeof(dir));
+                drawFullscreen(p);
+                SDL_EndGPURenderPass(p);
+            }
+            {   // vertical: bloomB_ -> bloomA_
+                SDL_GPURenderPass* p = beginColorPass(cmd, bloomA_, SDL_GPU_LOADOP_DONT_CARE, true);
+                SDL_BindGPUGraphicsPipeline(p, blurPipeline_);
+                bindPostSampler(p, 0, bloomB_);
+                const float dir[4] = {0.0f, ty, 0.0f, 0.0f};
+                SDL_PushGPUFragmentUniformData(cmd, 0, dir, sizeof(dir));
+                drawFullscreen(p);
+                SDL_EndGPURenderPass(p);
+            }
+        }
+    } else {
+        // Bloom disabled: clear bloomA_ to black so the composite reads a defined zero
+        // glow (its bloom term is also scaled by 0 below, but this keeps the sampled
+        // texture well-defined and avoids relying on stale contents).
+        SDL_GPURenderPass* p = beginColorPass(cmd, bloomA_, SDL_GPU_LOADOP_CLEAR, true);
+        SDL_EndGPURenderPass(p);
+    }
+
+    // ---- Composite: scene + bloom, exposure, tone-map, vignette, gamma -> ldr_ ----
+    {
+        SDL_GPURenderPass* p = beginColorPass(cmd, ldr_, SDL_GPU_LOADOP_DONT_CARE, true);
+        SDL_BindGPUGraphicsPipeline(p, compositePipeline_);
+        // Two inputs: the HDR scene (slot 0) and the blurred bloom (slot 1).
+        SDL_GPUTextureSamplerBinding binds[2] = {};
+        binds[0].texture = sceneHdr_;  binds[0].sampler = postSampler_;
+        binds[1].texture = bloomA_;    binds[1].sampler = postSampler_;
+        SDL_BindGPUFragmentSamplers(p, /*first_slot=*/0, binds, /*num_bindings=*/2);
+        const float params[4] = {
+            post.exposure,
+            post.bloom ? post.bloomIntensity : 0.0f,
+            post.vignette ? kVignetteStrength : 0.0f,
+            post.tonemap ? 1.0f : 0.0f,
+        };
+        SDL_PushGPUFragmentUniformData(cmd, 0, params, sizeof(params));
+        drawFullscreen(p);
+        SDL_EndGPURenderPass(p);
+    }
+
+    // ---- FXAA: anti-alias ldr_ into the final target (swapchain / capture) -------
+    // The final target is NOT one of ours, so don't cycle it.
+    {
+        SDL_GPURenderPass* p = beginColorPass(cmd, finalColor, SDL_GPU_LOADOP_DONT_CARE, false);
+        SDL_BindGPUGraphicsPipeline(p, fxaaPipeline_);
+        bindPostSampler(p, 0, ldr_);
+        const float params[4] = {
+            1.0f / static_cast<float>(width),
+            1.0f / static_cast<float>(height),
+            post.fxaa ? 1.0f : 0.0f,
+            0.0f,
+        };
+        SDL_PushGPUFragmentUniformData(cmd, 0, params, sizeof(params));
+        drawFullscreen(p);
+        SDL_EndGPURenderPass(p);
+    }
+}
+
+void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* finalColor,
+                                     Uint32 width, Uint32 height, const Mat4& view,
+                                     const Node& sceneRoot, const Vec3& cameraPos,
+                                     const SDL_FColor& clearColor, const PostSettings& post) {
+    if (!ensureSceneTargets(width, height)) {
+        return;  // ensureSceneTargets logged; skip this frame rather than crash
+    }
+
+    // PASS 1 — shadow depth from the light's view (unchanged).
+    const Mat4 lightViewProj = computeLightViewProj();
+    renderShadowPass(cmd, sceneRoot, lightViewProj);
+
+    // PASS 2 — the scene, into the off-screen HDR target (NOT the swapchain).
+    SDL_GPUColorTargetInfo colorTarget = {};
+    colorTarget.texture     = sceneHdr_;
+    colorTarget.clear_color = clearColor;
+    colorTarget.load_op     = SDL_GPU_LOADOP_CLEAR;
+    colorTarget.store_op    = SDL_GPU_STOREOP_STORE;   // the post chain samples it next
+    colorTarget.cycle       = true;
+
+    SDL_GPUDepthStencilTargetInfo depthTarget = {};
+    depthTarget.texture          = depthTexture_;
+    depthTarget.clear_depth      = 1.0f;
+    depthTarget.load_op          = SDL_GPU_LOADOP_CLEAR;
+    depthTarget.store_op         = SDL_GPU_STOREOP_DONT_CARE;
+    depthTarget.stencil_load_op  = SDL_GPU_LOADOP_DONT_CARE;
+    depthTarget.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    depthTarget.cycle            = true;
+
+    SDL_GPURenderPass* pass =
+        SDL_BeginGPURenderPass(cmd, &colorTarget, /*num_color_targets=*/1, &depthTarget);
+    const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
+    recordScene(cmd, pass, sceneRoot, view, aspect, cameraPos, lightViewProj);
+    SDL_EndGPURenderPass(pass);
+
+    // PASSES 3+ — the fullscreen post-processing chain, ending in `finalColor`.
+    runPostChain(cmd, finalColor, width, height, post);
 }
 
 SDL_GPUBuffer* GpuRenderer::uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
@@ -796,6 +1119,33 @@ GpuRenderer::~GpuRenderer() {
             SDL_ReleaseGPUGraphicsPipeline(device_, shadowPipeline_);
             shadowPipeline_ = nullptr;
         }
+        // Post-processing resources (Step 10). SDL_ReleaseGPU* tolerate null, so the
+        // lazily-created targets are safe to release even if a frame never ran.
+        SDL_ReleaseGPUTexture(device_, sceneHdr_);
+        SDL_ReleaseGPUTexture(device_, ldr_);
+        SDL_ReleaseGPUTexture(device_, bloomA_);
+        SDL_ReleaseGPUTexture(device_, bloomB_);
+        sceneHdr_ = ldr_ = bloomA_ = bloomB_ = nullptr;
+        if (postSampler_ != nullptr) {
+            SDL_ReleaseGPUSampler(device_, postSampler_);
+            postSampler_ = nullptr;
+        }
+        if (brightPipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, brightPipeline_);
+            brightPipeline_ = nullptr;
+        }
+        if (blurPipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, blurPipeline_);
+            blurPipeline_ = nullptr;
+        }
+        if (compositePipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, compositePipeline_);
+            compositePipeline_ = nullptr;
+        }
+        if (fxaaPipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, fxaaPipeline_);
+            fxaaPipeline_ = nullptr;
+        }
         if (trianglePipeline_ != nullptr) {
             SDL_ReleaseGPUGraphicsPipeline(device_, trianglePipeline_);
             trianglePipeline_ = nullptr;
@@ -812,7 +1162,8 @@ GpuRenderer::~GpuRenderer() {
 }
 
 void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
-                              const Node& sceneRoot, const Vec3& cameraPos) {
+                              const Node& sceneRoot, const Vec3& cameraPos,
+                              const PostSettings& post) {
     // ------------------------------------------------------------------------
     //  1. Acquire a command buffer.
     //     We don't command the GPU directly; we *record* commands into a buffer
@@ -845,53 +1196,15 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
 
     // The call can succeed yet return a null texture when there's nothing to
     // draw into — e.g. the window is minimized. That's not an error: we simply
-    // skip the render pass this frame but still submit the (empty) buffer.
-    if (swapchainTexture != nullptr && ensureDepthTexture(width, height)) {
-        // --------------------------------------------------------------------
-        //  SHADOW PASS (pass 1): render the scene's depth from the light's view
-        //  into the shadow map, BEFORE the main pass that samples it. Both passes
-        //  use the SAME light matrix, so they agree on what's occluded.
-        // --------------------------------------------------------------------
-        const Mat4 lightViewProj = computeLightViewProj();
-        renderShadowPass(cmd, sceneRoot, lightViewProj);
-
-        // --------------------------------------------------------------------
-        //  3. Describe and begin a render pass.
-        //     A render pass declares which texture(s) we're drawing into and
-        //     what to do with their existing contents:
-        //       load_op  = CLEAR  -> wipe to clear_color before drawing.
-        //       store_op = STORE  -> keep the result so it can be displayed.
-        //     The clear gives us the dark-teal background; the cube is drawn
-        //     on top of it. The depth target is cleared to 1.0 (the far plane)
-        //     so every fragment initially passes the LESS test.
-        // --------------------------------------------------------------------
-        SDL_GPUColorTargetInfo colorTarget = {};
-        colorTarget.texture     = swapchainTexture;
-        colorTarget.clear_color = clearColor;
-        colorTarget.load_op     = SDL_GPU_LOADOP_CLEAR;
-        colorTarget.store_op    = SDL_GPU_STOREOP_STORE;
-
-        SDL_GPUDepthStencilTargetInfo depthTarget = {};
-        depthTarget.texture          = depthTexture_;
-        depthTarget.clear_depth      = 1.0f;
-        depthTarget.load_op          = SDL_GPU_LOADOP_CLEAR;
-        depthTarget.store_op         = SDL_GPU_STOREOP_DONT_CARE;  // not needed after the frame
-        // We have no stencil (depth-only format), but these default to LOAD (enum
-        // value 0). LOAD is incompatible with cycle=true, so set them explicitly.
-        depthTarget.stencil_load_op  = SDL_GPU_LOADOP_DONT_CARE;
-        depthTarget.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-        depthTarget.cycle            = true;  // safe to reuse: we clear it every frame
-
-        SDL_GPURenderPass* pass =
-            SDL_BeginGPURenderPass(cmd, &colorTarget, /*num_color_targets=*/1, &depthTarget);
-
-        // Draw the scene through the camera's view matrix. The aspect ratio comes
-        // from the actual swapchain size, so the image is never stretched and
-        // adapts automatically when the window is resized.
-        const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-        recordScene(cmd, pass, sceneRoot, view, aspect, cameraPos, lightViewProj);
-
-        SDL_EndGPURenderPass(pass);
+    // skip rendering this frame but still submit the (empty) buffer.
+    if (swapchainTexture != nullptr) {
+        // The whole pipeline now runs through one shared helper: shadow pass → scene
+        // into the off-screen HDR target → post-processing chain whose FINAL pass
+        // (FXAA) writes the displayable image straight into the swapchain texture.
+        // The aspect ratio comes from the actual swapchain size, so the image is never
+        // stretched and adapts automatically when the window is resized.
+        renderSceneAndPost(cmd, swapchainTexture, width, height, view, sceneRoot,
+                           cameraPos, clearColor, post);
     }
 
     // ------------------------------------------------------------------------
@@ -905,7 +1218,7 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
 
 bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
                                const Mat4& view, const Node& sceneRoot,
-                               const Vec3& cameraPos) {
+                               const Vec3& cameraPos, const PostSettings& post) {
     // Fixed capture resolution: keeps the output deterministic and small. The
     // aspect ratio (1280/720) feeds the projection so the cube isn't distorted.
     constexpr Uint32 kWidth  = 1280;
@@ -947,43 +1260,15 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
         return false;
     }
 
-    // A matching depth target, so the off-screen cube is depth-tested exactly
-    // like the on-screen one.
-    if (!ensureDepthTexture(kWidth, kHeight)) {
-        SDL_ReleaseGPUTransferBuffer(device_, transfer);
-        SDL_ReleaseGPUTexture(device_, target);
-        return false;
-    }
-
-    // 3. Record: shadow pass, then draw the scene into the off-screen texture, then
-    //    a copy pass that downloads that texture into the transfer buffer.
+    // 3. Record the SAME full pipeline the live path uses — shadow pass → scene into
+    //    the HDR target → the post-processing chain whose FXAA pass writes the final
+    //    image into our off-screen `target`. Sharing renderSceneAndPost means the BMP
+    //    matches what the window shows (and reflects `post`). Deterministic: nothing
+    //    here is time-based, so the supplied `view` (the camera's default pose) renders
+    //    the same frame every time.
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
-
-    // Shadow pass (pass 1) — exactly as the live path, so the capture shows shadows.
-    const Mat4 lightViewProj = computeLightViewProj();
-    renderShadowPass(cmd, sceneRoot, lightViewProj);
-
-    SDL_GPUColorTargetInfo colorTarget = {};
-    colorTarget.texture     = target;
-    colorTarget.clear_color = clearColor;
-    colorTarget.load_op     = SDL_GPU_LOADOP_CLEAR;
-    colorTarget.store_op    = SDL_GPU_STOREOP_STORE;
-
-    SDL_GPUDepthStencilTargetInfo depthTarget = {};
-    depthTarget.texture          = depthTexture_;
-    depthTarget.clear_depth      = 1.0f;
-    depthTarget.load_op          = SDL_GPU_LOADOP_CLEAR;
-    depthTarget.store_op         = SDL_GPU_STOREOP_DONT_CARE;
-    depthTarget.stencil_load_op  = SDL_GPU_LOADOP_DONT_CARE;
-    depthTarget.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-    depthTarget.cycle            = true;
-
-    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &colorTarget, 1, &depthTarget);
-    // Draw the same scene the live path does, through the supplied `view` (the
-    // camera's default pose) — deterministic because nothing here is time-based.
-    constexpr float kCaptureAspect = static_cast<float>(kWidth) / static_cast<float>(kHeight);
-    recordScene(cmd, pass, sceneRoot, view, kCaptureAspect, cameraPos, lightViewProj);
-    SDL_EndGPURenderPass(pass);
+    renderSceneAndPost(cmd, target, kWidth, kHeight, view, sceneRoot, cameraPos,
+                       clearColor, post);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion region = {};

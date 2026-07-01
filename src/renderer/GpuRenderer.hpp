@@ -23,6 +23,7 @@
 #include <span>    // std::span — a (pointer, length) view over caller-owned geometry
 
 #include "math/Mat4.hpp"
+#include "renderer/PostProcess.hpp"  // PostSettings (passed into renderFrame/captureFrame)
 #include "renderer/Vertex.hpp"  // createMesh takes a std::span<const Vertex>
 
 namespace koi {
@@ -60,7 +61,10 @@ public:
     // createMesh / loadTexture.
     [[nodiscard]] bool isValid() const {
         return device_ != nullptr && trianglePipeline_ != nullptr && sampler_ != nullptr &&
-               shadowPipeline_ != nullptr && shadowMap_ != nullptr && shadowSampler_ != nullptr;
+               shadowPipeline_ != nullptr && shadowMap_ != nullptr && shadowSampler_ != nullptr &&
+               postSampler_ != nullptr && brightPipeline_ != nullptr &&
+               blurPipeline_ != nullptr && compositePipeline_ != nullptr &&
+               fxaaPipeline_ != nullptr;
     }
 
     // Upload geometry into a new Mesh and return it (shared, so many scene nodes
@@ -80,12 +84,14 @@ public:
     // holds both the device and the upload helper.
     [[nodiscard]] std::shared_ptr<Texture> loadTexture(const char* path);
 
-    // Render exactly one frame: acquire a swapchain image, clear it (and the depth
-    // buffer), draw every mesh in `sceneRoot` (each through its own world matrix and
-    // its node's material) as seen through the camera `view`, and present it.
-    // `cameraPos` (the eye in world space) feeds the lighting's specular highlight.
+    // Render exactly one frame: acquire a swapchain image, draw every mesh in
+    // `sceneRoot` (each through its own world matrix and its node's material) as seen
+    // through the camera `view` into an off-screen HDR target, run the post-processing
+    // chain (`post` selects which effects), and present the result. `cameraPos` (the
+    // eye in world space) feeds the lighting's specular highlight.
     void renderFrame(const SDL_FColor& clearColor, const Mat4& view,
-                     const Node& sceneRoot, const Vec3& cameraPos);
+                     const Node& sceneRoot, const Vec3& cameraPos,
+                     const PostSettings& post);
 
     // Render one frame into an OFF-SCREEN texture (not the window), download the
     // pixels back to the CPU, and save them to `path` as a BMP. Our headless
@@ -94,7 +100,7 @@ public:
     // false (after logging) on failure. See docs / CLAUDE.md.
     [[nodiscard]] bool captureFrame(const char* path, const SDL_FColor& clearColor,
                                     const Mat4& view, const Node& sceneRoot,
-                                    const Vec3& cameraPos);
+                                    const Vec3& cameraPos, const PostSettings& post);
 
 private:
     // Build the graphics pipeline (loads + compiles shaders, and describes the
@@ -165,6 +171,51 @@ private:
     // change. See docs/04 for what a depth buffer is and why we need one.
     bool ensureDepthTexture(Uint32 width, Uint32 height);
 
+    // ----- Post-processing (Step 10) ---------------------------------------
+    // Create the shared linear-clamp sampler and the four fullscreen pipelines
+    // (bloom bright-pass, blur, tone-map composite, FXAA). Called once from the
+    // constructor, after the main + shadow pipelines.
+    bool createPostResources();
+
+    // Build one fullscreen-pass pipeline: `vs` is the shared fullscreen.vert; `frag`
+    // is the effect's fragment shader; `targetFormat` is the color format it writes
+    // (HDR for bloom passes, swapchain format for composite/FXAA); `numSamplers` is
+    // how many textures the fragment shader reads. No vertex input, no depth.
+    SDL_GPUGraphicsPipeline* buildFullscreenPipeline(SDL_GPUShader* vs, const char* frag,
+                                                     SDL_GPUTextureFormat targetFormat,
+                                                     Uint32 numSamplers);
+
+    // Create one sampleable color-target texture (COLOR_TARGET | SAMPLER) of (w, h).
+    SDL_GPUTexture* createColorTarget(Uint32 width, Uint32 height,
+                                      SDL_GPUTextureFormat format);
+
+    // Ensure the off-screen render targets exist at (w, h): the HDR scene target, the
+    // depth buffer, the half-res bloom ping-pong pair, and the LDR target — recreating
+    // them all on resize. Returns false (after logging) on failure.
+    bool ensureSceneTargets(Uint32 width, Uint32 height);
+
+    // The whole live/offscreen render: shadow pass → scene into the HDR target →
+    // post-processing chain, writing the final image into `finalColor` (the swapchain
+    // image for renderFrame, or the capture target for captureFrame). Shared so the
+    // two paths can't drift, exactly like recordScene.
+    void renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* finalColor,
+                            Uint32 width, Uint32 height, const Mat4& view,
+                            const Node& sceneRoot, const Vec3& cameraPos,
+                            const SDL_FColor& clearColor, const PostSettings& post);
+
+    // Run the fullscreen post-processing passes over the already-rendered HDR scene,
+    // ending with the final image written into `finalColor`. `width`/`height` are the
+    // final target's size (for FXAA's 1/resolution). Const: issues GPU work but mutates
+    // no members.
+    void runPostChain(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* finalColor,
+                      Uint32 width, Uint32 height, const PostSettings& post) const;
+
+    // Small shared helpers for the fullscreen passes.
+    SDL_GPURenderPass* beginColorPass(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target,
+                                      SDL_GPULoadOp loadOp, bool cycle) const;
+    void bindPostSampler(SDL_GPURenderPass* pass, Uint32 slot, SDL_GPUTexture* tex) const;
+    static void drawFullscreen(SDL_GPURenderPass* pass);
+
     SDL_Window*    window_ = nullptr;  // not owned — the Engine owns the Window
     SDL_GPUDevice* device_ = nullptr;  // owned — released in the destructor
 
@@ -199,6 +250,26 @@ private:
     SDL_GPUGraphicsPipeline* shadowPipeline_ = nullptr;  // owned
     SDL_GPUTexture*          shadowMap_      = nullptr;  // owned
     SDL_GPUSampler*          shadowSampler_  = nullptr;  // owned
+
+    // Post-processing (Step 10). The scene is rendered into an off-screen HDR color
+    // target (sceneHdr_) instead of straight to the swapchain; a chain of fullscreen
+    // passes then samples it. Bloom runs at half-res through a ping-pong pair
+    // (bloomA_/bloomB_); the tone-mapped result lands in ldr_; FXAA writes the final
+    // image to the swapchain. All are lazily (re)created to match the window size.
+    SDL_GPUGraphicsPipeline* brightPipeline_    = nullptr;  // owned (bloom bright-pass)
+    SDL_GPUGraphicsPipeline* blurPipeline_      = nullptr;  // owned (separable Gaussian)
+    SDL_GPUGraphicsPipeline* compositePipeline_ = nullptr;  // owned (combine + tone-map)
+    SDL_GPUGraphicsPipeline* fxaaPipeline_      = nullptr;  // owned (anti-aliasing)
+    SDL_GPUSampler*          postSampler_       = nullptr;  // owned (linear, clamp)
+
+    SDL_GPUTexture* sceneHdr_ = nullptr;  // owned — full-res HDR scene target
+    SDL_GPUTexture* ldr_      = nullptr;  // owned — full-res tone-mapped (pre-FXAA) target
+    SDL_GPUTexture* bloomA_   = nullptr;  // owned — half-res bloom ping-pong
+    SDL_GPUTexture* bloomB_   = nullptr;  // owned — half-res bloom ping-pong
+    Uint32 postWidth_   = 0;  // full-res size sceneHdr_/ldr_ were last built at
+    Uint32 postHeight_  = 0;
+    Uint32 bloomWidth_  = 0;  // half-res size of the bloom targets (for the blur step)
+    Uint32 bloomHeight_ = 0;
 };
 
 }  // namespace koi

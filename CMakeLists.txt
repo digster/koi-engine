@@ -164,6 +164,7 @@ add_executable(koi-tests
     tests/test_camera.cpp
     tests/test_transform.cpp
     tests/test_node.cpp
+    tests/test_post.cpp
 )
 target_link_libraries(koi-tests PRIVATE koi_core doctest::doctest koi_warnings)
 add_test(NAME koi-tests COMMAND koi-tests)
@@ -227,6 +228,13 @@ koi_add_shader(triangle.vert)
 koi_add_shader(triangle.frag)
 koi_add_shader(shadow.vert)   # Step 9: depth-only pass from the light's point of view
 koi_add_shader(shadow.frag)
+# Step 10: post-processing. One shared fullscreen-triangle vertex shader feeds four
+# fullscreen fragment passes (bloom bright-pass + blur, tone-map composite, FXAA).
+koi_add_shader(fullscreen.vert)
+koi_add_shader(bright.frag)
+koi_add_shader(blur.frag)
+koi_add_shader(composite.frag)
+koi_add_shader(fxaa.frag)
 
 # A target that builds all shader outputs, and a dependency so the app always has
 # up-to-date compiled shaders next to it.

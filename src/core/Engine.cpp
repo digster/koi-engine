@@ -183,7 +183,7 @@ void Engine::run() {
         // this captures the deterministic t = 0 pose) before drawing it off-screen.
         sceneRoot_->updateWorldTransforms();
         if (renderer_->captureFrame(capturePath, kClearColor, camera_.viewMatrix(),
-                                    *sceneRoot_, camera_.position())) {
+                                    *sceneRoot_, camera_.position(), post_)) {
             KOI_INFO("Captured frame to '%s'.", capturePath);
         } else {
             KOI_ERROR("Frame capture failed.");
@@ -209,6 +209,7 @@ void Engine::run() {
     if (maxFrames == 0) {
         SDL_SetWindowRelativeMouseMode(window_->handle(), true);
         KOI_INFO("Controls: WASD move, E/Q up/down, mouse look, Esc to quit.");
+        KOI_INFO("Post-processing: 1=tone-map 2=bloom 3=FXAA 4=vignette, [ / ] exposure.");
     }
 
     // Delta-time clock: the time since the previous frame, in seconds. Movement is
@@ -243,7 +244,7 @@ void Engine::run() {
         // node's cached world matrix is current, THEN draw.
         sceneRoot_->updateWorldTransforms();
         renderer_->renderFrame(kClearColor, camera_.viewMatrix(), *sceneRoot_,
-                               camera_.position());
+                               camera_.position(), post_);
 
         if (maxFrames != 0 && ++frame >= maxFrames) {
             KOI_INFO("Reached KOI_MAX_FRAMES=%llu — exiting.",
@@ -266,10 +267,40 @@ void Engine::processEvents() {
                 break;
 
             case SDL_EVENT_KEY_DOWN:
-                // In SDL3, event.key.key holds the virtual keycode.
-                if (event.key.key == SDLK_ESCAPE) {
-                    KOI_INFO("Escape pressed — shutting down.");
-                    running_ = false;
+                // In SDL3, event.key.key holds the virtual keycode. ESC quits; the
+                // number keys toggle each post-processing effect and the brackets
+                // nudge exposure, so the reader can watch what every effect does.
+                switch (event.key.key) {
+                    case SDLK_ESCAPE:
+                        KOI_INFO("Escape pressed — shutting down.");
+                        running_ = false;
+                        break;
+                    case SDLK_1:
+                        post_.tonemap = !post_.tonemap;
+                        KOI_INFO("Tone-mapping: %s", post_.tonemap ? "on" : "off");
+                        break;
+                    case SDLK_2:
+                        post_.bloom = !post_.bloom;
+                        KOI_INFO("Bloom: %s", post_.bloom ? "on" : "off");
+                        break;
+                    case SDLK_3:
+                        post_.fxaa = !post_.fxaa;
+                        KOI_INFO("FXAA: %s", post_.fxaa ? "on" : "off");
+                        break;
+                    case SDLK_4:
+                        post_.vignette = !post_.vignette;
+                        KOI_INFO("Vignette: %s", post_.vignette ? "on" : "off");
+                        break;
+                    case SDLK_LEFTBRACKET:  // '[' — darker
+                        post_.exposure = SDL_max(0.1f, post_.exposure / 1.25f);
+                        KOI_INFO("Exposure: %.2f", post_.exposure);
+                        break;
+                    case SDLK_RIGHTBRACKET:  // ']' — brighter
+                        post_.exposure = SDL_min(8.0f, post_.exposure * 1.25f);
+                        KOI_INFO("Exposure: %.2f", post_.exposure);
+                        break;
+                    default:
+                        break;
                 }
                 break;
 

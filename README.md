@@ -9,14 +9,15 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 9:** adds **model loading** and **shadow mapping**. Real models
-> load from files — a sphere from `.glb` (via **cgltf**) and a torus from `.obj` (via
-> **tinyobjloader**), both single-header libraries downloaded at build time — and render
-> beside the hand-built cubes. **Shadow mapping** renders the scene's depth from the light's
-> point of view into a shadow map, then samples it in the main pass so every object casts a
-> real shadow on the floor (and on its neighbours).
+> **Current status — Step 10:** adds a **post-processing** pipeline. The scene is now
+> rendered into an off-screen **HDR** texture instead of straight to the screen, then a chain
+> of **fullscreen passes** processes it: **bloom** (bright-pass + separable Gaussian blur),
+> **ACES tone-mapping** with exposure, a **gamma** (linear→sRGB) encode, a **vignette**, and
+> **FXAA** anti-aliasing. Every effect is toggleable at runtime so you can see what each one
+> does.
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
+> Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
 
 ## Quick start
 
@@ -71,6 +72,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - [docs/10-models-and-shadows.html](docs/10-models-and-shadows.html) — loading OBJ/glTF
   models with single-header libraries, and shadow mapping (a depth pre-pass from the light),
   mapped to the Step 9 code that loads a sphere + torus and casts shadows.
+- [docs/11-post-processing.html](docs/11-post-processing.html) — off-screen HDR targets, the
+  fullscreen-triangle trick, tone-mapping & exposure, the gamma workflow, bloom, and FXAA,
+  mapped to the Step 10 code that runs a fullscreen effect chain over the scene.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -87,7 +91,8 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 | ✅ **7** | **Phong lighting** | normals, a directional light, ambient/diffuse/specular |
 | ✅ **8** | **Materials** | per-object texture + specular params, per-draw binding |
 | ✅ **9** | **Models & shadows** | OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping |
-| 10+ | Post-processing & beyond | offscreen targets, tone-mapping, anti-aliasing |
+| ✅ **10** | **Post-processing** | offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA |
+| 11+ | Multiple lights & PBR | point/spot lights, shadow cascades, normal/roughness/metalness maps |
 
 ## Requirements
 

@@ -17,6 +17,7 @@
 
 #include <memory>
 
+#include "renderer/PostProcess.hpp"  // PostSettings value member (SDL-free, cheap)
 #include "scene/Camera.hpp"  // value member; SDL-free (math only), so cheap to include
 
 namespace koi {
@@ -85,6 +86,10 @@ private:
     // The fly camera we drive from input each frame; its view matrix is handed to
     // the renderer. Held by value (it's small and owns no resources).
     Camera camera_;
+
+    // Post-processing settings (Step 10), toggled from the keyboard in processEvents
+    // and handed to the renderer each frame. Defaults enable every effect.
+    PostSettings post_;
 };
 
 }  // namespace koi

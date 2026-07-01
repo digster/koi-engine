@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Post-processing · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html" aria-current="page">Post-processing</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Post-processing</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 10:</strong> stop drawing the scene straight to the screen.
+    Instead render it into our <strong>own off-screen image</strong>, then run a chain of
+    <strong>fullscreen passes</strong> over that image before showing it — the modern
+    post-processing pipeline. We add the full stack: <strong>HDR tone-mapping</strong> (with
+    exposure and gamma), <strong>bloom</strong>, a <strong>vignette</strong>, and
+    <strong>FXAA</strong> anti-aliasing.</p>
+    <p>This is a larger step, but each effect is a small, self-contained pass — and you can
+    toggle every one of them at runtime to see exactly what it does.</p>
+  </blockquote>
+
+  <h2>1. Why we need a separate pass at all</h2>
+
+  <p>Until now the scene was drawn <em>directly into the swapchain image</em> — the very
+  picture the OS puts on screen. That's fine as long as each pixel's final colour is decided
+  the moment it's drawn. But a whole family of effects works on the <strong>finished
+  image</strong>: blur it, adjust its brightness curve, smooth its edges. To do that a shader
+  must <strong>read the pixels back</strong> — and you cannot read a texture you are at the
+  same time drawing into (the GPU makes no promises about half-written pixels).</p>
+
+  <p>The fix is a two-phase structure. First render the scene into a texture <em>we</em> own
+  (an <strong>off-screen render target</strong>, sometimes called a framebuffer). Then, in a
+  second phase, <strong>sample</strong> that texture and write the processed result to the
+  swapchain. Our engine already knew how to render off-screen — that's how the headless BMP
+  <code>captureFrame</code> works — Step 10 just makes it the normal path for every frame.</p>
+
+  <h2>2. The fullscreen triangle</h2>
+
+  <p>A post pass has to run its fragment shader <strong>once per output pixel</strong>, so we
+  need to draw geometry that covers the whole screen. The obvious choice is a quad (two
+  triangles). The clever, standard choice is a <strong>single oversized triangle</strong>
+  whose interior blankets the entire <code>[-1,1]</code> clip-space square; the parts hanging
+  off-screen are simply clipped away.</p>
+
+  <pre class="diagram">   clip space (-1..1)          one big triangle covers it
+   (-1, 3)                     ▷ no vertex buffer at all
+      *                        ▷ 3 vertices from gl_VertexIndex
+      | \                      ▷ no interior diagonal seam
+      |   \                    SDL_DrawGPUPrimitives(pass, 3, ...)
+      |     \
+   (-1,-1)---( 3,-1)</pre>
+
+  <p>Why a triangle and not a quad? A quad's two triangles meet along a diagonal that the GPU
+  rasterizes twice (a subtle seam and wasted work); one triangle has no interior edge. Better
+  still, it needs <strong>no vertex buffer</strong>: the vertex shader
+  (<a href="../shaders/fullscreen.vert">fullscreen.vert</a>) synthesizes the three corners
+  from <code>gl_VertexIndex</code> alone, and the draw call is literally "draw 3 vertices."</p>
+
+  <h2>3. HDR: giving tone-mapping something to do</h2>
+
+  <p>Here's the key decision: the off-screen scene target is <strong>HDR</strong>
+  (high dynamic range) — a <code>16-bit float</code> per channel instead of the usual 8-bit
+  <code>0..255</code>. Why? A monitor can only show values in <code>[0,1]</code>, but the
+  <em>light</em> in a scene isn't so polite: a white surface in sun plus a sharp specular
+  highlight can add up well past 1.0. An 8-bit target <strong>clips</strong> all of that to a
+  flat 1.0 the instant it's written, throwing the information away.</p>
+
+  <p>By rendering into a float target we <strong>keep</strong> those bright values (2.0, 5.0,
+  whatever) until the very end, when a tone-map curve decides how to fit them into the display
+  range. Without HDR, tone-mapping and bloom would have nothing above 1.0 to work with — they'd
+  be near no-ops. HDR is what makes the rest of this step meaningful.</p>
+
+  <h2>4. Tone-mapping &amp; exposure</h2>
+
+  <p><strong>Tone-mapping</strong> maps unbounded HDR light down into the <code>[0,1]</code>
+  a screen can show. The naive way — just <code>clamp()</code> — flattens every bright area to
+  identical white, destroying detail (a lit cloud and a lightbulb become the same blob). A
+  tone-map <strong>curve</strong> instead gently <em>compresses</em> the highlights: bright
+  gets brighter but never quite saturates, so shape and detail survive. We use the
+  <strong>ACES</strong> filmic curve, the same family used in film and modern games.</p>
+
+  <p><strong>Exposure</strong> is a single multiplier applied before the curve — exactly like a
+  camera's exposure dial. Turn it up and dim details lift out of shadow (while highlights roll
+  off gracefully instead of clipping); turn it down and a blown-out scene comes back. Try the
+  <code>[</code> and <code>]</code> keys.</p>
+
+  <h2>5. Gamma: the linear ↔ sRGB workflow</h2>
+
+  <p>A subtle but important correctness point. All our lighting math — adding, multiplying,
+  averaging colours — assumes <strong>linear</strong> light, where 0.5 really means "half the
+  photons." But displays are <strong>sRGB</strong>: they expect a <em>non-linear</em> encoding
+  where roughly 0.73 (not 0.5) shows as half-brightness, matching how human vision allocates
+  precision to darks. If we hand linear values straight to an sRGB display, the midtones come
+  out too dark.</p>
+
+  <p>So the final step of the composite pass <strong>gamma-encodes</strong> the colour
+  (<code>pow(color, 1/2.2)</code>), converting our linear result into what the display expects.
+  (For simplicity we still treat input <em>textures</em> as linear — a documented shortcut; a
+  fuller pipeline would sRGB-<em>decode</em> them on the way in too.) Toggle tone-mapping off
+  with key <code>1</code> and you'll see the difference the curve makes on top of this encode.</p>
+
+  <h2>6. Bloom: extract, blur, add back</h2>
+
+  <p><strong>Bloom</strong> is the soft halo real cameras and eyes show around very bright
+  things. We fake it in three stages, and this is where HDR pays off:</p>
+
+  <ol>
+    <li><strong>Bright-pass</strong> (<a href="../shaders/bright.frag">bright.frag</a>): keep
+    only pixels brighter than a threshold — the genuinely-glowing bits — and discard the rest.
+    Because the scene is HDR, "bright" can mean truly &gt; 1.0.</li>
+    <li><strong>Blur</strong> (<a href="../shaders/blur.frag">blur.frag</a>): smear those bright
+    spots outward with a <strong>Gaussian</strong>. A true 2D blur is expensive (an N×N box of
+    taps), so we use a <strong>separable</strong> one: blurring horizontally and then vertically
+    gives the same result with only N+N taps. We run it at <strong>half resolution</strong>
+    (bloom is blurry anyway) and ping-pong between two textures to widen the glow.</li>
+    <li><strong>Add back</strong>: the blurred glow is simply <em>added</em> on top of the scene
+    in the composite pass, scaled by an intensity knob.</li>
+  </ol>
+
+  <h2>7. FXAA: cheap anti-aliasing, last</h2>
+
+  <p><strong>Aliasing</strong> is the stair-step "jaggies" on edges: each pixel is one point
+  sample, so a slanted edge has to snap to the pixel grid. True anti-aliasing (MSAA) takes
+  extra samples per pixel — accurate but costly. <strong>FXAA</strong> (Fast Approximate AA)
+  instead runs as a cheap post step on the finished image: it finds edges by local brightness
+  (luma) contrast and blends colour <em>along</em> them, softening the staircase. It can't
+  invent detail that was never sampled, but it's nearly free.</p>
+
+  <p>Crucially, FXAA is the <strong>last</strong> pass, operating on the final gamma-encoded
+  LDR image — because it reasons about <em>perceived</em> brightness, the same non-linear values
+  your eye sees. Run it before tone-mapping and it would judge edges by the wrong numbers.</p>
+
+  <h2>8. The whole render graph</h2>
+
+  <p>Ordering isn't arbitrary: bloom reads HDR light (so it comes before tone-mapping), and
+  FXAA reads the final sRGB image (so it comes last). Each arrow is one render pass.</p>
+
+  <pre class="diagram">  shadow pass ─▶ shadow map (depth)                    (Step 9, unchanged)
+  scene pass  ─▶ sceneHDR  (RGBA16F) + depth           the scene, in HDR
+  bright-pass ─▶ bloom  (½-res)   = threshold(sceneHDR)
+  blur ×N     ─▶ bloom  (ping-pong H then V, separable Gaussian)
+  composite   ─▶ ldr    = gamma( vignette( ACES( exposure·(sceneHDR + bloom) ) ) )
+  FXAA        ─▶ swapchain  = edge-smooth(ldr)          → shown on screen</pre>
+
+  <h2>9. The code</h2>
+
+  <h3>The shaders — <a href="../shaders/fullscreen.vert">fullscreen.vert</a> + four passes</h3>
+  <p>One shared fullscreen vertex shader feeds
+  <a href="../shaders/bright.frag">bright.frag</a>, <a href="../shaders/blur.frag">blur.frag</a>,
+  <a href="../shaders/composite.frag">composite.frag</a> (exposure + ACES + vignette + gamma),
+  and <a href="../shaders/fxaa.frag">fxaa.frag</a>. Each is registered in
+  <a href="../CMakeLists.txt">CMakeLists.txt</a> and compiled GLSL → SPIR-V → MSL like the rest.</p>
+
+  <h3>The pipeline — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer</a></h3>
+  <p><code>createPostResources</code> builds the four fullscreen pipelines (no vertex input, no
+  depth) and a linear-clamp sampler. <code>ensureSceneTargets</code> lazily creates and resizes
+  the off-screen textures — the HDR scene target, the half-res bloom ping-pong pair, and the LDR
+  target — mirroring how the depth buffer already tracks the window size. The scene pipeline's
+  colour format changed from the swapchain's to the HDR one, so the scene now renders into
+  <code>sceneHdr_</code>. <code>renderSceneAndPost</code> ties it together (shadow → scene →
+  <code>runPostChain</code>) and is shared by both the live and headless-capture paths, so the
+  captured BMP always matches the window.</p>
+
+  <h3>The controls — <a href="../src/core/Engine.cpp">Engine</a> &amp; <a href="../src/renderer/PostProcess.hpp">PostProcess.hpp</a></h3>
+  <p><code>PostSettings</code> holds the knobs; the Engine toggles them from the keyboard and
+  hands them to the renderer each frame, which pushes them into the shaders' uniforms. The pure
+  helpers (half-resolution sizing, the luma weights, the ACES curve) live in the header so they
+  can be unit-tested headlessly in <a href="../tests/test_post.cpp">test_post.cpp</a>.</p>
+
+  <h2>10. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Toggle each effect.</strong> Keys <code>1</code> (tone-map), <code>2</code>
+    (bloom), <code>3</code> (FXAA), <code>4</code> (vignette). Watching bloom or FXAA switch on
+    and off is the fastest way to understand what each contributes.</li>
+    <li><strong>Ride the exposure.</strong> Hold <code>]</code> to over-expose until the scene
+    blooms and the highlights roll off; hold <code>[</code> to bring it back. Notice how
+    tone-mapping keeps the brights from clipping.</li>
+    <li><strong>Exaggerate the bloom.</strong> Lower <code>bloomThreshold</code> (e.g. to 0.4)
+    and raise <code>bloomIntensity</code> in
+    <a href="../src/renderer/PostProcess.hpp">PostProcess.hpp</a> — the whole scene hazes over,
+    making the effect unmistakable.</li>
+    <li><strong>Break the order on purpose.</strong> Move the gamma encode out of
+    <code>composite.frag</code>, or run FXAA before tone-mapping, and see why the pipeline is
+    ordered the way it is.</li>
+  </ol>
+
+  <h2>11. What's next</h2>
+
+  <p>➡️ <strong>More lights, richer materials.</strong> The engine now has a complete forward
+  renderer with a post-processing chain. Natural directions from here: <strong>multiple and
+  point lights</strong> (with shadow cascades for large scenes), and pushing
+  <code>Material</code> toward <strong>PBR</strong> — roughness/metalness and normal maps — for
+  physically-based surfaces.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../README.md">README</a> ·
+  <a href="../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

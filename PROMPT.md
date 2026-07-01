@@ -144,3 +144,21 @@ referenced in `CLAUDE.md`.
   depth-only shadow pipeline + 2048² sampleable shadow map; two-pass render (shadow then main);
   a second fragment sampler. Models generated procedurally (sphere.glb, torus.obj) to avoid
   copyright. Hit + fixed a `spirv-cross` MSL sampler-swap via `--msl-decoration-binding`.
+
+**Next milestone request (Step 10):**
+> Work on the next step.
+
+**Decision made (via clarifying question — effect scope):** user chose **all** candidate
+effects, so Step 10 = the **full post-processing stack**.
+- Architecture: the scene renders into an off-screen **HDR** target (`R16G16B16A16_FLOAT`)
+  instead of the swapchain, then a chain of **fullscreen passes** processes it. Each pass draws
+  a buffer-free **fullscreen triangle** (`fullscreen.vert`, from `gl_VertexIndex`).
+- Effects: **bloom** (bright-pass `bright.frag` + separable Gaussian `blur.frag`, half-res
+  ping-pong) → **composite** (`composite.frag`: exposure, **ACES** tone-map, vignette,
+  linear→sRGB **gamma**) → **FXAA** (`fxaa.frag`, last, on the gamma-encoded LDR image). Order
+  is dictated by colour space (bloom in HDR-linear, FXAA in sRGB).
+- Structure: main pipeline's colour format switched swapchain→HDR; `GpuRenderer` gained four
+  fullscreen pipelines + a clamp sampler + lazily-resized targets (`ensureSceneTargets`), and a
+  shared `renderSceneAndPost` used by both `renderFrame` and `captureFrame` (no drift). New
+  `renderer/PostProcess.hpp` holds `PostSettings` + pure helpers (unit-tested in `test_post.cpp`).
+  Effects toggle live (keys `1`–`4`, `[`/`]` exposure). Multiple lights / PBR → Step 11+.

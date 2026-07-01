@@ -3,13 +3,14 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 9 (window & render loop, the first triangle, geometry in GPU
+through Step 10 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
 **textures** sampled onto those surfaces, **Phong lighting** that shades them,
-per-object **materials**, **model loading** from OBJ/glTF files, and **shadow
-mapping**).
+per-object **materials**, **model loading** from OBJ/glTF files, **shadow
+mapping**, and a **post-processing** chain — an off-screen HDR target run through
+bloom, tone-mapping, and FXAA before it reaches the screen).
 
 ## Guiding principles
 
@@ -48,7 +49,8 @@ mapping**).
 |-----------|------|----------------|
 | `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera + the scene graph, runs the game loop, computes delta-time, routes input, builds the demo scene (`buildScene`: meshes + textures + materials, assigned to nodes), animates + propagates transforms each frame, controls startup/shutdown order. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler**, and (Step 9) the **shadow map** + its sampler + a depth-only **shadow pipeline**. Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`) and a **consumer** of a scene: per frame it runs a **shadow pass** (scene depth from the light) then the **main pass** (`recordScene`: bind pipeline + shadow map + push the light/lightViewProj once, then walk the tree — per node binding its material's texture + mesh buffers and pushing `{mvp,model}` + material params → draw). Owns no geometry/texture data. |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler**, the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, and the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
+| `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the Engine drives from input and hands to the renderer, plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
 | `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: a `shared_ptr<Texture>` + specular params (shininess, strength). Forward-declares `Texture` (stores it by `shared_ptr`). Shared by `shared_ptr`; a `Node` references one. The renderer binds it per draw. |
 | `ModelLoader` | [src/renderer/ModelLoader.*](src/renderer/) | `loadModel(path)` reads a model file into a `Mesh` (positions/normals/UVs/indices, vertex color = white): `.obj` via **tinyobjloader** (de-duplicating its separate v/vt/vn indices), `.glb/.gltf` via **cgltf**. The single TU that pulls in those third-party headers — compiled warning-free (`-w`). |
 | `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count + element size: 16-bit for primitives, 32-bit for big loaded models). Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must die before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
@@ -74,16 +76,18 @@ dt + input       → dt = ΔSDL_GetTicksNS (clamped); camera.processKeyboard(pol
 animate + update → spin a couple of nodes (rotationEuler += rate·dt);
                    sceneRoot.updateWorldTransforms() caches every node's world matrix
        │
-renderFrame(view, → in GpuRenderer (view = camera.viewMatrix()):
+renderFrame(view, → in GpuRenderer (view = camera.viewMatrix()); renderSceneAndPost:
   sceneRoot,           1. acquire command buffer + swapchain image (+ its size)
-  cameraPos)           2. ensure the depth texture matches that size
+  cameraPos, post)     2. ensureSceneTargets: depth + HDR scene + half-res bloom + LDR match size
                      3. SHADOW PASS: compute lightViewProj; render scene depth into the
                         shadow map from the light's view (depth-only pipeline)
-                     4. MAIN PASS: begin render pass (color + depth CLEAR); recordScene —
-                        bind pipeline + shadow map, push light + lightViewProj once, then
-                        walk the tree (per node: bind material texture + push material
-                        params, bind mesh buffers + push {mvp,model}, draw); end pass
-                     5. submit command buffer (queues present)
+                     4. SCENE PASS: begin render pass into the HDR target (color + depth CLEAR);
+                        recordScene — bind pipeline + shadow map, push light + lightViewProj once,
+                        then walk the tree (per node: bind material texture + push material params,
+                        bind mesh buffers + push {mvp,model}, draw); end pass
+                     5. POST CHAIN (runPostChain): bloom bright-pass + separable blur → composite
+                        (exposure, ACES tone-map, vignette, gamma) → FXAA into the swapchain image
+                     6. submit command buffer (queues present)
 ```
 
 See [docs/01-window-and-render-loop.html](docs/01-window-and-render-loop.html),
@@ -330,6 +334,35 @@ in the light UBO.
 > with **`--msl-decoration-binding`**, so resource indices follow the GLSL bindings —
 > which is what SDL's slot-based binding expects.
 
+### Post-processing (Step 10)
+
+The scene stops rendering straight to the swapchain. Instead it renders into an engine-owned
+**off-screen HDR target** (`R16G16B16A16_FLOAT`), and a chain of **fullscreen passes** then
+processes that image before it reaches the screen. The HDR format is the enabling choice:
+highlights can exceed 1.0, so tone-mapping has range to compress and bloom has genuine bright
+areas to extract — an 8-bit target would clip both away.
+
+```
+  scene ─► sceneHDR ─► bloom bright-pass ─► separable blur (½-res, ping-pong)
+                              │                        │
+                              └──────────► composite ◄─┘  (scene + bloom, exposure,
+                                              │            ACES tone-map, vignette, gamma)
+                                              ▼
+                                             ldr ─► FXAA ─► swapchain
+```
+
+Each pass draws a **fullscreen triangle** — three vertices synthesized from `gl_VertexIndex`
+in `fullscreen.vert`, no vertex buffer, no depth — the standard buffer-free way to run a shader
+over every pixel. Ordering is dictated by colour space: **bloom** reads linear HDR (before
+tone-mapping); **composite** applies exposure, the ACES curve, the vignette, and the
+**linear→sRGB gamma** encode; **FXAA** runs last on the final gamma-encoded LDR image because
+it judges edges by *perceived* luma. The main pipeline's colour format changed from the
+swapchain's to the HDR one; the off-screen targets are lazily (re)created to match the window
+size by `ensureSceneTargets` (the same pattern the depth buffer already used). The whole
+sequence lives in `renderSceneAndPost`, shared by `renderFrame` and `captureFrame` so the
+headless BMP always matches the window. `PostSettings` (in `renderer/PostProcess.hpp`) carries
+the per-effect toggles + exposure, driven from the keyboard in `Engine::processEvents`.
+
 ## Lifecycle & ownership
 
 Startup builds bottom-up, shutdown tears down top-down — the standard RAII
@@ -434,7 +467,10 @@ Future milestones slot into this structure without reshaping it:
 - **Step 9 (done):** **model loading** (OBJ via tinyobjloader, glTF via cgltf → `Mesh`,
   with 32-bit indices) and **shadow mapping** (a depth pass from the light's orthographic
   view, sampled in the main pass with bias + PCF). `renderFrame` now runs two passes.
-- **Step 10+:** **post-processing** — render the scene to an offscreen color target, then a
-  fullscreen pass (tone-mapping, bloom, anti-aliasing). Beyond that: multiple/point lights
-  + shadow cascades, glTF materials/animation, and richer surface maps
-  (normal/roughness/metalness) extending `Material` toward PBR.
+- **Step 10 (done):** **post-processing** — the scene renders into an offscreen **HDR** target,
+  then a chain of **fullscreen passes** (bloom = bright-pass + separable blur; a composite that
+  applies exposure + **ACES tone-mapping** + vignette + **gamma**; then **FXAA**) writes the
+  final image. Added `renderer/PostProcess.hpp` (`PostSettings` + pure helpers), five shaders,
+  and the shared `renderSceneAndPost` path; effects toggle at runtime.
+- **Step 11+:** multiple/point lights + shadow cascades, glTF materials/animation, and richer
+  surface maps (normal/roughness/metalness) extending `Material` toward PBR.
