@@ -2,6 +2,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <cmath>   // std::cos, std::sin — cone cosines + the orbiting light
 #include <memory>
 #include <string>
 
@@ -66,6 +67,11 @@ bool Engine::init(const Config& config) {
         shutdown();
         return false;
     }
+
+    // Place the lights that shade the scene (the sun + colored point/spot lights).
+    // No GPU work, so this can't fail; done after the scene so positions can relate
+    // to where objects sit.
+    setupLights();
 
     initialized_ = true;
     running_     = true;
@@ -173,6 +179,60 @@ bool Engine::buildScene() {
     return true;
 }
 
+void Engine::setupLights() {
+    lights_.clear();
+
+    // Light 0 — the SUN: a directional light (parallel rays, no distance falloff).
+    // Its direction matches the scene's pre-Step-11 sun, so with only the sun on the
+    // shading and shadows look exactly as before. This is the ONLY shadow caster —
+    // by convention it lives at index 0, which the renderer/shader rely on.
+    Light sun;
+    sun.type      = LightType::Directional;
+    sun.direction = {-0.4f, -1.0f, -0.3f};  // the direction the rays TRAVEL
+    sun.color     = {1.0f, 1.0f, 1.0f};
+    sun.intensity = 1.0f;
+    lights_.push_back(sun);
+
+    // Light 1 — a warm POINT light off to the right, pooling orange light on the
+    // torus and the floor. A point light falls off with distance (see `range`), so
+    // nearby surfaces glow while far ones barely register — unlike the sun.
+    Light warm;
+    warm.type      = LightType::Point;
+    warm.position  = {3.6f, 1.2f, 2.2f};
+    warm.color     = {1.0f, 0.45f, 0.15f};
+    warm.intensity = 9.0f;
+    warm.range     = 9.0f;
+    lights_.push_back(warm);
+
+    // Light 2 — a cool blue POINT light that ORBITS the scene (animated in run()),
+    // so its colored pool sweeps across every surface and the multi-light effect is
+    // unmistakable in motion. Its starting position also reads in the t=0 capture.
+    Light cool;
+    cool.type      = LightType::Point;
+    cool.position  = {-3.6f, 1.3f, 2.2f};
+    cool.color     = {0.25f, 0.5f, 1.0f};
+    cool.intensity = 9.0f;
+    cool.range     = 9.0f;
+    lights_.push_back(cool);
+
+    // Light 3 — a SPOT light overhead, aimed down at the hub, casting a soft-edged
+    // cone of greenish light on the cubes and a ring on the floor. Cutoffs are
+    // stored as COSINES of the cone half-angles; because cos DECREASES with angle,
+    // the inner (full-bright) cutoff cosine is LARGER than the outer (zero) one.
+    Light spot;
+    spot.type           = LightType::Spot;
+    spot.position       = {0.0f, 4.5f, 1.0f};
+    spot.direction      = {0.0f, -1.0f, -0.15f};  // mostly straight down
+    spot.color          = {0.7f, 1.0f, 0.7f};
+    spot.intensity      = 14.0f;
+    spot.range          = 16.0f;
+    spot.innerCutoffCos = std::cos(radians(14.0f));
+    spot.outerCutoffCos = std::cos(radians(22.0f));
+    lights_.push_back(spot);
+
+    KOI_INFO("Lights: 1 directional sun (shadow caster) + 2 point + 1 spot.");
+}
+
 void Engine::run() {
     // Headless capture mode: if KOI_CAPTURE=<path> is set, render a single frame
     // into an image file and exit immediately, without entering the live loop.
@@ -183,7 +243,7 @@ void Engine::run() {
         // this captures the deterministic t = 0 pose) before drawing it off-screen.
         sceneRoot_->updateWorldTransforms();
         if (renderer_->captureFrame(capturePath, kClearColor, camera_.viewMatrix(),
-                                    *sceneRoot_, camera_.position(), post_)) {
+                                    *sceneRoot_, camera_.position(), lights_, post_)) {
             KOI_INFO("Captured frame to '%s'.", capturePath);
         } else {
             KOI_ERROR("Frame capture failed.");
@@ -210,6 +270,7 @@ void Engine::run() {
         SDL_SetWindowRelativeMouseMode(window_->handle(), true);
         KOI_INFO("Controls: WASD move, E/Q up/down, mouse look, Esc to quit.");
         KOI_INFO("Post-processing: 1=tone-map 2=bloom 3=FXAA 4=vignette, [ / ] exposure.");
+        KOI_INFO("Lights: 5=point lights 6=spot 7=sun.");
     }
 
     // Delta-time clock: the time since the previous frame, in seconds. Movement is
@@ -240,11 +301,19 @@ void Engine::run() {
         hub_->transform().rotationEuler.y     += 0.6f * dt;
         spinner_->transform().rotationEuler.y += 1.5f * dt;
 
+        // Orbit the cool point light (index 2) around the scene so its colored pool
+        // sweeps across the surfaces — the clearest way to SEE a moving light.
+        lightOrbit_ += 0.8f * dt;
+        if (lights_.size() > 2) {
+            lights_[2].position = {3.6f * std::cos(lightOrbit_), 1.3f,
+                                   3.6f * std::sin(lightOrbit_)};
+        }
+
         // Propagate transforms down the tree (parent → child → grandchild) so every
         // node's cached world matrix is current, THEN draw.
         sceneRoot_->updateWorldTransforms();
         renderer_->renderFrame(kClearColor, camera_.viewMatrix(), *sceneRoot_,
-                               camera_.position(), post_);
+                               camera_.position(), lights_, post_);
 
         if (maxFrames != 0 && ++frame >= maxFrames) {
             KOI_INFO("Reached KOI_MAX_FRAMES=%llu — exiting.",
@@ -298,6 +367,33 @@ void Engine::processEvents() {
                     case SDLK_RIGHTBRACKET:  // ']' — brighter
                         post_.exposure = SDL_min(8.0f, post_.exposure * 1.25f);
                         KOI_INFO("Exposure: %.2f", post_.exposure);
+                        break;
+                    case SDLK_5: {
+                        // Toggle the two colored POINT lights together (indices 1-2).
+                        const bool on = (lights_.size() > 1) ? !lights_[1].enabled : false;
+                        if (lights_.size() > 1) {
+                            lights_[1].enabled = on;
+                        }
+                        if (lights_.size() > 2) {
+                            lights_[2].enabled = on;
+                        }
+                        KOI_INFO("Point lights: %s", on ? "on" : "off");
+                        break;
+                    }
+                    case SDLK_6:
+                        // Toggle the SPOT light (index 3).
+                        if (lights_.size() > 3) {
+                            lights_[3].enabled = !lights_[3].enabled;
+                            KOI_INFO("Spot light: %s", lights_[3].enabled ? "on" : "off");
+                        }
+                        break;
+                    case SDLK_7:
+                        // Toggle the directional SUN (index 0). With it off, the
+                        // point/spot lights (which cast no shadow) light the scene alone.
+                        if (!lights_.empty()) {
+                            lights_[0].enabled = !lights_[0].enabled;
+                            KOI_INFO("Sun: %s", lights_[0].enabled ? "on" : "off");
+                        }
                         break;
                     default:
                         break;

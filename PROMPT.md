@@ -162,3 +162,25 @@ effects, so Step 10 = the **full post-processing stack**.
   shared `renderSceneAndPost` used by both `renderFrame` and `captureFrame` (no drift). New
   `renderer/PostProcess.hpp` holds `PostSettings` + pure helpers (unit-tested in `test_post.cpp`).
   Effects toggle live (keys `1`–`4`, `[`/`]` exposure). Multiple lights / PBR → Step 11+.
+
+**Next milestone request (Step 11):**
+> Work on the next step.
+
+**Decision made (via clarifying question — which slice of "Step 11+"):** user chose
+**multiple lights** (over PBR / normal mapping). So Step 11 = point + spot lights alongside the
+directional sun.
+- New `scene/Light.hpp` (header-only, SDL-free): a `Light` struct (type = directional/point/spot,
+  position, direction, colour, intensity, range, spot-cone cosines, `enabled`) + pure helpers
+  `attenuation` (windowed inverse-square), `spotFactor` (smoothstep cone), `activeLightCount`
+  (mirroring the renderer's pack/cap), unit-tested in `tests/test_light.cpp`.
+- Shader: `triangle.frag`'s single light became a fixed `MAX_LIGHTS=8` **std140 array** + a loop
+  (per-type `L`/attenuation, spot cone; ambient once; **shadow only on light 0, the sun**). Each
+  `GpuLight` packed as 4×`vec4` (64 B) so C++/GLSL agree byte-for-byte. Vertex shader unchanged.
+- Renderer: light list threaded as `std::span<const Light>` through `renderFrame`/`captureFrame`
+  → `renderSceneAndPost` → `recordScene`; the sun's direction now comes from `lights[0]` and
+  drives both the shadow map and the UBO. `computeLightViewProj` takes that direction.
+- Engine: owns `std::vector<Light> lights_` (sun + 2 point + 1 spot), orbits one point light,
+  toggles groups with keys `5`/`6`/`7`. Only the sun casts a shadow (cube maps/cascades → later).
+- Verified: clean build under strict warnings; 46 tests pass; headless smoke (no GPU validation
+  errors); A/B capture (all lights vs sun-only) confirms each light contributes, shadows intact.
+  PBR / normal maps / more shadow casters → Step 12+.

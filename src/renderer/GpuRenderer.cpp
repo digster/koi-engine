@@ -293,16 +293,18 @@ namespace {
 // directional light covers the whole scene with one map, so 2048² is plenty here.
 constexpr Uint32 kShadowSize = 2048;
 
-// The fixed "sun" — the SAME direction the fragment shader lights with, so the
-// shadows line up with the shading.
-Vec3 sunDirection() { return normalize(Vec3{-0.4f, -1.0f, -0.3f}); }
+// A safe fallback sun direction, used only if the scene somehow ships no lights.
+// Normally the shadow-casting sun's direction comes from lights[0] (Step 11).
+constexpr Vec3 kFallbackSunDir = {-0.4f, -1.0f, -0.3f};
 
 // Build the light's view-projection: an orthographic box (parallel sun rays) looking
 // along the sun direction at the scene center. This one matrix both renders the
 // shadow map (pass 1) and decodes it in the fragment shader (pass 2), so they must
-// agree exactly. The box (±kHalf) and range are sized to enclose the whole scene.
-Mat4 computeLightViewProj() {
-    const Vec3 dir    = sunDirection();
+// agree exactly. `sunDir` is the direction the sun's rays TRAVEL (from lights[0]),
+// so the shadow always follows the actual directional light. The box (±kHalf) and
+// range are sized to enclose the whole scene.
+Mat4 computeLightViewProj(const Vec3& sunDir) {
+    const Vec3 dir    = normalize(sunDir);
     const Vec3 center = {0.0f, -0.5f, 0.0f};   // roughly the middle of the scene
     const float back  = 18.0f;                 // how far back along the sun to place the eye
     const Vec3 eye    = center - dir * back;
@@ -695,13 +697,21 @@ void GpuRenderer::runPostChain(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* finalC
 void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* finalColor,
                                      Uint32 width, Uint32 height, const Mat4& view,
                                      const Node& sceneRoot, const Vec3& cameraPos,
+                                     std::span<const Light> lights,
                                      const SDL_FColor& clearColor, const PostSettings& post) {
     if (!ensureSceneTargets(width, height)) {
         return;  // ensureSceneTargets logged; skip this frame rather than crash
     }
 
-    // PASS 1 — shadow depth from the light's view (unchanged).
-    const Mat4 lightViewProj = computeLightViewProj();
+    // The shadow map follows the SUN — the directional light at index 0 (by
+    // convention). Its direction drives both passes so the shadows line up with the
+    // shading, even as the sun is reconfigured. (Only this one light casts a shadow.)
+    const Vec3 sunDir = (!lights.empty() && lights[0].type == LightType::Directional)
+                            ? lights[0].direction
+                            : kFallbackSunDir;
+
+    // PASS 1 — shadow depth from the sun's view.
+    const Mat4 lightViewProj = computeLightViewProj(sunDir);
     renderShadowPass(cmd, sceneRoot, lightViewProj);
 
     // PASS 2 — the scene, into the off-screen HDR target (NOT the swapchain).
@@ -724,7 +734,7 @@ void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* 
     SDL_GPURenderPass* pass =
         SDL_BeginGPURenderPass(cmd, &colorTarget, /*num_color_targets=*/1, &depthTarget);
     const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-    recordScene(cmd, pass, sceneRoot, view, aspect, cameraPos, lightViewProj);
+    recordScene(cmd, pass, sceneRoot, view, aspect, cameraPos, lights, lightViewProj);
     SDL_EndGPURenderPass(pass);
 
     // PASSES 3+ — the fullscreen post-processing chain, ending in `finalColor`.
@@ -992,7 +1002,8 @@ bool GpuRenderer::ensureDepthTexture(Uint32 width, Uint32 height) {
 
 void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                               const Node& root, const Mat4& view, float aspect,
-                              const Vec3& cameraPos, const Mat4& lightViewProj) const {
+                              const Vec3& cameraPos, std::span<const Light> lights,
+                              const Mat4& lightViewProj) const {
     // Bind the one pipeline every mesh shares. Per-mesh vertex/index buffers AND
     // per-material textures are now bound inside recordNode, just before each node's
     // draw — different nodes use different materials, so binding can't be hoisted
@@ -1006,26 +1017,62 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
     shadowBinding.sampler = shadowSampler_;
     SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/1, &shadowBinding, /*num_bindings=*/1);
 
-    // Push the per-frame lighting uniform (fragment set=3, binding 0): one fixed directional
-    // "sun", the camera position (for specular), and the light's view-projection (so the
-    // fragment shader can look this fragment up in the shadow map). Constant across the
-    // frame, so pushed ONCE here. vec4s match the shader's std140 layout.
+    // Pack the per-frame lighting environment (fragment set=3, binding 0): the ambient
+    // fill, the eye (for specular), the sun's shadow matrix, and the ARRAY of active
+    // lights. This C++ layout must match LightUBO in triangle.frag BYTE FOR BYTE — every
+    // field is vec4-aligned and each GpuLight is exactly 4 vec4s (64 bytes), so std140
+    // adds no hidden padding. Constant across every draw, so pushed ONCE here.
+    struct GpuLight {
+        float positionRange[4];   // xyz position, w range
+        float directionType[4];   // xyz direction, w type (0=dir,1=point,2=spot)
+        float colorIntensity[4];  // rgb color, a intensity
+        float spotCutoffs[4];     // x innerCos, y outerCos
+    };
     struct LightUniform {
-        float lightDir[4];
-        float lightColor[4];
-        float ambient[4];
-        float cameraPos[4];
-        float lightViewProj[16];
+        float    ambient[4];
+        float    cameraPos[4];
+        float    lightViewProj[16];
+        Sint32   lightCount[4];        // ivec4: x = number of active lights
+        GpuLight lights[MAX_LIGHTS];
     };
-    const Vec3 sun = sunDirection();
-    LightUniform light = {
-        { sun.x, sun.y, sun.z, 0.0f },
-        { 1.0f, 1.0f, 1.0f, 0.0f },              // white light
-        { 0.15f, 0.15f, 0.18f, 0.0f },           // soft ambient fill
-        { cameraPos.x, cameraPos.y, cameraPos.z, 0.0f },
-        { 0 },
-    };
+
+    LightUniform light = {};
+    light.ambient[0] = 0.15f; light.ambient[1] = 0.15f; light.ambient[2] = 0.18f;  // soft fill
+    light.cameraPos[0] = cameraPos.x;
+    light.cameraPos[1] = cameraPos.y;
+    light.cameraPos[2] = cameraPos.z;
     std::memcpy(light.lightViewProj, lightViewProj.m, sizeof(light.lightViewProj));
+
+    // Copy the ENABLED lights into the fixed array, up to MAX_LIGHTS. Lights toggled
+    // off from input are skipped, so the shader's loop never sees them. Index 0 stays
+    // the sun (directional) whenever it's enabled — the only shadow caster.
+    int packed = 0;
+    for (const Light& l : lights) {
+        if (packed >= MAX_LIGHTS) {
+            break;
+        }
+        if (!l.enabled) {
+            continue;
+        }
+        GpuLight& g = light.lights[packed];
+        g.positionRange[0] = l.position.x;
+        g.positionRange[1] = l.position.y;
+        g.positionRange[2] = l.position.z;
+        g.positionRange[3] = l.range;
+        const Vec3 dir = normalize(l.direction);
+        g.directionType[0] = dir.x;
+        g.directionType[1] = dir.y;
+        g.directionType[2] = dir.z;
+        g.directionType[3] = static_cast<float>(static_cast<int>(l.type));
+        g.colorIntensity[0] = l.color.x;
+        g.colorIntensity[1] = l.color.y;
+        g.colorIntensity[2] = l.color.z;
+        g.colorIntensity[3] = l.intensity;
+        g.spotCutoffs[0] = l.innerCutoffCos;
+        g.spotCutoffs[1] = l.outerCutoffCos;
+        ++packed;
+    }
+    light.lightCount[0] = packed;
     SDL_PushGPUFragmentUniformData(cmd, /*slot=*/0, &light, sizeof(light));
 
     // The projection depends only on the viewport, and the view only on the
@@ -1163,7 +1210,7 @@ GpuRenderer::~GpuRenderer() {
 
 void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
                               const Node& sceneRoot, const Vec3& cameraPos,
-                              const PostSettings& post) {
+                              std::span<const Light> lights, const PostSettings& post) {
     // ------------------------------------------------------------------------
     //  1. Acquire a command buffer.
     //     We don't command the GPU directly; we *record* commands into a buffer
@@ -1204,7 +1251,7 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
         // The aspect ratio comes from the actual swapchain size, so the image is never
         // stretched and adapts automatically when the window is resized.
         renderSceneAndPost(cmd, swapchainTexture, width, height, view, sceneRoot,
-                           cameraPos, clearColor, post);
+                           cameraPos, lights, clearColor, post);
     }
 
     // ------------------------------------------------------------------------
@@ -1218,7 +1265,8 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
 
 bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
                                const Mat4& view, const Node& sceneRoot,
-                               const Vec3& cameraPos, const PostSettings& post) {
+                               const Vec3& cameraPos, std::span<const Light> lights,
+                               const PostSettings& post) {
     // Fixed capture resolution: keeps the output deterministic and small. The
     // aspect ratio (1280/720) feeds the projection so the cube isn't distorted.
     constexpr Uint32 kWidth  = 1280;
@@ -1268,7 +1316,7 @@ bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
     //    the same frame every time.
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
     renderSceneAndPost(cmd, target, kWidth, kHeight, view, sceneRoot, cameraPos,
-                       clearColor, post);
+                       lights, clearColor, post);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion region = {};

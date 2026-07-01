@@ -9,15 +9,17 @@ in [`docs/`](docs/index.html) that explains the underlying graphics concepts fro
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/index.html`](docs/index.html) in a browser.
 
-> **Current status — Step 10:** adds a **post-processing** pipeline. The scene is now
-> rendered into an off-screen **HDR** texture instead of straight to the screen, then a chain
-> of **fullscreen passes** processes it: **bloom** (bright-pass + separable Gaussian blur),
-> **ACES tone-mapping** with exposure, a **gamma** (linear→sRGB) encode, a **vignette**, and
-> **FXAA** anti-aliasing. Every effect is toggleable at runtime so you can see what each one
-> does.
+> **Current status — Step 11:** adds **multiple lights**. The single hardcoded "sun" becomes a
+> **list of lights** of different kinds — a **directional** sun, coloured **point** lights (bulbs
+> that fade with distance), and a **spot** light (a cone) — that the fragment shader **loops over**
+> and adds together. Along the way: distance **attenuation** (windowed inverse-square) and the
+> soft **spot cone**. One point light orbits the scene, and each light group toggles at runtime.
+> (Only the directional sun casts a shadow for now; shadowing the rest — cascades / cube maps —
+> is a later step.)
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
+> Lights: `5` point lights, `6` spot, `7` sun.
 
 ## Quick start
 
@@ -75,6 +77,9 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 - [docs/11-post-processing.html](docs/11-post-processing.html) — off-screen HDR targets, the
   fullscreen-triangle trick, tone-mapping & exposure, the gamma workflow, bloom, and FXAA,
   mapped to the Step 10 code that runs a fullscreen effect chain over the scene.
+- [docs/12-multiple-lights.html](docs/12-multiple-lights.html) — directional/point/spot lights,
+  distance attenuation, the spot cone, and accumulating many lights in a shader loop, mapped to
+  the Step 11 code that lights the scene with a sun plus coloured point and spot lights.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
@@ -92,7 +97,8 @@ Full instructions, controls, and tests: [docs/00-getting-started.html](docs/00-g
 | ✅ **8** | **Materials** | per-object texture + specular params, per-draw binding |
 | ✅ **9** | **Models & shadows** | OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping |
 | ✅ **10** | **Post-processing** | offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA |
-| 11+ | Multiple lights & PBR | point/spot lights, shadow cascades, normal/roughness/metalness maps |
+| ✅ **11** | **Multiple lights** | directional/point/spot lights, distance attenuation, spot cones |
+| 12+ | PBR & more shadows | roughness/metalness, normal maps, shadow cascades & point-light shadows |
 
 ## Requirements
 

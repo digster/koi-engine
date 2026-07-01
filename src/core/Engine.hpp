@@ -16,9 +16,11 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #include "renderer/PostProcess.hpp"  // PostSettings value member (SDL-free, cheap)
 #include "scene/Camera.hpp"  // value member; SDL-free (math only), so cheap to include
+#include "scene/Light.hpp"   // std::vector<Light> value member; SDL-free, cheap
 
 namespace koi {
 
@@ -65,6 +67,11 @@ private:
     // through the renderer. Returns false (after logging) if a mesh upload fails.
     bool buildScene();
 
+    // Populate lights_ (Step 11): the directional sun at index 0 (the shadow
+    // caster), plus a couple of colored point lights and a spotlight. Called from
+    // init(); no GPU work, so it can't fail. See scene/Light.hpp.
+    void setupLights();
+
     bool running_     = false;
     bool initialized_ = false;
 
@@ -90,6 +97,16 @@ private:
     // Post-processing settings (Step 10), toggled from the keyboard in processEvents
     // and handed to the renderer each frame. Defaults enable every effect.
     PostSettings post_;
+
+    // The scene's lights (Step 11). Index 0 is the directional sun (the shadow
+    // caster); the rest are colored point/spot lights. The Engine owns them (like
+    // the camera and post settings), animates one each frame, toggles them from the
+    // keyboard, and hands the list to the renderer to pack into a shader uniform.
+    std::vector<Light> lights_;
+
+    // Angle accumulator (radians) for the one orbiting point light, advanced by
+    // delta-time each frame so its colored pool sweeps around the scene.
+    float lightOrbit_ = 0.0f;
 };
 
 }  // namespace koi

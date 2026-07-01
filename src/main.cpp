@@ -18,7 +18,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     koi::Engine engine;
 
     const koi::Engine::Config config{
-        .title  = "Koi Engine — Step 10: Post-processing",
+        .title  = "Koi Engine — Step 11: Multiple lights",
         .width  = 1280,
         .height = 720,
     };

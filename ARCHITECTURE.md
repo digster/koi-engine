@@ -3,14 +3,15 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 10 (window & render loop, the first triangle, geometry in GPU
+through Step 11 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
 **textures** sampled onto those surfaces, **Phong lighting** that shades them,
 per-object **materials**, **model loading** from OBJ/glTF files, **shadow
-mapping**, and a **post-processing** chain — an off-screen HDR target run through
-bloom, tone-mapping, and FXAA before it reaches the screen).
+mapping**, a **post-processing** chain — an off-screen HDR target run through
+bloom, tone-mapping, and FXAA before it reaches the screen — and **multiple
+lights** of different kinds (directional/point/spot) accumulated in the shader).
 
 ## Guiding principles
 
@@ -52,6 +53,7 @@ bloom, tone-mapping, and FXAA before it reaches the screen).
 | `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler**, the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, and the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
 | `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the Engine drives from input and hands to the renderer, plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
 | `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: a `shared_ptr<Texture>` + specular params (shininess, strength). Forward-declares `Texture` (stores it by `shared_ptr`). Shared by `shared_ptr`; a `Node` references one. The renderer binds it per draw. |
+| `Light` | [src/scene/Light.hpp](src/scene/Light.hpp) | Header-only, SDL-free (Step 11): a `Light` struct (type = directional/point/spot, position, direction, colour, intensity, range, spot-cone cosines, an `enabled` flag) plus pure helpers (`attenuation`, `spotFactor`, `activeLightCount`) that mirror the shader math for headless tests (`tests/test_light.cpp`). The `Engine` owns a `std::vector<Light>` and hands it to the renderer each frame, exactly like the camera + `PostSettings`. `MAX_LIGHTS` matches the shader's fixed array size. |
 | `ModelLoader` | [src/renderer/ModelLoader.*](src/renderer/) | `loadModel(path)` reads a model file into a `Mesh` (positions/normals/UVs/indices, vertex color = white): `.obj` via **tinyobjloader** (de-duplicating its separate v/vt/vn indices), `.glb/.gltf` via **cgltf**. The single TU that pulls in those third-party headers — compiled warning-free (`-w`). |
 | `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count + element size: 16-bit for primitives, 32-bit for big loaded models). Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must die before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
 | `Texture` | [src/renderer/Texture.*](src/renderer/) | RAII owner of one `SDL_GPUTexture` (sampled image). Same non-owning-device lifetime rule as `Mesh`. Created via `GpuRenderer::loadTexture` (load BMP → convert → upload); held by `shared_ptr`. A *sampler* (how to read it) is separate, reusable device state owned by the renderer. |
@@ -76,14 +78,16 @@ dt + input       → dt = ΔSDL_GetTicksNS (clamped); camera.processKeyboard(pol
 animate + update → spin a couple of nodes (rotationEuler += rate·dt);
                    sceneRoot.updateWorldTransforms() caches every node's world matrix
        │
-renderFrame(view, → in GpuRenderer (view = camera.viewMatrix()); renderSceneAndPost:
-  sceneRoot,           1. acquire command buffer + swapchain image (+ its size)
-  cameraPos, post)     2. ensureSceneTargets: depth + HDR scene + half-res bloom + LDR match size
-                     3. SHADOW PASS: compute lightViewProj; render scene depth into the
-                        shadow map from the light's view (depth-only pipeline)
+renderFrame(view,      → in GpuRenderer (view = camera.viewMatrix()); renderSceneAndPost:
+  sceneRoot, cameraPos,   1. acquire command buffer + swapchain image (+ its size)
+  lights, post)          2. ensureSceneTargets: depth + HDR scene + half-res bloom + LDR match size
+                     3. SHADOW PASS: compute lightViewProj from the SUN's direction
+                        (lights[0]); render scene depth into the shadow map (depth-only)
                      4. SCENE PASS: begin render pass into the HDR target (color + depth CLEAR);
-                        recordScene — bind pipeline + shadow map, push light + lightViewProj once,
-                        then walk the tree (per node: bind material texture + push material params,
+                        recordScene — bind pipeline + shadow map, pack the light LIST +
+                        lightViewProj into the light UBO once (Step 11: an array of
+                        directional/point/spot lights, only the sun shadowed), then walk
+                        the tree (per node: bind material texture + push material params,
                         bind mesh buffers + push {mvp,model}, draw); end pass
                      5. POST CHAIN (runPostChain): bloom bright-pass + separable blur → composite
                         (exposure, ACES tone-map, vignette, gamma) → FXAA into the swapchain image
@@ -363,6 +367,50 @@ sequence lives in `renderSceneAndPost`, shared by `renderFrame` and `captureFram
 headless BMP always matches the window. `PostSettings` (in `renderer/PostProcess.hpp`) carries
 the per-effect toggles + exposure, driven from the keyboard in `Engine::processEvents`.
 
+### Multiple lights (Step 11)
+
+The single hardcoded directional "sun" becomes a **list** of lights of three kinds —
+**directional** (parallel rays, no falloff), **point** (a position that fades with
+distance), and **spot** (a point light confined to a cone). Light is **additive**, so
+the fragment shader just **loops** over the active lights and sums each one's
+Blinn-Phong contribution (ambient added once, up front). The vertex shader is
+unchanged — it already emits world position + normal, all the loop needs.
+
+```
+   scene/Light.hpp (SDL-free)          shader (triangle.frag)
+   Light{type,pos,dir,color,           for i in 0..lightCount:
+     intensity,range,cone cos,           L,atten by type; Blinn-Phong;
+     enabled}                            shadow only if i==0 & directional;
+   + attenuation()/spotFactor()          result += radiance * (...)
+   + activeLightCount()   ── mirror ──►  (helpers unit-tested headlessly)
+```
+
+Two new concepts arrive with point/spot lights. **Attenuation** — a point light's
+brightness follows the inverse-square law (`1/(d²+1)`) multiplied by a range window
+(`clamp(1−(d/range)⁴,0,1)²`) that forces an exact 0 at `range`, giving each light a
+finite radius. **Spot cone** — the beam fades between an inner and outer half-angle;
+we compare **cosines** (`dot(L, aim)` vs the cutoffs, via `smoothstep`) to skip an
+`acos`, remembering that cosine *decreases* with angle (inner cutoff is the larger
+cosine). Both are duplicated as pure CPU helpers in `Light.hpp` and unit-tested in
+`tests/test_light.cpp` — the shader stays the runtime source of truth.
+
+The lights travel to the shader as a **fixed-size `MAX_LIGHTS` array** in the light
+UBO (`set=3,b=0`) — a uniform buffer's layout is fixed at pipeline-build time, so the
+array can't be dynamic. Each `GpuLight` is packed as exactly **four `vec4`s** (64
+bytes) so the C++ struct in `recordScene` and the GLSL struct agree byte-for-byte
+under **std140** (a stray `vec3` would shift the whole array — the same alignment
+class as Step 9's sampler-ordering bug). The `Engine` owns a `std::vector<Light>`
+(like the camera + `PostSettings`), threads it through
+`renderFrame`/`captureFrame` → `renderSceneAndPost` → `recordScene` as a
+`std::span<const Light>`, animates one orbiting point light, and toggles light groups
+from the keyboard (`5`/`6`/`7`); disabled lights are simply skipped when packing.
+
+**Shadows stay on the sun only.** Each shadow-caster needs its own map (a point light
+needs six — a cube map), so this step keeps the single Step-9 shadow map, driven by
+`lights[0]`'s direction; the shader applies the shadow factor only to that light.
+The fixed-array loop is also why "hundreds of lights" is a *different* architecture
+(deferred / clustered shading) — a deliberate future milestone, not this step.
+
 ## Lifecycle & ownership
 
 Startup builds bottom-up, shutdown tears down top-down — the standard RAII
@@ -472,5 +520,10 @@ Future milestones slot into this structure without reshaping it:
   applies exposure + **ACES tone-mapping** + vignette + **gamma**; then **FXAA**) writes the
   final image. Added `renderer/PostProcess.hpp` (`PostSettings` + pure helpers), five shaders,
   and the shared `renderSceneAndPost` path; effects toggle at runtime.
-- **Step 11+:** multiple/point lights + shadow cascades, glTF materials/animation, and richer
-  surface maps (normal/roughness/metalness) extending `Material` toward PBR.
+- **Step 11 (done):** **multiple lights** — a header-only `scene/Light.hpp` (directional/point/
+  spot + pure attenuation/spot-cone helpers) replaced the single hardcoded sun; the fragment
+  shader loops over a fixed-size std140 light array, the `Engine` owns + animates + toggles a
+  `std::vector<Light>` threaded through the render calls, and only the sun still casts a shadow.
+- **Step 12+:** richer surfaces toward **PBR** (roughness/metalness + normal maps extending
+  `Material`), more shadow casters (sun cascades, point-light cube maps), and eventually
+  deferred/clustered shading for many lights; glTF file materials/animation also open.

@@ -25,6 +25,7 @@
 #include "math/Mat4.hpp"
 #include "renderer/PostProcess.hpp"  // PostSettings (passed into renderFrame/captureFrame)
 #include "renderer/Vertex.hpp"  // createMesh takes a std::span<const Vertex>
+#include "scene/Light.hpp"  // std::span<const Light> passed into renderFrame/captureFrame (SDL-free)
 
 namespace koi {
 
@@ -88,10 +89,11 @@ public:
     // `sceneRoot` (each through its own world matrix and its node's material) as seen
     // through the camera `view` into an off-screen HDR target, run the post-processing
     // chain (`post` selects which effects), and present the result. `cameraPos` (the
-    // eye in world space) feeds the lighting's specular highlight.
+    // eye in world space) feeds the lighting's specular highlight. `lights` is the
+    // scene's active light list (Step 11); light 0 is the shadow-casting sun.
     void renderFrame(const SDL_FColor& clearColor, const Mat4& view,
                      const Node& sceneRoot, const Vec3& cameraPos,
-                     const PostSettings& post);
+                     std::span<const Light> lights, const PostSettings& post);
 
     // Render one frame into an OFF-SCREEN texture (not the window), download the
     // pixels back to the CPU, and save them to `path` as a BMP. Our headless
@@ -100,7 +102,8 @@ public:
     // false (after logging) on failure. See docs / CLAUDE.md.
     [[nodiscard]] bool captureFrame(const char* path, const SDL_FColor& clearColor,
                                     const Mat4& view, const Node& sceneRoot,
-                                    const Vec3& cameraPos, const PostSettings& post);
+                                    const Vec3& cameraPos, std::span<const Light> lights,
+                                    const PostSettings& post);
 
 private:
     // Build the graphics pipeline (loads + compiles shaders, and describes the
@@ -150,14 +153,15 @@ private:
                           const Node& node, const Mat4& lightViewProj) const;
 
     // Record the whole scene into an already-begun (main) render pass: bind the
-    // pipeline, bind the shadow map, push the per-frame light uniform (with
-    // `cameraPos` + `lightViewProj`), build the projection from `aspect`, then walk
+    // pipeline, bind the shadow map, pack `lights` + `cameraPos` + `lightViewProj`
+    // into the per-frame light uniform, build the projection from `aspect`, then walk
     // `root` drawing each node — binding its material's texture + pushing its
     // {mvp, model} and material uniforms. Shared by the live (renderFrame) and
     // off-screen (captureFrame) paths so they can't drift.
     void recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                      const Node& root, const Mat4& view, float aspect,
-                     const Vec3& cameraPos, const Mat4& lightViewProj) const;
+                     const Vec3& cameraPos, std::span<const Light> lights,
+                     const Mat4& lightViewProj) const;
 
     // Recursive worker for recordScene: draw `node`'s mesh (if any) using the
     // already-combined `projView` matrix, then recurse into its children. Reads
@@ -201,6 +205,7 @@ private:
     void renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* finalColor,
                             Uint32 width, Uint32 height, const Mat4& view,
                             const Node& sceneRoot, const Vec3& cameraPos,
+                            std::span<const Light> lights,
                             const SDL_FColor& clearColor, const PostSettings& post);
 
     // Run the fullscreen post-processing passes over the already-rendered HDR scene,
