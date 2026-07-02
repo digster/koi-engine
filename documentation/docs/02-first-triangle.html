@@ -183,7 +183,7 @@
 
   <h2>6. The code</h2>
 
-  <h3>The shaders — <a href="../shaders/triangle.vert">shaders/triangle.vert</a> &amp; <a href="../shaders/triangle.frag">.frag</a></h3>
+  <h3>The shaders — <a href="../../shaders/triangle.vert">shaders/triangle.vert</a> &amp; <a href="../../shaders/triangle.frag">.frag</a></h3>
 
   <p>The vertex shader bakes the 3 positions and colors into arrays and selects one
   with <code>gl_VertexIndex</code> (the 0/1/2 index of the vertex being processed —
@@ -208,7 +208,7 @@ void main() { outColor = vec4(vColor, 1.0); }</code></pre>
   <p>The <code>location = 0</code> on the vertex output and the fragment input must
   match — that's the wire connecting the two stages.</p>
 
-  <h3>The build step — <a href="../CMakeLists.txt">CMakeLists.txt</a></h3>
+  <h3>The build step — <a href="../../CMakeLists.txt">CMakeLists.txt</a></h3>
 
   <p>A <code>koi_add_shader()</code> function registers the two compile commands per
   shader (<code>glslc</code> then <code>spirv-cross</code>), and a
@@ -216,7 +216,7 @@ void main() { outColor = vec4(vColor, 1.0); }</code></pre>
   folder the executable looks in at runtime. The app depends on it, so the shaders
   are always up to date.</p>
 
-  <h3>Loading the right variant — <a href="../src/renderer/Shader.cpp">src/renderer/Shader.cpp</a></h3>
+  <h3>Loading the right variant — <a href="../../src/renderer/Shader.cpp">src/renderer/Shader.cpp</a></h3>
 
   <p><code>selectShaderVariant()</code> asks the device which format it supports and
   returns the matching file extension + entry point (<code>.spv</code>/<code>main</code>
@@ -225,7 +225,7 @@ void main() { outColor = vec4(vColor, 1.0); }</code></pre>
   and creates the <code>SDL_GPUShader</code>. (That variant logic is a pure function,
   so it's covered by unit tests in <code>tests/test_shader.cpp</code>.)</p>
 
-  <h3>Pipeline + draw — <a href="../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a></h3>
+  <h3>Pipeline + draw — <a href="../../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a></h3>
 
   <p>At startup we load both shaders and build the pipeline (then release the shader
   objects — the pipeline keeps what it needs). Each frame, inside the render pass,
@@ -242,7 +242,7 @@ SDL_DrawGPUPrimitives(pass, /*vertices=*/3, /*instances=*/1, 0, 0);</code></pre>
 
   <ol>
     <li><strong>Recolor the corners.</strong> Change the <code>colors[3]</code>
-    array in <a href="../shaders/triangle.vert">triangle.vert</a> and rebuild —
+    array in <a href="../../shaders/triangle.vert">triangle.vert</a> and rebuild —
     the gradient follows. (The build recompiles shaders automatically.)</li>
     <li><strong>Move a corner.</strong> Edit a <code>positions[3]</code> entry;
     push one past <code>±1</code> and watch it get clipped at the window edge.</li>
@@ -262,8 +262,8 @@ SDL_DrawGPUPrimitives(pass, /*vertices=*/3, /*instances=*/1, 0, 0);</code></pre>
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>

@@ -93,7 +93,7 @@
 
   <p>The specular BRDF is <code>(D · G · F) / (4 · (N·V) · (N·L))</code> — three functions
   multiplied together, each answering one physical question. (Their exact formulas live in the
-  shader and, mirrored for tests, in <a href="../src/renderer/Pbr.hpp">renderer/Pbr.hpp</a>.)</p>
+  shader and, mirrored for tests, in <a href="../../src/renderer/Pbr.hpp">renderer/Pbr.hpp</a>.)</p>
 
   <ul>
     <li><strong>D — Normal Distribution (GGX).</strong> Of all the microfacets, what fraction are
@@ -158,21 +158,21 @@
 
   <h2>7. The code</h2>
 
-  <h3>The material — <a href="../src/scene/Material.hpp">scene/Material.hpp</a></h3>
+  <h3>The material — <a href="../../src/scene/Material.hpp">scene/Material.hpp</a></h3>
   <p><code>shininess</code>/<code>specStrength</code> became <code>metallic</code> +
   <code>roughness</code> (both 0..1); the albedo texture is unchanged. The renderer pushes them in
   the same material uniform's two <code>vec4</code> lanes it already used, so no binding or buffer
   size changes — <code>recordNode</code> just sends <code>{metallic, roughness}</code>.</p>
 
-  <h3>The BRDF math — <a href="../shaders/triangle.frag">triangle.frag</a> + <a href="../src/renderer/Pbr.hpp">Pbr.hpp</a></h3>
+  <h3>The BRDF math — <a href="../../shaders/triangle.frag">triangle.frag</a> + <a href="../../src/renderer/Pbr.hpp">Pbr.hpp</a></h3>
   <p>The shader's per-light body swapped Blinn-Phong for the Cook-Torrance terms above; the vertex
   shader and the Step 11 light loop/uniform are untouched. The three sub-terms
   (<code>distributionGGX</code>, <code>geometrySmith</code>, <code>fresnelSchlick</code>) have pure
   CPU twins in <code>Pbr.hpp</code>, unit-tested in
-  <a href="../tests/test_pbr.cpp">test_pbr.cpp</a> — the shader stays the runtime source of truth,
+  <a href="../../tests/test_pbr.cpp">test_pbr.cpp</a> — the shader stays the runtime source of truth,
   the header lets us pin the math's shape headlessly.</p>
 
-  <h3>The demo — <a href="../src/core/Engine.cpp">Engine.cpp</a></h3>
+  <h3>The demo — <a href="../../src/core/Engine.cpp">Engine.cpp</a></h3>
   <p><code>buildScene</code> assigns contrasting materials — a rough dielectric floor, a metal hub
   and a shiny metal sphere, a glossy dielectric torus — so the metallic/roughness axes are visible
   side by side. <code>setupLights</code> bumps the light intensities to suit the energy-conserving
@@ -182,7 +182,7 @@
 
   <ol>
     <li><strong>Slide the roughness.</strong> Change a material's <code>roughness</code> in
-    <a href="../src/core/Engine.cpp">Engine.cpp</a> from <code>0.1</code> to <code>0.9</code> and
+    <a href="../../src/core/Engine.cpp">Engine.cpp</a> from <code>0.1</code> to <code>0.9</code> and
     rebuild: watch the highlight go from a tight glint to a broad sheen.</li>
     <li><strong>Flip metallic.</strong> Set the torus <code>metallic = 1.0</code>: its bright
     diffuse body collapses to dark metal with sharp coloured reflections — the metal/dielectric
@@ -204,8 +204,8 @@
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>

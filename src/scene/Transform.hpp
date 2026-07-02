@@ -4,7 +4,7 @@
 //  A Transform is the human-friendly description of an object's placement:
 //  position, rotation, and scale (often abbreviated "TRS"). On its own it's just
 //  three vectors; localMatrix() bakes them into the single 4x4 matrix the GPU
-//  actually consumes (the "model" matrix in the MVP pipeline from docs/04).
+//  actually consumes (the "model" matrix in the MVP pipeline from documentation/docs/04).
 //
 //  WHY ORDER MATTERS — scale, then rotate, then translate.
 //  Matrix multiplication is applied right-to-left to a point, so the matrix we

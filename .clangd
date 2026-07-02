@@ -1,0 +1,9 @@
+# clangd configuration — https://clangd.llvm.org/config
+#
+# clangd needs a "compilation database" (compile_commands.json) to know the exact
+# flags each file is built with. CMake generates it under build/ because
+# CMakeLists.txt sets CMAKE_EXPORT_COMPILE_COMMANDS ON. Point clangd there so it
+# resolves SDL3 headers, our -std=c++20, include dirs, etc. Without this, clangd
+# guesses and completion/diagnostics become unreliable.
+CompileFlags:
+  CompilationDatabase: build

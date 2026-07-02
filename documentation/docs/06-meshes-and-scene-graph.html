@@ -100,7 +100,7 @@
   <p>This order is the intuitive one. Get it wrong and you get classic bugs: translate
   <em>before</em> rotate and the object swings around the world origin like it's on a string,
   instead of spinning in place. (A worked example pins this down in
-  <a href="../tests/test_transform.cpp">test_transform.cpp</a>.)</p>
+  <a href="../../tests/test_transform.cpp">test_transform.cpp</a>.)</p>
 
   <h2>4. Local space, world space, and the graph</h2>
 
@@ -172,26 +172,26 @@
 
   <h2>7. The code</h2>
 
-  <h3>The mesh — <a href="../src/renderer/Mesh.hpp">src/renderer/Mesh.{hpp,cpp}</a></h3>
+  <h3>The mesh — <a href="../../src/renderer/Mesh.hpp">src/renderer/Mesh.{hpp,cpp}</a></h3>
   <p>A tiny RAII owner of a vertex buffer, an index buffer, and an index count. It holds a
   <em>non-owning</em> <code>SDL_GPUDevice*</code> purely to release those buffers in its
   destructor (hence the lifetime rule above). It's non-copyable and non-movable — copying
   would double-free the GPU handles.</p>
 
-  <h3>Making meshes — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer::createMesh</a> &amp; <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a></h3>
+  <h3>Making meshes — <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer::createMesh</a> &amp; <a href="../../src/renderer/Primitives.cpp">Primitives.cpp</a></h3>
   <p>The renderer is now a <strong>factory</strong>: <code>createMesh(vertices, indices)</code>
   reuses the same staging-buffer upload from Step 2 and wraps the result in a
-  <code>Mesh</code>. <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a> defines the
+  <code>Mesh</code>. <a href="../../src/renderer/Primitives.cpp">Primitives.cpp</a> defines the
   actual shapes — <code>makeCubeMesh</code> (the RGB color cube) and <code>makePlaneMesh</code>
   (the ground) — so the renderer itself stays geometry-agnostic.</p>
 
-  <h3>The transform — <a href="../src/scene/Transform.hpp">src/scene/Transform.hpp</a></h3>
+  <h3>The transform — <a href="../../src/scene/Transform.hpp">src/scene/Transform.hpp</a></h3>
   <p>Header-only and SDL-free, like our other math. Just the three vectors and
   <code>localMatrix()</code> returning <code>translation · rotationZ · rotationY · rotationX ·
   scaling</code>. (Step 5 also adds <code>scaling()</code> to
-  <a href="../src/math/Mat4.hpp">Mat4.hpp</a>, next to <code>translation()</code>.)</p>
+  <a href="../../src/math/Mat4.hpp">Mat4.hpp</a>, next to <code>translation()</code>.)</p>
 
-  <h3>The node — <a href="../src/scene/Node.hpp">src/scene/Node.{hpp,cpp}</a></h3>
+  <h3>The node — <a href="../../src/scene/Node.hpp">src/scene/Node.{hpp,cpp}</a></h3>
   <p>One element of the tree: a <code>Transform</code>, an optional shared <code>Mesh</code>,
   owned children, and a cached world matrix. The whole scene graph is this five-line
   recursion:</p>
@@ -206,14 +206,14 @@
   <code>parentWorld</code> is what resolves arbitrarily deep hierarchies in a single pass —
   no special case for grandchildren; they just work.</p>
 
-  <h3>Drawing the tree — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer::recordScene</a></h3>
+  <h3>Drawing the tree — <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer::recordScene</a></h3>
   <p>Bind the one shared pipeline, combine <code>projection · view</code> once, then walk the
   tree. For each node that has a mesh, bind that mesh's buffers, push
   <code>(proj·view) · world</code> as the MVP uniform, and draw. Nodes with no mesh contribute
   only their transform. Both the live path and the headless capture share this one function,
   so they can never drift.</p>
 
-  <h3>Building &amp; animating — <a href="../src/core/Engine.cpp">src/core/Engine.cpp</a></h3>
+  <h3>Building &amp; animating — <a href="../../src/core/Engine.cpp">src/core/Engine.cpp</a></h3>
   <p><code>buildScene()</code> assembles the hierarchy from the table above. The loop then
   nudges two rotations and resolves the tree before drawing:</p>
 
@@ -227,15 +227,15 @@ renderer_-&gt;renderFrame(clearColor, camera_.viewMatrix(), *sceneRoot_);</code>
   <ol>
     <li><strong>Re-parent something.</strong> Move <code>satellite A</code> to be a child of
     <code>spinner</code> instead of <code>hub</code> in
-    <a href="../src/core/Engine.cpp">Engine.cpp</a> and watch its motion change completely —
+    <a href="../../src/core/Engine.cpp">Engine.cpp</a> and watch its motion change completely —
     same node, different parent.</li>
     <li><strong>Add a grandchild's grandchild.</strong> Hang another cube off
     <code>moon</code>. With no new logic, it inherits three levels of motion.</li>
-    <li><strong>Feel the TRS order.</strong> In <a href="../src/scene/Transform.hpp">Transform.hpp</a>
+    <li><strong>Feel the TRS order.</strong> In <a href="../../src/scene/Transform.hpp">Transform.hpp</a>
     swap the multiply to put <code>translation</code> after <code>scaling</code>/rotation and
     see offset objects fling around the origin.</li>
     <li><strong>New primitive.</strong> Add a <code>makePyramidMesh</code> to
-    <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a> and drop one into the scene —
+    <a href="../../src/renderer/Primitives.cpp">Primitives.cpp</a> and drop one into the scene —
     the renderer needs no changes at all.</li>
   </ol>
 
@@ -250,8 +250,8 @@ renderer_-&gt;renderFrame(clearColor, camera_.viewMatrix(), *sceneRoot_);</code>
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>

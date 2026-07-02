@@ -116,7 +116,7 @@
 
   <p>Our engine keeps a CPU copy of this exact formula, <code>koi::attenuation</code>, next to the
   shader's — the same "pure helper mirrors the shader" trick we used for the tone-map curve — so
-  its shape can be <a href="../tests/test_light.cpp">unit-tested</a> without a GPU.</p>
+  its shape can be <a href="../../tests/test_light.cpp">unit-tested</a> without a GPU.</p>
 
   <h2>4. The spot cone</h2>
 
@@ -144,7 +144,7 @@
   <h2>5. Adding it all up in the shader</h2>
 
   <p>With the pieces in hand, the fragment shader
-  (<a href="../shaders/triangle.frag">triangle.frag</a>) becomes a loop. <strong>Ambient</strong>
+  (<a href="../../shaders/triangle.frag">triangle.frag</a>) becomes a loop. <strong>Ambient</strong>
   light — the constant fill that stands in for bounced light reaching everywhere — is added
   <strong>once</strong>, up front. Then, for each active light, we compute its direction
   <code>L</code> and attenuation by type, run the same Blinn-Phong diffuse + specular as before,
@@ -169,7 +169,7 @@
   Many lights travel as an <strong>array</strong>. But a uniform buffer's layout is fixed when the
   pipeline is built, so the array must be a <strong>fixed maximum size</strong> — we pick
   <code>MAX_LIGHTS = 8</code>, declared identically in both
-  <a href="../src/scene/Light.hpp">Light.hpp</a> and the shader, and send along a
+  <a href="../../src/scene/Light.hpp">Light.hpp</a> and the shader, and send along a
   <code>lightCount</code> telling the loop how many slots are actually used.</p>
 
   <p>Packing that array correctly means respecting <strong>std140</strong>, the GPU's uniform memory
@@ -178,7 +178,7 @@
   deliberately pack each light as exactly <strong>four <code>vec4</code>s</strong> (position+range,
   direction+type, colour+intensity, the two cone cosines), folding small scalars into the unused
   <code>.w</code> lanes. Four <code>vec4</code>s = 64 bytes with <em>no hidden padding</em>, so the
-  C++ struct in <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer</a> and the GLSL struct line
+  C++ struct in <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer</a> and the GLSL struct line
   up byte-for-byte. Get a <code>vec3</code> in there by accident and the whole array silently
   shifts — a classic, maddening bug.</p>
 
@@ -204,21 +204,21 @@
 
   <h2>8. The code</h2>
 
-  <h3>The light type — <a href="../src/scene/Light.hpp">scene/Light.hpp</a></h3>
+  <h3>The light type — <a href="../../src/scene/Light.hpp">scene/Light.hpp</a></h3>
   <p>A header-only, SDL-free <code>Light</code> struct (type, position, direction, colour,
   intensity, range, cone cosines, an <code>enabled</code> flag) plus the pure helpers
   <code>attenuation</code>, <code>spotFactor</code>, and <code>activeLightCount</code> that mirror
-  the shader and are unit-tested in <a href="../tests/test_light.cpp">test_light.cpp</a>. This is
+  the shader and are unit-tested in <a href="../../tests/test_light.cpp">test_light.cpp</a>. This is
   the same shape as <code>Material</code> and <code>PostSettings</code>: plain data the Engine owns
   and hands to the renderer.</p>
 
-  <h3>The shader — <a href="../shaders/triangle.frag">triangle.frag</a></h3>
+  <h3>The shader — <a href="../../shaders/triangle.frag">triangle.frag</a></h3>
   <p>The single-light block became the <code>MAX_LIGHTS</code> array + loop shown in §5, with a
   per-type branch for <code>L</code>/attenuation and the spot cone. The vertex shader is
   <em>unchanged</em> — it already outputs world position and normal, which is all the lighting loop
   needs regardless of how many lights there are.</p>
 
-  <h3>The renderer — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer</a></h3>
+  <h3>The renderer — <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer</a></h3>
   <p>The light list is threaded through <code>renderFrame</code> / <code>captureFrame</code> →
   <code>renderSceneAndPost</code> → <code>recordScene</code> as a <code>std::span&lt;const
   Light&gt;</code> — exactly how <code>cameraPos</code> and <code>PostSettings</code> were threaded
@@ -226,7 +226,7 @@
   array and pushes it once per frame; <code>renderSceneAndPost</code> pulls the sun's direction from
   <code>lights[0]</code> for the shadow pass.</p>
 
-  <h3>The scene &amp; controls — <a href="../src/core/Engine.cpp">Engine</a></h3>
+  <h3>The scene &amp; controls — <a href="../../src/core/Engine.cpp">Engine</a></h3>
   <p><code>setupLights</code> places the sun (index 0) plus two coloured point lights and an
   overhead spot; the loop <strong>orbits</strong> one point light so its colour sweeps the scene.
   Keys <code>5</code>/<code>6</code>/<code>7</code> toggle the point lights / the spot / the sun,
@@ -242,7 +242,7 @@
     pool as it slides across the floor and the models — the clearest proof that a light has a
     <em>position</em>, unlike the sun.</li>
     <li><strong>Change the falloff.</strong> Shrink a point light's <code>range</code> in
-    <a href="../src/core/Engine.cpp">Engine.cpp</a> and its pool tightens to a small bright disc;
+    <a href="../../src/core/Engine.cpp">Engine.cpp</a> and its pool tightens to a small bright disc;
     grow it and the light reaches across the whole floor.</li>
     <li><strong>Widen the beam.</strong> Push the spot's inner/outer angles apart (or together) and
     watch its edge soften or sharpen. Set them equal for a hard-cut circle.</li>
@@ -260,8 +260,8 @@
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>

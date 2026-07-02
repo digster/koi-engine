@@ -18,7 +18,7 @@ physically-based **PBR** shading via a Cook-Torrance metallic-roughness BRDF).
 
 1. **Learn by building.** Every subsystem is introduced when a milestone needs
    it, never speculatively. Code is heavily commented; the
-   [`docs/`](docs/index.html) tutorials explain the underlying graphics
+   [`documentation/docs/`](documentation/docs/index.html) tutorials explain the underlying graphics
    *concepts* for newcomers.
 2. **Modern, explicit graphics.** We use the SDL3 **GPU API** (Metal/Vulkan/D3D12
    behind one interface) rather than the deprecated OpenGL, so the concepts we
@@ -96,12 +96,12 @@ renderFrame(view,      → in GpuRenderer (view = camera.viewMatrix()); renderSc
                      6. submit command buffer (queues present)
 ```
 
-See [docs/01-window-and-render-loop.html](docs/01-window-and-render-loop.html),
-[docs/02-first-triangle.html](docs/02-first-triangle.html),
-[docs/03-vertex-and-index-buffers.html](docs/03-vertex-and-index-buffers.html),
-[docs/04-3d-cube-mvp-and-depth.html](docs/04-3d-cube-mvp-and-depth.html),
-[docs/05-camera-and-input.html](docs/05-camera-and-input.html), and
-[docs/06-meshes-and-scene-graph.html](docs/06-meshes-and-scene-graph.html) for the
+See [documentation/docs/01-window-and-render-loop.html](documentation/docs/01-window-and-render-loop.html),
+[documentation/docs/02-first-triangle.html](documentation/docs/02-first-triangle.html),
+[documentation/docs/03-vertex-and-index-buffers.html](documentation/docs/03-vertex-and-index-buffers.html),
+[documentation/docs/04-3d-cube-mvp-and-depth.html](documentation/docs/04-3d-cube-mvp-and-depth.html),
+[documentation/docs/05-camera-and-input.html](documentation/docs/05-camera-and-input.html), and
+[documentation/docs/06-meshes-and-scene-graph.html](documentation/docs/06-meshes-and-scene-graph.html) for the
 concept-by-concept explanation.
 
 ### Shaders & the build-time toolchain

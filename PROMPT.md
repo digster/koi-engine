@@ -214,15 +214,15 @@ replacing Blinn-Phong.
 
 **Decisions made (via clarifying questions):** phased horizon with non-graphics engine systems as
 **first-class** tracks (not a "someday" tier); **recap** the completed steps AND **remove the roadmap
-table from `docs/index.html`**; number the next few steps then theme the rest.
-- New **`ROADMAP.md`** (repo root): records the **Step N ↔ `docs/(N+1)-*.html`** numbering offset
-  (`00-getting-started` is a prerequisites page → next is Step 13 = `docs/14-*.html`); recap table of
+table from `documentation/docs/index.html`**; number the next few steps then theme the rest.
+- New **`ROADMAP.md`** (repo root): records the **Step N ↔ `documentation/docs/(N+1)-*.html`** numbering offset
+  (`00-getting-started` is a prerequisites page → next is Step 13 = `documentation/docs/14-*.html`); recap table of
   Steps 0–12; numbered next milestones **13 texture & normal maps → 14 skybox/env maps → 15 IBL**
   (each with goal / concepts / files-touched / why-here, in strict dependency order); then first-class
   themed tracks — Rendering (shadows, scaling/deferred, image quality, geometry) and Engine systems
   (math/quaternions, animation, scene/ECS, physics, audio, input, UI/tools, gameplay, platform) —
   plus an exploratory tier, a suggested dependency-ordered path, and a "how steps get added" section.
-- **Single source of truth:** removed the `<table>` from `docs/index.html` (kept the `Roadmap`
+- **Single source of truth:** removed the `<table>` from `documentation/docs/index.html` (kept the `Roadmap`
   heading + a pointer to `../ROADMAP.md`, matching the existing `../README.md`/`../ARCHITECTURE.md`
   links); replaced `README.md`'s duplicate table with a pointer; redirected `ARCHITECTURE.md`'s
   "Step 13+" bullet to ROADMAP.md while keeping its architectural claim.
@@ -253,3 +253,16 @@ prerequisite; UI & tools gains debug draw, shader hot-reload, CVars; **Platform 
 a "Path to 1.0 — production hardening" track** (engine/app separation, golden-image CI, asset
 cooking, robustness/fuzzing, packaging); new **Definition of 1.0** quality-gates checklist;
 suggested-path diagram reworked; hot-reload duplication removed.
+
+**Tooling + docs relocation (2026-07-02):**
+> * add a clangd file so that code completion works in vscode
+> * Move the 'docs' folder inside a 'documentation' folder and update any references
+
+**Outcome:** Added a root `.clangd` (`CompileFlags.CompilationDatabase: build`) pointing clangd at
+the CMake-generated `build/compile_commands.json` (already emitted via `CMAKE_EXPORT_COMPILE_COMMANDS`),
+so VSCode's clangd extension gets accurate IntelliSense. Moved `docs/` → `documentation/docs/` via
+`git mv` (history preserved) and rewrote every reference: the docs' own **124 outward `../` links
+deepened to `../../`** (folder now one level lower), `docs/` → `documentation/docs/` across README,
+ROADMAP, ARCHITECTURE, CLAUDE.md, PROMPT.md and `memory/*.md`, and 7 path-like code comments in
+`src/`+`shaders/` (prose "docs" mentions left intact). Verified: 346/346 internal doc links resolve,
+0 broken; build + doctest suite pass unchanged.

@@ -20,11 +20,11 @@ Three principles shape the plan:
 
 - The **Step N** number is the canonical milestone number: Step 0 is the first window on screen,
   Step 12 is physically-based materials.
-- Tutorials live in [`docs/`](docs/index.html), but their filenames run **one ahead** of the step
-  number, because [`docs/00-getting-started.html`](docs/00-getting-started.html) is a prerequisites
-  page rather than a step. So **Step N → `docs/(N+1)-*.html`** (e.g. Step 12 →
-  [`docs/13-pbr-materials.html`](docs/13-pbr-materials.html)).
-- **The next milestone is Step 13**, which will ship as `docs/14-*.html`.
+- Tutorials live in [`documentation/docs/`](documentation/docs/index.html), but their filenames run **one ahead** of the step
+  number, because [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) is a prerequisites
+  page rather than a step. So **Step N → `documentation/docs/(N+1)-*.html`** (e.g. Step 12 →
+  [`documentation/docs/13-pbr-materials.html`](documentation/docs/13-pbr-materials.html)).
+- **The next milestone is Step 13**, which will ship as `documentation/docs/14-*.html`.
 
 ---
 
@@ -33,25 +33,25 @@ Three principles shape the plan:
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
 post-processed shading of loaded models under many lights. Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
-[`docs/index.html`](docs/index.html).
+[`documentation/docs/index.html`](documentation/docs/index.html).
 
 | Step | Milestone | Key concepts | Tutorial |
 |------|-----------|--------------|----------|
-| **0** | Window + clear screen | GPU device, swapchain, command buffer, render pass | [docs/01](docs/01-window-and-render-loop.html) |
-| **1** | First triangle | shaders, graphics pipeline, shader toolchain (`glslc` + `spirv-cross`) | [docs/02](docs/02-first-triangle.html) |
-| **2** | Vertex/index buffers | GPU buffers, transfer buffers, vertex layouts | [docs/03](docs/03-vertex-and-index-buffers.html) |
-| **3** | 3D cube + MVP + depth | hand-rolled `vec`/`mat4`, projection, depth testing | [docs/04](docs/04-3d-cube-mvp-and-depth.html) |
-| **4** | Camera + input movement | view matrix, delta-time, fly camera | [docs/05](docs/05-camera-and-input.html) |
-| **5** | Meshes & scene graph | mesh abstraction, Transform (TRS), node hierarchy | [docs/06](docs/06-meshes-and-scene-graph.html) |
-| **6** | Textures | UV coordinates, GPU textures, samplers (filtering & wrap) | [docs/07](docs/07-textures-and-samplers.html) |
-| **7** | Phong lighting | normals, a directional light, ambient/diffuse/specular | [docs/08](docs/08-lighting-and-normals.html) |
-| **8** | Materials | per-object texture + specular params, per-draw binding | [docs/09](docs/09-materials.html) |
-| **9** | Models & shadows | OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping | [docs/10](docs/10-models-and-shadows.html) |
-| **10** | Post-processing | offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA | [docs/11](docs/11-post-processing.html) |
-| **11** | Multiple lights | directional/point/spot lights, distance attenuation, spot cones | [docs/12](docs/12-multiple-lights.html) |
-| **12** | PBR materials | Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation | [docs/13](docs/13-pbr-materials.html) |
+| **0** | Window + clear screen | GPU device, swapchain, command buffer, render pass | [documentation/docs/01](documentation/docs/01-window-and-render-loop.html) |
+| **1** | First triangle | shaders, graphics pipeline, shader toolchain (`glslc` + `spirv-cross`) | [documentation/docs/02](documentation/docs/02-first-triangle.html) |
+| **2** | Vertex/index buffers | GPU buffers, transfer buffers, vertex layouts | [documentation/docs/03](documentation/docs/03-vertex-and-index-buffers.html) |
+| **3** | 3D cube + MVP + depth | hand-rolled `vec`/`mat4`, projection, depth testing | [documentation/docs/04](documentation/docs/04-3d-cube-mvp-and-depth.html) |
+| **4** | Camera + input movement | view matrix, delta-time, fly camera | [documentation/docs/05](documentation/docs/05-camera-and-input.html) |
+| **5** | Meshes & scene graph | mesh abstraction, Transform (TRS), node hierarchy | [documentation/docs/06](documentation/docs/06-meshes-and-scene-graph.html) |
+| **6** | Textures | UV coordinates, GPU textures, samplers (filtering & wrap) | [documentation/docs/07](documentation/docs/07-textures-and-samplers.html) |
+| **7** | Phong lighting | normals, a directional light, ambient/diffuse/specular | [documentation/docs/08](documentation/docs/08-lighting-and-normals.html) |
+| **8** | Materials | per-object texture + specular params, per-draw binding | [documentation/docs/09](documentation/docs/09-materials.html) |
+| **9** | Models & shadows | OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping | [documentation/docs/10](documentation/docs/10-models-and-shadows.html) |
+| **10** | Post-processing | offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA | [documentation/docs/11](documentation/docs/11-post-processing.html) |
+| **11** | Multiple lights | directional/point/spot lights, distance attenuation, spot cones | [documentation/docs/12](documentation/docs/12-multiple-lights.html) |
+| **12** | PBR materials | Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation | [documentation/docs/13](documentation/docs/13-pbr-materials.html) |
 
-> The prerequisites page [`docs/00-getting-started.html`](docs/00-getting-started.html) (building,
+> The prerequisites page [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) (building,
 > running, testing, project layout) is not a numbered step.
 
 ---
@@ -332,7 +332,7 @@ these hold, regardless of how many tracks above are finished:
 - [ ] **Loaders are fuzz-clean**: malformed OBJ/glTF input fails gracefully, never crashes.
 - [ ] **Failure policy is defined and tested** for missing assets, shader load failures, and
       device loss.
-- [ ] **Docs are two-tier**: concept tutorials (the existing `docs/`) *plus* API reference for
+- [ ] **Docs are two-tier**: concept tutorials (the existing `documentation/docs/`) *plus* API reference for
       the public surface; `ARCHITECTURE.md` current.
 - [ ] **Versioned releases**: semantic versioning, a changelog, and a packaging story.
 
@@ -345,9 +345,9 @@ the ones before it:
 
 - **One small, runnable, understood step at a time.** Don't jump ahead; a step should build and be
   testable on its own before the next begins.
-- **Ship the tutorial with the code.** Add a new `docs/NN-*.html` (mind the **+1 offset**: Step 13 →
-  `docs/14-*.html`), following the existing pages' concept-first tone, and link it from
-  [`docs/index.html`](docs/index.html). Code comments teach the *code*; docs teach the *concept*.
+- **Ship the tutorial with the code.** Add a new `documentation/docs/NN-*.html` (mind the **+1 offset**: Step 13 →
+  `documentation/docs/14-*.html`), following the existing pages' concept-first tone, and link it from
+  [`documentation/docs/index.html`](documentation/docs/index.html). Code comments teach the *code*; docs teach the *concept*.
 - **Keep the CPU/GPU mirror + tests.** Shader math gets a pure CPU twin in a header — as
   [`src/renderer/Pbr.hpp`](src/renderer/Pbr.hpp) and [`src/scene/Light.hpp`](src/scene/Light.hpp)
   mirror the shaders — so `tests/` (doctest) can validate it headlessly. Add tests with each feature

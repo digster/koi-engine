@@ -8,7 +8,7 @@
 //
 //  Since Step 7 it also prepares LIGHTING: it outputs each vertex's WORLD-space
 //  position and normal (using the separate `model` matrix), which the fragment
-//  shader needs to shade in world space. See docs/08-lighting-and-normals.html.
+//  shader needs to shade in world space. See documentation/docs/08-lighting-and-normals.html.
 // ============================================================================
 #version 450
 

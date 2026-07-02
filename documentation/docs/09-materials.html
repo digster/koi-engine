@@ -142,23 +142,23 @@
 
   <h2>6. The code</h2>
 
-  <h3>The material — <a href="../src/scene/Material.hpp">src/scene/Material.hpp</a></h3>
+  <h3>The material — <a href="../../src/scene/Material.hpp">src/scene/Material.hpp</a></h3>
   <p>A header-only struct (texture + two floats). It lives in <code>scene/</code> next to
   <code>Node</code> and forward-declares <code>Texture</code> (it only stores a
   <code>shared_ptr</code> to one), so it stays lightweight.</p>
 
-  <h3>The node — <a href="../src/scene/Node.hpp">src/scene/Node.{hpp,cpp}</a></h3>
+  <h3>The node — <a href="../../src/scene/Node.hpp">src/scene/Node.{hpp,cpp}</a></h3>
   <p>Gains a <code>shared_ptr&lt;Material&gt;</code> beside its mesh, with
   <code>setMaterial</code>/<code>material()</code> and a <code>(mesh, material)</code>
   constructor — mirroring the existing mesh plumbing (verified in
-  <a href="../tests/test_node.cpp">test_node.cpp</a>).</p>
+  <a href="../../tests/test_node.cpp">test_node.cpp</a>).</p>
 
-  <h3>Binding it — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer</a> &amp; <a href="../shaders/triangle.frag">triangle.frag</a></h3>
+  <h3>Binding it — <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer</a> &amp; <a href="../../shaders/triangle.frag">triangle.frag</a></h3>
   <p><code>recordNode</code> binds the node's material texture and pushes its params per
   draw; <code>recordScene</code> no longer binds a global texture (it still pushes the
   light). The fragment shader adds the material UBO at <code>set=3, binding=1</code>.</p>
 
-  <h3>Building them — <a href="../src/core/Engine.cpp">Engine</a> &amp; <a href="../CMakeLists.txt">CMake</a></h3>
+  <h3>Building them — <a href="../../src/core/Engine.cpp">Engine</a> &amp; <a href="../../CMakeLists.txt">CMake</a></h3>
   <p><code>buildScene</code> loads the two textures, makes the three materials, and assigns
   them to nodes — the scene owns them, so the old global <code>texture_</code> is gone.
   CMake's <code>koi_assets</code> now copies <em>every</em> <code>assets/*.bmp</code> next to
@@ -170,7 +170,7 @@
     <li><strong>Make a mirror.</strong> Crank a material's <code>shininess</code> to 256 and
     <code>specStrength</code> up — watch the highlight shrink to a sharp glint.</li>
     <li><strong>Swap textures.</strong> Give the floor the dots and the cubes the checker in
-    <a href="../src/core/Engine.cpp">buildScene</a> — one line each.</li>
+    <a href="../../src/core/Engine.cpp">buildScene</a> — one line each.</li>
     <li><strong>Add a third texture.</strong> Drop a new <code>.bmp</code> in
     <code>assets/</code>, re-run CMake (the glob picks it up), and build a material from it.</li>
     <li><strong>Find the cost.</strong> Give all five cubes the <em>same</em> material and
@@ -190,8 +190,8 @@
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>

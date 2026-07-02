@@ -149,17 +149,17 @@
 
   <h2>6. The code</h2>
 
-  <h3>The math — <a href="../src/math/Vec.hpp">src/math/Vec.hpp</a> &amp; <a href="../src/math/Mat4.hpp">Mat4.hpp</a></h3>
+  <h3>The math — <a href="../../src/math/Vec.hpp">src/math/Vec.hpp</a> &amp; <a href="../../src/math/Mat4.hpp">Mat4.hpp</a></h3>
 
   <p>Hand-rolled, header-only, no GLM. <code>Vec.hpp</code> has <code>Vec2/3/4</code> with
   dot/cross/length/normalize; <code>Mat4.hpp</code> has the column-major matrix with
   <code>identity</code>, multiply, <code>translation</code>, <code>rotationX/Y/Z</code>,
   and <code>perspective</code> (right-handed, depth 0…1). It's pure code, so it's covered
-  by real unit tests in <a href="../tests/test_math.cpp">tests/test_math.cpp</a> (e.g.
+  by real unit tests in <a href="../../tests/test_math.cpp">tests/test_math.cpp</a> (e.g.
   that a 90° Z-rotation maps +X→+Y, and that <code>perspective</code> sends the near/far
   planes to z = 0/1).</p>
 
-  <h3>The vertex shader — <a href="../shaders/triangle.vert">shaders/triangle.vert</a></h3>
+  <h3>The vertex shader — <a href="../../shaders/triangle.vert">shaders/triangle.vert</a></h3>
 
   <pre><code>layout(location = 0) in vec3 inPosition;            // now 3D
 layout(location = 1) in vec3 inColor;
@@ -170,13 +170,13 @@ void main() {
     vColor = inColor;
 }</code></pre>
 
-  <h3>The cube — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> <code>createGeometry()</code></h3>
+  <h3>The cube — <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> <code>createGeometry()</code></h3>
 
   <p>Eight corners (each colored by its position, so the cube is literally the RGB color
   cube) and 36 indices = 12 triangles, two per face — the index buffer from Step 2 now
   earning its keep by reusing 8 vertices instead of storing 36. The vertex's
   <code>position</code> attribute widened from <code>FLOAT2</code> to <code>FLOAT3</code>
-  (see <a href="../src/renderer/Vertex.hpp">Vertex.hpp</a>; <code>sizeof(Vertex)</code> is
+  (see <a href="../../src/renderer/Vertex.hpp">Vertex.hpp</a>; <code>sizeof(Vertex)</code> is
   now 24).</p>
 
   <h3>Depth in the pipeline &amp; the render pass</h3>
@@ -233,8 +233,8 @@ void main() {
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>

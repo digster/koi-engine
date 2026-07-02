@@ -158,7 +158,7 @@
 
   <h2>5. The code</h2>
 
-  <h3>The vertex shader now has inputs — <a href="../shaders/triangle.vert">shaders/triangle.vert</a></h3>
+  <h3>The vertex shader now has inputs — <a href="../../shaders/triangle.vert">shaders/triangle.vert</a></h3>
 
   <p>The hardcoded arrays are gone. Each invocation receives one vertex's attributes
   through <code>in</code> variables, tagged with the <code>location</code>s from the layout
@@ -176,7 +176,7 @@ void main() {
   <p>The fragment shader is unchanged — it still just passes the interpolated color
   through. The shader stopped knowing the geometry; it now transforms whatever it's fed.</p>
 
-  <h3>One vertex, described once — <a href="../src/renderer/Vertex.hpp">src/renderer/Vertex.hpp</a></h3>
+  <h3>One vertex, described once — <a href="../../src/renderer/Vertex.hpp">src/renderer/Vertex.hpp</a></h3>
 
   <p>A small struct defines the CPU-side layout. Its byte layout <em>is</em> the contract
   the pipeline's attributes describe, so we pin it with <code>static_assert</code>s (and
@@ -188,7 +188,7 @@ void main() {
     float color[3];     // location 1, FLOAT3, offset 8
 };                      // sizeof == 20  → the vertex buffer "pitch"</code></pre>
 
-  <h3>The upload helper — <a href="../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a></h3>
+  <h3>The upload helper — <a href="../../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a></h3>
 
   <p><code>uploadToGpuBuffer()</code> performs the whole two-step move from §2 — create GPU
   buffer, create &amp; map transfer buffer, memcpy, copy pass, submit — and returns the
@@ -231,7 +231,7 @@ SDL_DrawGPUIndexedPrimitives(pass, /*num_indices=*/6, 1, 0, 0, 0);</code></pre>
 
   <ol>
     <li><strong>Recolor or move the corners.</strong> Edit the <code>vertices</code> array
-    in <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> and rebuild — no shader
+    in <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> and rebuild — no shader
     recompile needed, because the data lives in C++ now, not the shader.</li>
     <li><strong>Break the layout on purpose.</strong> Swap the two
     <code>SDL_GPUVertexAttribute</code> offsets (give position offset 8, color offset 0) and
@@ -255,8 +255,8 @@ SDL_DrawGPUIndexedPrimitives(pass, /*num_indices=*/6, 1, 0, 0, 0);</code></pre>
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>

@@ -181,7 +181,7 @@
 
   <p>Now let's map those concepts onto the actual source. Three files matter here.</p>
 
-  <h3><code>Engine</code> — the loop (<a href="../src/core/Engine.cpp">src/core/Engine.cpp</a>)</h3>
+  <h3><code>Engine</code> — the loop (<a href="../../src/core/Engine.cpp">src/core/Engine.cpp</a>)</h3>
 
   <p>The engine runs the <strong>game loop</strong>: handle input, render a frame,
   repeat.</p>
@@ -196,7 +196,7 @@
   loop; <code>SDL_EVENT_WINDOW_RESIZED</code> is just logged for now (the swapchain
   resizes itself).</p>
 
-  <h3><code>GpuRenderer</code> — device setup (<a href="../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a>)</h3>
+  <h3><code>GpuRenderer</code> — device setup (<a href="../../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a>)</h3>
 
   <p>The constructor builds the two long-lived GPU objects from §2:</p>
 
@@ -261,7 +261,7 @@ SDL_SubmitGPUCommandBuffer(cmd);</code></pre>
 
   <ol>
     <li><strong>Change the clear color.</strong> Edit <code>kClearColor</code> in
-    <a href="../src/core/Engine.cpp">src/core/Engine.cpp</a> (RGBA floats in
+    <a href="../../src/core/Engine.cpp">src/core/Engine.cpp</a> (RGBA floats in
     <code>0..1</code>) and rebuild. Make it animate over time as an extra challenge
     (hint: feed <code>SDL_GetTicks()</code> into a sine wave).</li>
     <li><strong>Watch the backend.</strong> Run with the GPU debug layer on (it already
@@ -282,8 +282,8 @@ SDL_SubmitGPUCommandBuffer(cmd);</code></pre>
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>

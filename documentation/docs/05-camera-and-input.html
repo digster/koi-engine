@@ -134,23 +134,23 @@
 
   <h2>6. The code</h2>
 
-  <h3>The view matrix — <a href="../src/math/Mat4.hpp">src/math/Mat4.hpp</a></h3>
+  <h3>The view matrix — <a href="../../src/math/Mat4.hpp">src/math/Mat4.hpp</a></h3>
 
   <p><code>lookAt(eye, center, up)</code> joins our math library, reusing the
-  <code>cross</code>/<code>normalize</code>/<code>dot</code> from <a href="../src/math/Vec.hpp">Vec.hpp</a>.
-  It's pure, so it's unit-tested in <a href="../tests/test_math.cpp">test_math.cpp</a> (a
+  <code>cross</code>/<code>normalize</code>/<code>dot</code> from <a href="../../src/math/Vec.hpp">Vec.hpp</a>.
+  It's pure, so it's unit-tested in <a href="../../tests/test_math.cpp">test_math.cpp</a> (a
   camera at (0,0,5) looking at the origin maps the origin to (0,0,−5) in view space).</p>
 
-  <h3>The camera — <a href="../src/scene/Camera.hpp">src/scene/Camera.{hpp,cpp}</a></h3>
+  <h3>The camera — <a href="../../src/scene/Camera.hpp">src/scene/Camera.{hpp,cpp}</a></h3>
 
   <p>Holds <code>position</code>, <code>yaw</code>, <code>pitch</code>; exposes
   <code>viewMatrix()</code>, <code>processKeyboard(keys, dt)</code> (WASD + E/Q), and
   <code>addMouseLook(dx, dy)</code>. It lives in <code>scene/</code>, above the renderer:
   it knows nothing about the GPU, it just hands over a view matrix. Its logic is covered by
-  <a href="../tests/test_camera.cpp">test_camera.cpp</a> (W moves along forward, pitch
+  <a href="../../tests/test_camera.cpp">test_camera.cpp</a> (W moves along forward, pitch
   clamps, …).</p>
 
-  <h3>Driving it — <a href="../src/core/Engine.cpp">src/core/Engine.cpp</a></h3>
+  <h3>Driving it — <a href="../../src/core/Engine.cpp">src/core/Engine.cpp</a></h3>
 
   <pre><code>// once, for an interactive run:
 SDL_SetWindowRelativeMouseMode(window, true);
@@ -163,7 +163,7 @@ while (running) {
     renderer.renderFrame(clearColor, camera.viewMatrix());      // hand over the view
 }</code></pre>
 
-  <h3>Drawing the cluster — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a></h3>
+  <h3>Drawing the cluster — <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a></h3>
 
   <p>The renderer now takes the view matrix. <code>recordScene()</code> binds the cube's
   geometry once, then for each position in a small hardcoded list it pushes that cube's
@@ -185,14 +185,14 @@ while (running) {
 
   <ol>
     <li><strong>Change the feel.</strong> Tweak <code>moveSpeed_</code> and
-    <code>mouseSensitivity_</code> in <a href="../src/scene/Camera.hpp">Camera.hpp</a>.</li>
+    <code>mouseSensitivity_</code> in <a href="../../src/scene/Camera.hpp">Camera.hpp</a>.</li>
     <li><strong>Prove delta-time works.</strong> Temporarily multiply movement by a constant
     instead of <code>dt</code>, then toggle vsync / frame caps and feel the speed change with
     frame rate — the bug <code>dt</code> prevents.</li>
     <li><strong>Break the pitch clamp.</strong> Remove the ±89° limit and look straight up —
     watch the view flip as it gimbal-locks.</li>
     <li><strong>Add cubes.</strong> Extend <code>kCubePositions</code> in
-    <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> and fly through your new scene.</li>
+    <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> and fly through your new scene.</li>
   </ol>
 
   <h2>9. What's next</h2>
@@ -205,8 +205,8 @@ while (running) {
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>

@@ -148,27 +148,27 @@ outColor = texture(uTex, vUV) * vec4(vColor, 1.0);</code></pre>
 
   <h2>7. The code</h2>
 
-  <h3>The texture — <a href="../src/renderer/Texture.hpp">src/renderer/Texture.{hpp,cpp}</a></h3>
+  <h3>The texture — <a href="../../src/renderer/Texture.hpp">src/renderer/Texture.{hpp,cpp}</a></h3>
   <p>A small RAII owner of one <code>SDL_GPUTexture</code>, exactly like <code>Mesh</code>:
   it holds a non-owning device pointer to release the texture, so the same lifetime rule
   applies — textures must be freed before the renderer's device (the Engine resets the
   texture before the renderer in <code>shutdown()</code>).</p>
 
-  <h3>Loading &amp; uploading — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer</a></h3>
+  <h3>Loading &amp; uploading — <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer</a></h3>
   <p><code>loadTexture(path)</code> does the load → convert → repack → upload, and
   <code>uploadToGpuTexture</code> is the 2D sibling of <code>uploadToGpuBuffer</code>.
   <code>createSampler</code> builds the one shared sampler. The image data itself lives in
-  <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a> only as UVs; the picture comes
+  <a href="../../src/renderer/Primitives.cpp">Primitives.cpp</a> only as UVs; the picture comes
   from <code>assets/uv_grid.bmp</code>, copied next to the binary by CMake's
   <code>koi_assets</code> target (mirroring how shaders are built).</p>
 
-  <h3>The vertex &amp; shaders — <a href="../src/renderer/Vertex.hpp">Vertex.hpp</a>, <a href="../shaders/triangle.vert">triangle.vert/.frag</a></h3>
+  <h3>The vertex &amp; shaders — <a href="../../src/renderer/Vertex.hpp">Vertex.hpp</a>, <a href="../../shaders/triangle.vert">triangle.vert/.frag</a></h3>
   <p><code>Vertex</code> gains a <code>uv[2]</code> (appended, so position/color keep their
   offsets); the pipeline gains a third vertex attribute; the vertex shader passes UV through;
-  the fragment shader samples. The cube in <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a>
+  the fragment shader samples. The cube in <a href="../../src/renderer/Primitives.cpp">Primitives.cpp</a>
   is now 24 vertices with per-face UVs; the plane tiles its UVs 0…6.</p>
 
-  <h3>Binding per frame — <a href="../src/renderer/GpuRenderer.cpp">recordScene</a> &amp; <a href="../src/core/Engine.cpp">Engine</a></h3>
+  <h3>Binding per frame — <a href="../../src/renderer/GpuRenderer.cpp">recordScene</a> &amp; <a href="../../src/core/Engine.cpp">Engine</a></h3>
   <p>The Engine loads the texture at startup and hands it to <code>renderFrame</code> /
   <code>captureFrame</code> (like it hands over the scene root); <code>recordScene</code>
   binds it once before walking the tree.</p>
@@ -176,10 +176,10 @@ outColor = texture(uTex, vUV) * vec4(vColor, 1.0);</code></pre>
   <h2>8. Try it yourself</h2>
 
   <ol>
-    <li><strong>Switch to NEAREST filtering</strong> in <a href="../src/renderer/GpuRenderer.cpp">createSampler</a>
+    <li><strong>Switch to NEAREST filtering</strong> in <a href="../../src/renderer/GpuRenderer.cpp">createSampler</a>
     and watch the checkerboard go crisp/blocky up close.</li>
     <li><strong>Change the tiling.</strong> Bump the plane's UV range in
-    <a href="../src/renderer/Primitives.cpp">Primitives.cpp</a> from 6 to 1 (one giant tile)
+    <a href="../../src/renderer/Primitives.cpp">Primitives.cpp</a> from 6 to 1 (one giant tile)
     or 20 (tiny tiles) — REPEAT does the rest.</li>
     <li><strong>CLAMP instead of REPEAT</strong> and set the plane UVs past 1.0: the edge
     texels stretch to the horizon instead of tiling.</li>
@@ -199,8 +199,8 @@ outColor = texture(uTex, vUV) * vec4(vColor, 1.0);</code></pre>
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>

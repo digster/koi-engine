@@ -10,7 +10,7 @@
 //  WHAT A MESH HOLDS
 //    * a vertex buffer — the raw corner data (position + color), in GPU memory.
 //    * an index buffer — which corners each triangle uses (see Vertex.hpp and
-//      docs/03 for why indexing pays off).
+//      documentation/docs/03 for why indexing pays off).
 //    * indexCount — how many indices to draw.
 //  All three already existed inside GpuRenderer; Mesh just gives them an owner
 //  with a clear lifetime. The Mesh also records its index ELEMENT SIZE (16- or

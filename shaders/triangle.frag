@@ -16,7 +16,7 @@
 //  ambient / metal reflections want image-based lighting — a later step, which is why
 //  metals look dark here away from the highlights). Only the directional sun (light 0)
 //  casts a shadow. The three BRDF terms mirror renderer/Pbr.hpp. See the D/G/F helpers
-//  below and docs/13-pbr-materials.html.
+//  below and documentation/docs/13-pbr-materials.html.
 // ============================================================================
 #version 450
 

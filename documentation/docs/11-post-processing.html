@@ -77,7 +77,7 @@
   <p>Why a triangle and not a quad? A quad's two triangles meet along a diagonal that the GPU
   rasterizes twice (a subtle seam and wasted work); one triangle has no interior edge. Better
   still, it needs <strong>no vertex buffer</strong>: the vertex shader
-  (<a href="../shaders/fullscreen.vert">fullscreen.vert</a>) synthesizes the three corners
+  (<a href="../../shaders/fullscreen.vert">fullscreen.vert</a>) synthesizes the three corners
   from <code>gl_VertexIndex</code> alone, and the draw call is literally "draw 3 vertices."</p>
 
   <h2>3. HDR: giving tone-mapping something to do</h2>
@@ -129,10 +129,10 @@
   things. We fake it in three stages, and this is where HDR pays off:</p>
 
   <ol>
-    <li><strong>Bright-pass</strong> (<a href="../shaders/bright.frag">bright.frag</a>): keep
+    <li><strong>Bright-pass</strong> (<a href="../../shaders/bright.frag">bright.frag</a>): keep
     only pixels brighter than a threshold — the genuinely-glowing bits — and discard the rest.
     Because the scene is HDR, "bright" can mean truly &gt; 1.0.</li>
-    <li><strong>Blur</strong> (<a href="../shaders/blur.frag">blur.frag</a>): smear those bright
+    <li><strong>Blur</strong> (<a href="../../shaders/blur.frag">blur.frag</a>): smear those bright
     spots outward with a <strong>Gaussian</strong>. A true 2D blur is expensive (an N×N box of
     taps), so we use a <strong>separable</strong> one: blurring horizontally and then vertically
     gives the same result with only N+N taps. We run it at <strong>half resolution</strong>
@@ -168,14 +168,14 @@
 
   <h2>9. The code</h2>
 
-  <h3>The shaders — <a href="../shaders/fullscreen.vert">fullscreen.vert</a> + four passes</h3>
+  <h3>The shaders — <a href="../../shaders/fullscreen.vert">fullscreen.vert</a> + four passes</h3>
   <p>One shared fullscreen vertex shader feeds
-  <a href="../shaders/bright.frag">bright.frag</a>, <a href="../shaders/blur.frag">blur.frag</a>,
-  <a href="../shaders/composite.frag">composite.frag</a> (exposure + ACES + vignette + gamma),
-  and <a href="../shaders/fxaa.frag">fxaa.frag</a>. Each is registered in
-  <a href="../CMakeLists.txt">CMakeLists.txt</a> and compiled GLSL → SPIR-V → MSL like the rest.</p>
+  <a href="../../shaders/bright.frag">bright.frag</a>, <a href="../../shaders/blur.frag">blur.frag</a>,
+  <a href="../../shaders/composite.frag">composite.frag</a> (exposure + ACES + vignette + gamma),
+  and <a href="../../shaders/fxaa.frag">fxaa.frag</a>. Each is registered in
+  <a href="../../CMakeLists.txt">CMakeLists.txt</a> and compiled GLSL → SPIR-V → MSL like the rest.</p>
 
-  <h3>The pipeline — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer</a></h3>
+  <h3>The pipeline — <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer</a></h3>
   <p><code>createPostResources</code> builds the four fullscreen pipelines (no vertex input, no
   depth) and a linear-clamp sampler. <code>ensureSceneTargets</code> lazily creates and resizes
   the off-screen textures — the HDR scene target, the half-res bloom ping-pong pair, and the LDR
@@ -185,11 +185,11 @@
   <code>runPostChain</code>) and is shared by both the live and headless-capture paths, so the
   captured BMP always matches the window.</p>
 
-  <h3>The controls — <a href="../src/core/Engine.cpp">Engine</a> &amp; <a href="../src/renderer/PostProcess.hpp">PostProcess.hpp</a></h3>
+  <h3>The controls — <a href="../../src/core/Engine.cpp">Engine</a> &amp; <a href="../../src/renderer/PostProcess.hpp">PostProcess.hpp</a></h3>
   <p><code>PostSettings</code> holds the knobs; the Engine toggles them from the keyboard and
   hands them to the renderer each frame, which pushes them into the shaders' uniforms. The pure
   helpers (half-resolution sizing, the luma weights, the ACES curve) live in the header so they
-  can be unit-tested headlessly in <a href="../tests/test_post.cpp">test_post.cpp</a>.</p>
+  can be unit-tested headlessly in <a href="../../tests/test_post.cpp">test_post.cpp</a>.</p>
 
   <h2>10. Try it yourself</h2>
 
@@ -202,7 +202,7 @@
     tone-mapping keeps the brights from clipping.</li>
     <li><strong>Exaggerate the bloom.</strong> Lower <code>bloomThreshold</code> (e.g. to 0.4)
     and raise <code>bloomIntensity</code> in
-    <a href="../src/renderer/PostProcess.hpp">PostProcess.hpp</a> — the whole scene hazes over,
+    <a href="../../src/renderer/PostProcess.hpp">PostProcess.hpp</a> — the whole scene hazes over,
     making the effect unmistakable.</li>
     <li><strong>Break the order on purpose.</strong> Move the gamma encode out of
     <code>composite.frag</code>, or run FXAA before tone-mapping, and see why the pipeline is
@@ -220,8 +220,8 @@
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>

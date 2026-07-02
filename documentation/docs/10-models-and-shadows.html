@@ -139,20 +139,20 @@
 
   <h2>8. The code</h2>
 
-  <h3>The loader — <a href="../src/renderer/ModelLoader.cpp">src/renderer/ModelLoader.cpp</a></h3>
+  <h3>The loader — <a href="../../src/renderer/ModelLoader.cpp">src/renderer/ModelLoader.cpp</a></h3>
   <p>Dispatches by extension: <code>.obj</code> → tinyobjloader (+ dedup), <code>.glb/.gltf</code>
   → cgltf. The third-party headers are pulled into this one translation unit (compiled with
   warnings off, since we don't own that code). <code>Mesh</code> gained a 32-bit index path
-  in <a href="../src/renderer/GpuRenderer.cpp">createMesh</a>.</p>
+  in <a href="../../src/renderer/GpuRenderer.cpp">createMesh</a>.</p>
 
-  <h3>The shadow pass — <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer</a> &amp; <a href="../shaders/shadow.vert">shadow.vert/.frag</a></h3>
+  <h3>The shadow pass — <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer</a> &amp; <a href="../../shaders/shadow.vert">shadow.vert/.frag</a></h3>
   <p>The renderer owns the shadow map, a CLAMP sampler, and the depth-only pipeline;
   <code>renderShadowPass</code> draws the scene's depth from the light before the main pass.
   <code>recordScene</code> binds the shadow map (fragment slot 1) and pushes the light matrix
-  into the light uniform; <a href="../shaders/triangle.frag">triangle.frag</a> does the
+  into the light uniform; <a href="../../shaders/triangle.frag">triangle.frag</a> does the
   lookup, bias, and PCF.</p>
 
-  <h3>The scene — <a href="../src/core/Engine.cpp">Engine</a></h3>
+  <h3>The scene — <a href="../../src/core/Engine.cpp">Engine</a></h3>
   <p><code>buildScene</code> loads <code>sphere.glb</code> and <code>torus.obj</code>, gives
   them glossy materials, and places them flanking the cubes.</p>
 
@@ -161,9 +161,9 @@
   <ol>
     <li><strong>Drop in a model.</strong> Export any low-poly <code>.obj</code> or
     <code>.glb</code> from Blender into <code>assets/</code>, re-run CMake, and load it in
-    <a href="../src/core/Engine.cpp">buildScene</a>.</li>
+    <a href="../../src/core/Engine.cpp">buildScene</a>.</li>
     <li><strong>Move the sun.</strong> Change the light direction in
-    <a href="../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> and watch the shadows swing
+    <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> and watch the shadows swing
     — the shadow pass and the shading use the same direction, so they stay in sync.</li>
     <li><strong>See the acne.</strong> Set the depth bias to 0 and look for the shimmering
     self-shadowing it was preventing.</li>
@@ -182,8 +182,8 @@
 
 <footer class="site-footer">
   Koi Engine · a learn-by-building 3D engine ·
-  <a href="../README.md">README</a> ·
-  <a href="../ARCHITECTURE.md">Architecture</a>
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
 </footer>
 
 </body>
