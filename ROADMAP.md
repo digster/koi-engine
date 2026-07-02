@@ -24,14 +24,16 @@ Three principles shape the plan:
   number, because [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) is a prerequisites
   page rather than a step. So **Step N → `documentation/docs/(N+1)-*.html`** (e.g. Step 12 →
   [`documentation/docs/13-pbr-materials.html`](documentation/docs/13-pbr-materials.html)).
-- **The next milestone is Step 13**, which will ship as `documentation/docs/14-*.html`.
+- **The next milestone is Step 14** (skybox), which will ship as `documentation/docs/15-*.html`.
+  Step 13 shipped as [`documentation/docs/14-texture-and-normal-maps.html`](documentation/docs/14-texture-and-normal-maps.html).
 
 ---
 
-## ✅ Completed — Steps 0–12
+## ✅ Completed — Steps 0–13
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
-post-processed shading of loaded models under many lights. Each step has a concept-first tutorial —
+post-processed shading of loaded models under many lights, with per-pixel texture + normal maps.
+Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
 [`documentation/docs/index.html`](documentation/docs/index.html).
 
@@ -50,6 +52,7 @@ linked per row below (note how the doc number runs one ahead of the step), and a
 | **10** | Post-processing | offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA | [documentation/docs/11](documentation/docs/11-post-processing.html) |
 | **11** | Multiple lights | directional/point/spot lights, distance attenuation, spot cones | [documentation/docs/12](documentation/docs/12-multiple-lights.html) |
 | **12** | PBR materials | Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation | [documentation/docs/13](documentation/docs/13-pbr-materials.html) |
+| **13** | Texture & normal maps | per-pixel albedo/metallic-roughness/AO maps, tangent space + TBN matrix (normal mapping), mipmaps + anisotropic filtering | [documentation/docs/14](documentation/docs/14-texture-and-normal-maps.html) |
 
 > The prerequisites page [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) (building,
 > running, testing, project layout) is not a numbered step.
@@ -58,28 +61,23 @@ linked per row below (note how the doc number runs one ahead of the step), and a
 
 ## 🔜 Up next — the concrete milestones
 
-The immediate path continues the physically-based rendering thread that Step 12 opened. These three
-are **numbered** because their order is fixed by dependency: normal mapping needs a tangent, IBL
-needs a cubemap, and both build toward "metals that reflect their surroundings."
+The immediate path continues the physically-based rendering thread that Step 12 opened. These are
+**numbered** because their order is fixed by dependency: IBL needs a cubemap, which the skybox
+provides, and both build toward "metals that reflect their surroundings."
 
-### Step 13 — Texture maps & normal mapping
-- **Goal:** drive material parameters per-*pixel* from textures, and add fine surface detail with
-  normal maps.
-- **Concepts:** albedo / metallic / roughness / AO texture maps; **tangent space** and the **TBN
-  matrix**; why a normal map needs a per-vertex tangent to orient it. Also **mipmaps** and
-  **anisotropic filtering** — detail textures shimmer without a mip chain (today every texture is
-  a single level, `num_levels = 1` in [`src/renderer/GpuRenderer.cpp`](src/renderer/GpuRenderer.cpp)),
-  and this is the step where per-pixel sampling starts to dominate the image.
-- **Likely touches:** add a `tangent` to [`src/renderer/Vertex.hpp`](src/renderer/Vertex.hpp);
-  generate tangents in [`src/renderer/Primitives.cpp`](src/renderer/Primitives.cpp) and
-  [`src/renderer/ModelLoader.cpp`](src/renderer/ModelLoader.cpp); build the TBN and sample the maps
-  in [`shaders/triangle.vert`](shaders/triangle.vert) / [`shaders/triangle.frag`](shaders/triangle.frag);
-  extend [`src/scene/Material.hpp`](src/scene/Material.hpp) with texture handles; generate mips at
-  upload time (`SDL_GenerateMipmapsForGPUTexture`) and enable mip/aniso sampling on the shared sampler.
-- **Verify with:** the Khronos glTF sample **Damaged Helmet** — the canonical PBR test model, it
-  ships every map this step adds (albedo, metallic-roughness, normal, AO, emissive).
-- **Why here:** it's the smallest step off Step 12, and the tangent it introduces is a prerequisite
-  for a lot of what follows.
+### ✅ Step 13 — Texture maps & normal mapping *(done — [tutorial](documentation/docs/14-texture-and-normal-maps.html))*
+- **Shipped:** per-pixel material maps — a packed **metallic-roughness** map (glTF G=roughness,
+  B=metallic), an **AO** map, and a tangent-space **normal map** — plus **mipmaps** and
+  **anisotropic filtering**. A per-vertex `tangent` joined [`Vertex`](src/renderer/Vertex.hpp) (pure
+  TBN math in [`src/renderer/Tangents.hpp`](src/renderer/Tangents.hpp), unit-tested);
+  [`Material`](src/scene/Material.hpp) gained optional map handles with neutral 1×1 fallbacks (so
+  map-less materials are unchanged — no shader permutation); the fragment shader reads five samplers
+  and perturbs the normal via the TBN basis. Demo maps are generated by
+  [`tools/gen_textures.py`](tools/gen_textures.py).
+- **Deliberately deferred to a later step:** glTF PBR **material/texture import** + **PNG/JPG
+  loading**, and therefore the **Damaged Helmet** verification (it needs both) — see *Full glTF PBR
+  material import* under Geometry & content. This step verified with generated BMP maps on the demo
+  meshes via `KOI_CAPTURE`.
 
 ### Step 14 — Skybox & environment maps
 - **Goal:** render an environment — a cubemap sky — behind the scene.
@@ -294,9 +292,9 @@ Genuinely uncertain and likely far out — listed so they're on the radar, not c
 If you're unsure what to pick up next, a sensible interleaving that respects the dependencies:
 
 ```
-Step 13  texture + normal maps (+ mipmaps)
+Step 13  texture + normal maps (+ mipmaps)          ✅ done
    │
-Step 14  skybox / cubemaps ──▶ Step 15  IBL
+Step 14  skybox / cubemaps ──▶ Step 15  IBL          ◀── next
    │
 engine/app separation ──▶ CI + golden images     ◀── highest production leverage; do early
    │

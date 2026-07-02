@@ -18,7 +18,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     koi::Engine engine;
 
     const koi::Engine::Config config{
-        .title  = "Koi Engine — Step 12: PBR materials",
+        .title  = "Koi Engine — Step 13: Texture & normal maps",
         .width  = 1280,
         .height = 720,
     };

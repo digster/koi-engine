@@ -129,11 +129,25 @@ private:
     // `pixels` (tightly packed RGBA, 4 bytes/texel) into it via a staging transfer
     // buffer + copy pass — the 2D mirror of uploadToGpuBuffer. Returns nullptr
     // (after logging) on failure. The helper behind loadTexture.
-    SDL_GPUTexture* uploadToGpuTexture(const void* pixels, Uint32 width, Uint32 height);
+    //
+    // When `withMips` is true the texture is given a full mip chain (num_levels from
+    // its size) and the extra COLOR_TARGET usage the GPU needs to generate them, and
+    // SDL_GenerateMipmapsForGPUTexture is run after the upload — so minified/oblique
+    // textures don't shimmer (Step 13). Tiny 1×1 fallbacks pass false.
+    SDL_GPUTexture* uploadToGpuTexture(const void* pixels, Uint32 width, Uint32 height,
+                                       bool withMips = true);
 
-    // Create the one sampler all textures are read through (linear filtering,
-    // REPEAT wrap so tiled UVs work). Called once from the constructor.
+    // Create a solid-colour 1×1 RGBA texture (no mips) — used for the neutral map
+    // fallbacks a material binds when it lacks a given map. See whiteTex_/flatNormalTex_.
+    SDL_GPUTexture* createSolidTexture(Uint8 r, Uint8 g, Uint8 b, Uint8 a);
+
+    // Create the one sampler all textures are read through (linear filtering, mipmap
+    // + anisotropic filtering, REPEAT wrap so tiled UVs work). Called once from the ctor.
     bool createSampler();
+
+    // Create the neutral 1×1 fallback maps (whiteTex_, flatNormalTex_) a material binds
+    // when it lacks a metallic-roughness / AO / normal map. Called once from the ctor.
+    bool createFallbackTextures();
 
     // Create the shadow-mapping resources (Step 9): a depth texture that is both a
     // render target and sampleable (the "shadow map"), a CLAMP sampler to read it,
@@ -236,6 +250,14 @@ private:
     // tiled UVs repeat). Reusable device state, independent of any particular
     // texture, so the renderer owns a single shared one. Created in the constructor.
     SDL_GPUSampler* sampler_ = nullptr;  // owned
+
+    // Neutral 1×1 fallback maps (Step 13), bound when a material omits a given map.
+    // whiteTex_ (255,255,255) makes `factor × sampledChannel` reduce to the scalar
+    // factor (metallic-roughness) and AO reduce to 1; flatNormalTex_ (128,128,255)
+    // decodes to tangent-space (0,0,1), i.e. no normal perturbation. Together they let
+    // map-less materials render exactly as they did in Step 12, with no shader branch.
+    SDL_GPUTexture* whiteTex_      = nullptr;  // owned
+    SDL_GPUTexture* flatNormalTex_ = nullptr;  // owned
 
     // The depth buffer: a texture the same size as the color target that stores,
     // per pixel, the depth of the nearest fragment drawn so far. With the depth

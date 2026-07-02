@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Texture &amp; Normal Maps · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html" aria-current="page">Texture &amp; Normal Maps</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Texture &amp; Normal Maps</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 13:</strong> stop describing a surface with a handful of numbers and
+    start describing it <strong>per pixel</strong>, from images. We add three PBR texture maps —
+    <strong>metallic-roughness</strong>, <strong>ambient occlusion</strong>, and the conceptually
+    rich one, a <strong>normal map</strong> — so a single flat face can vary from polished metal to
+    rough dielectric and show bumps and grooves it doesn't actually have.</p>
+    <p>Two supporting ideas arrive with them: <strong>tangent space</strong> and the <strong>TBN
+    matrix</strong> (what makes a normal map usable), and <strong>mipmaps</strong> +
+    <strong>anisotropic filtering</strong> (what stops per-pixel textures from shimmering as they
+    recede).</p>
+  </blockquote>
+
+  <h2>1. From one number to a whole image</h2>
+
+  <p>In <a href="13-pbr-materials.html">Step 12</a> a surface was two dials: one
+  <code>metallic</code> and one <code>roughness</code> value for the <em>entire</em> object. Real
+  surfaces aren't uniform — a scuffed metal panel is glossy on the faces and rough in the grooves;
+  rust is metal in some spots and not in others. To capture that, we let each parameter vary across
+  the surface by reading it from a <strong>texture map</strong> instead of a constant, sampled at
+  the same <code>uv</code> we already use for the base colour.</p>
+
+  <p>We keep the old scalars, but they become <strong>factors</strong> that multiply the sampled
+  map (glTF calls these <code>metallicFactor</code> / <code>roughnessFactor</code>). So a material
+  can be "the map, scaled by 0.5", or — if it has no map at all — just the scalar, exactly like
+  Step 12. More on that graceful fallback in §7.</p>
+
+  <h3>The metallic-roughness map (and its packing trick)</h3>
+
+  <p>Rather than ship two grayscale images, the glTF standard <strong>packs both into one
+  texture</strong>: the <strong>green</strong> channel is roughness, the <strong>blue</strong>
+  channel is metallic (red is left for ambient occlusion or unused). One fetch, two parameters — and
+  because it's the industry convention, the same asset will drop straight into a future glTF
+  importer. Our shader reads <code>metallic = factor.x · tex.b</code> and
+  <code>roughness = factor.y · tex.g</code>.</p>
+
+  <h3>The ambient-occlusion (AO) map</h3>
+
+  <p>AO is a grayscale map (we read its red channel) that pre-bakes <em>how exposed</em> each point
+  is to surrounding light: 1.0 in the open, dark in creases and contact points where ambient light
+  can't easily reach. It multiplies only the <strong>ambient</strong> term — direct light already
+  has the shadow map for occlusion — so it quietly deepens the crevices.</p>
+
+  <h2>2. Normal maps: detail without geometry</h2>
+
+  <p>The headline feature. A model's triangles are coarse, but real surfaces have fine relief:
+  brick mortar, fabric weave, pores, panel seams. Adding enough triangles to model all that would
+  be ruinously expensive. A <strong>normal map</strong> is the classic cheat: an image where each
+  texel stores a <em>surface normal</em>, so lighting is computed as if the surface tilted that way
+  at that pixel — even though the geometry is dead flat. The silhouette stays low-poly, but the
+  <em>shading</em> gains all the bumps.</p>
+
+  <p>Recall from <a href="08-lighting-and-normals.html">Step 7</a> that lighting is basically
+  <code>N · L</code>: how aligned the surface normal is with the light. If we perturb <code>N</code>
+  per pixel, we perturb the brightness per pixel — and the eye reads that as bumps.</p>
+
+  <h3>Why "tangent space"?</h3>
+
+  <p>The obvious idea — store each texel's normal as a world-space direction — fails immediately:
+  the texture would only be correct for one fixed orientation, and couldn't wrap around a curved or
+  moving surface. So normal maps store the normal in <strong>tangent space</strong>: a coordinate
+  frame that <em>follows the surface</em>, defined relative to how the texture is laid out. In that
+  frame, "straight out of the surface" is always <code>(0, 0, 1)</code> — which is why unmodified
+  normal maps look overwhelmingly <strong>blue</strong> (the B channel ≈ 1, the flat direction).
+  A texel that tilts the normal a little encodes small deviations in R and G.</p>
+
+  <h2>3. The TBN matrix</h2>
+
+  <p>To light with a tangent-space normal we must rotate it into world space, and that rotation is a
+  3×3 matrix built from three world-space axes at the surface point:</p>
+
+  <pre class="diagram">   N  (normal)     — straight out of the surface   (we've had this since Step 7)
+   T  (tangent)    — the direction U increases along the surface
+   B  (bitangent)  — the direction V increases       (= N × T)
+
+   TBN = [ T  B  N ]   (its columns)
+
+   world_normal = TBN · (texel.rgb · 2 − 1)
+                       └── decode [0,1] back to [−1,1] ──┘</pre>
+
+  <p>Read the multiply column by column: a tangent-space normal <code>(x, y, z)</code> becomes
+  <code>x·T + y·B + z·N</code>. A flat texel <code>(0, 0, 1)</code> maps to just <code>N</code> — the
+  geometric normal, unchanged — while a tilted texel leans toward <code>T</code> or <code>B</code>.
+  The <code>· 2 − 1</code> undoes the encoding that squeezed the signed direction into an image's
+  <code>[0, 1]</code> byte range.</p>
+
+  <p><code>N</code> we already output. <code>B</code> is just <code>N × T</code>. The one genuinely
+  new thing we need is <strong>T</strong>, the tangent — and unlike the normal, it can't be guessed
+  from the geometry alone, because it's defined by <em>which way the UVs run</em> across the
+  surface. That's why Step 13 touches so much: <strong>the tangent has to become a per-vertex
+  attribute.</strong></p>
+
+  <blockquote>
+    <p><strong>A simplification we make:</strong> we store the tangent as a plain <code>vec3</code>
+    and reconstruct the bitangent as <code>N × T</code>. That assumes the UVs have a consistent
+    handedness; a surface with <em>mirrored</em> UVs would need a signed (<code>vec4</code>) tangent
+    whose sign flips the bitangent. It's the right call for our meshes — noted so you know the
+    corner we cut.</p>
+  </blockquote>
+
+  <h3>Where the tangent comes from</h3>
+
+  <ul>
+    <li><strong>Our primitives</strong> (cube, plane) are axis-aligned with trivial UVs, so we
+    read the tangent off by inspection — the model-space direction of increasing U on each face —
+    and hardcode it beside the normal, in <a href="../../src/renderer/Primitives.cpp">Primitives.cpp</a>.</li>
+    <li><strong>Loaded models</strong> compute it from the geometry: for each triangle, solve for the
+    direction that maps the texture's U-axis onto the surface using the edge vectors and the matching
+    UV deltas (the standard "Lengyel" method), accumulate it per shared vertex, then re-orthonormalise
+    it against the normal. glTF files that already ship a <code>TANGENT</code> attribute are used
+    directly. The pure math lives in <a href="../../src/renderer/Tangents.hpp">Tangents.hpp</a>,
+    unit-tested headlessly like our other shader twins.</li>
+  </ul>
+
+  <h2>4. Mipmaps: why minified textures shimmer</h2>
+
+  <p>Now that per-pixel detail dominates the image, a sampling problem that was always lurking gets
+  loud. When a textured surface recedes into the distance, one screen pixel can cover <em>many</em>
+  texels. Sampling just one of them is a coin-flip — and as the surface (or camera) moves, which
+  texel "wins" flickers, so distant textures <strong>crawl and sparkle</strong>. This is aliasing:
+  we're point-sampling a signal far denser than our pixels.</p>
+
+  <p>The fix is a <strong>mipmap chain</strong>: the texture pre-shrunk to ½, ¼, ⅛ … down to 1×1,
+  each level a properly averaged version of the one above.</p>
+
+  <pre class="diagram">   level 0        level 1     level 2   level 3  …
+   ┌────────┐     ┌────┐      ┌──┐      ┌┐
+   │ 256²   │  →  │128²│  →   │64│  →   ││  →  … → 1×1
+   └────────┘     └────┘      └──┘      └┘
+   full detail    each level = the previous one, box-averaged down</pre>
+
+  <p>When a surface is far away the GPU reads a <em>smaller, pre-averaged</em> level, so one pixel
+  gets the average of the texels it covers instead of a random one — steady, not sparkly. With
+  <strong>trilinear</strong> filtering the sampler even blends between the two nearest levels so the
+  transition is smooth. We generate the whole chain at upload time with one call
+  (<code>SDL_GenerateMipmapsForGPUTexture</code>); the texture just needs to be created with enough
+  levels (and, so the GPU can render the smaller ones, the extra "color target" usage flag).</p>
+
+  <h2>5. Anisotropic filtering: the grazing-angle blur</h2>
+
+  <p>Mipmaps fix shimmer but introduce their own artifact. A mip level is shrunk <em>equally</em> in
+  both directions — it's square. But a floor viewed at a shallow angle is compressed a lot along the
+  direction going away from you and barely at all across your view. A plain mipmapped sampler has to
+  pick one level for the whole pixel, so to avoid shimmer along the squashed axis it over-blurs the
+  other — and the receding floor turns to mush.</p>
+
+  <p><strong>Anisotropic</strong> ("not the same in all directions") filtering fixes this by taking
+  several taps <em>along</em> the stretched direction and averaging them, keeping the sharp axis
+  sharp. It's a quality knob — <code>max_anisotropy</code> caps how many taps (we use 8). Enabling
+  it on our one shared sampler is what keeps the tiled floor crisp all the way to the horizon.</p>
+
+  <h2>6. Putting it in the shader</h2>
+
+  <pre class="diagram">  // build the TBN and perturb the geometric normal
+  N = normalize(vWorldNormal);
+  T = normalize(vWorldTangent − N · dot(N, vWorldTangent));   // Gram-Schmidt
+  B = cross(N, T);
+  N = normalize( mat3(T,B,N) · (texture(uNormalMap, uv).xyz · 2 − 1) );
+
+  // per-pixel material (glTF packing), scaled by the scalar factors
+  mr        = texture(uMetalRoughMap, uv).rgb;
+  metallic  = factor.x · mr.b;
+  roughness = factor.y · mr.g;
+  ao        = texture(uAoMap, uv).r;
+
+  // …then the exact same Cook-Torrance loop as Step 12, using this N…
+  color = ambient · albedo · ao + Lo;      // AO darkens only the ambient fill</pre>
+
+  <p>The <strong>Cook-Torrance BRDF itself is unchanged</strong> — Step 13 only changes <em>where the
+  inputs come from</em> (a perturbed <code>N</code>, per-pixel <code>metallic</code>/
+  <code>roughness</code>). That's the payoff of building on a physically-based model: richer inputs
+  slot straight in.</p>
+
+  <h2>7. The fallback trick: optional maps, no shader branches</h2>
+
+  <p>Not every material has every map. The tempting fix — a "has normal map?" boolean uniform and an
+  <code>if</code> in the shader — is a trap: each such flag doubles the number of shader variants the
+  engine must manage. We avoid it entirely with <strong>neutral fallback textures</strong>. The
+  renderer owns two 1×1 textures: white <code>(255,255,255)</code> and a flat normal
+  <code>(128,128,255)</code>. A material that omits a map binds the fallback, and the maths above
+  <em>reduces exactly</em> to the scalar-only Step 12 result:</p>
+
+  <ul>
+    <li>flat normal decodes to <code>(0,0,1)</code> → <code>N</code> stays the geometric normal;</li>
+    <li>white metallic-roughness → <code>factor · 1</code> = the scalar factor;</li>
+    <li>white AO → <code>1</code>, no darkening.</li>
+  </ul>
+
+  <p>One code path, correct for materials with maps and without. In the demo the dotted satellite
+  cubes, sphere, and torus take this path and look identical to Step 12; only the hub cube and floor
+  carry the full "tiled panel" map set.</p>
+
+  <h2>8. The code</h2>
+
+  <h3>The tangent — <a href="../../src/renderer/Vertex.hpp">Vertex.hpp</a> + <a href="../../src/renderer/Tangents.hpp">Tangents.hpp</a></h3>
+  <p><code>Vertex</code> grew a fifth attribute, <code>tangent</code> (pitch 44 → 56 bytes), added
+  last so earlier offsets hold; the pipeline's vertex layout and
+  <a href="../../tests/test_vertex.cpp">test_vertex.cpp</a> pin the new contract.
+  <code>Tangents.hpp</code> holds the pure tangent math (unit-tested in
+  <a href="../../tests/test_tangent.cpp">test_tangent.cpp</a>); primitives hardcode their tangents,
+  <a href="../../src/renderer/ModelLoader.cpp">ModelLoader</a> computes or reads them.</p>
+
+  <h3>The material — <a href="../../src/scene/Material.hpp">scene/Material.hpp</a></h3>
+  <p>Alongside the albedo it now carries three optional map handles
+  (<code>metalRough</code>, <code>normalMap</code>, <code>ao</code>); the <code>metallic</code>/
+  <code>roughness</code> scalars became factors. The maps go last so existing positional
+  initialisers keep working.</p>
+
+  <h3>The renderer — <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a></h3>
+  <p>The fragment shader now reads <strong>five</strong> samplers (four per-material maps at slots
+  0–3, the shadow map moved to slot 4). <code>uploadToGpuTexture</code> gained mip generation, the
+  shared sampler gained anisotropy, and the renderer creates the two neutral fallback textures.
+  <code>recordNode</code> binds each material's four maps per draw, substituting a fallback for any
+  that are null.</p>
+
+  <h3>The maps — <a href="../../tools/gen_textures.py">tools/gen_textures.py</a></h3>
+  <p>A small Python script (run with <code>uv</code>) generates the demo's "tiled panel" maps —
+  a beveled normal map, a packed metallic-roughness map whose tiles alternate metal/dielectric, an
+  AO map, and a plain albedo — as BMPs (the format our loader reads).</p>
+
+  <h2>9. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Kill the bump.</strong> Point the hub's <code>normalMap</code> at the flat fallback
+    (or set it null) in <a href="../../src/core/Engine.cpp">Engine.cpp</a> and rebuild: the beveled
+    tile relief flattens to a plain cube face — that's the normal map's whole contribution.</li>
+    <li><strong>Deepen the relief.</strong> Raise <code>BUMP_STRENGTH</code> in
+    <a href="../../tools/gen_textures.py">gen_textures.py</a>, regenerate, and watch the grooves get
+    steeper.</li>
+    <li><strong>See the shimmer mipmaps prevent.</strong> Force <code>num_levels = 1</code> (no mip
+    chain) and turn <code>enable_anisotropy</code> off, then fly toward the horizon: the tiled floor
+    starts to crawl and sparkle — the aliasing §4 and §5 exist to fix.</li>
+    <li><strong>Verify headlessly.</strong> <code>KOI_CAPTURE=out.bmp ./build/koi-engine</code> then
+    <code>sips -s format png out.bmp --out out.png</code> — the hub cube shows the metal/dielectric
+    checker and beveled tiles side by side with the map-less satellites.</li>
+  </ol>
+
+  <h2>10. What's next</h2>
+
+  <p>➡️ <strong>Give the scene a world to reflect.</strong> The tangent we just added unblocks a lot,
+  but the immediate thread is the environment: a <strong>skybox</strong> (a cubemap sky behind the
+  scene), which is the prerequisite for <strong>image-based lighting (IBL)</strong> — the step that
+  finally lets ambient light and those dark metals reflect their surroundings, closing the loop
+  Step 12 opened. See the <a href="../../ROADMAP.md">roadmap</a> for the sequenced plan.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

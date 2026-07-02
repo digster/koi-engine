@@ -106,6 +106,15 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     }
 
     // ------------------------------------------------------------------------
+    //  4b. Create the neutral 1×1 fallback maps (Step 13) a material binds when it
+    //      lacks a metallic-roughness / normal / AO map. If this fails, isValid()
+    //      stays false and the Engine reports it.
+    // ------------------------------------------------------------------------
+    if (!createFallbackTextures()) {
+        return;
+    }
+
+    // ------------------------------------------------------------------------
     //  5. Create the shadow-mapping resources (shadow map texture, its sampler,
     //     and the depth-only pipeline). If this fails, isValid() reports it.
     // ------------------------------------------------------------------------
@@ -151,7 +160,9 @@ bool GpuRenderer::createTrianglePipeline() {
     // The vertex shader declares one uniform buffer (the MVP matrix); the
     // fragment shader declares none.
     SDL_GPUShader* vertexShader   = loadShader(device_, "triangle.vert", SDL_GPU_SHADERSTAGE_VERTEX, /*numUniformBuffers=*/1);
-    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/2, /*numSamplers=*/2);
+    // Step 13: the fragment shader now reads FIVE samplers — the four per-material maps
+    // (albedo, metallic-roughness, normal, AO) plus the shared shadow map.
+    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/2, /*numSamplers=*/5);
     if (vertexShader == nullptr || fragmentShader == nullptr) {
         // loadShader already logged the cause. Clean up whichever did load.
         if (vertexShader != nullptr)   SDL_ReleaseGPUShader(device_, vertexShader);
@@ -203,7 +214,7 @@ bool GpuRenderer::createTrianglePipeline() {
     vertexBufferDesc.pitch      = static_cast<Uint32>(sizeof(Vertex));
     vertexBufferDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
 
-    const SDL_GPUVertexAttribute vertexAttributes[4] = {
+    const SDL_GPUVertexAttribute vertexAttributes[5] = {
         // location 0: inPosition (vec3) at the start of the vertex.
         { /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
           offsetof(Vertex, position) },
@@ -216,6 +227,9 @@ bool GpuRenderer::createTrianglePipeline() {
         // location 3: inNormal (vec3) right after the uv — Step 7's surface normal.
         { /*location=*/3, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
           offsetof(Vertex, normal) },
+        // location 4: inTangent (vec3) right after the normal — Step 13's TBN basis.
+        { /*location=*/4, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+          offsetof(Vertex, tangent) },
     };
 
     SDL_GPUGraphicsPipelineCreateInfo pipelineInfo = {};
@@ -224,7 +238,7 @@ bool GpuRenderer::createTrianglePipeline() {
     pipelineInfo.vertex_input_state.vertex_buffer_descriptions = &vertexBufferDesc;
     pipelineInfo.vertex_input_state.num_vertex_buffers         = 1;
     pipelineInfo.vertex_input_state.vertex_attributes          = vertexAttributes;
-    pipelineInfo.vertex_input_state.num_vertex_attributes      = 4;
+    pipelineInfo.vertex_input_state.num_vertex_attributes      = 5;
     // TRIANGLELIST = every 3 vertices form one independent triangle.
     pipelineInfo.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
 
@@ -268,17 +282,48 @@ bool GpuRenderer::createSampler() {
     //   * address mode: REPEAT wraps texture coordinates outside [0,1] back into
     //     range, so a UV running 0..N tiles the image N times — that's what lets
     //     the ground plane repeat the checkerboard across the floor.
+    // Step 13 makes two of these settings finally bite. `mipmap_mode = LINEAR` now
+    // interpolates BETWEEN mip levels (trilinear filtering) — meaningful only now that
+    // textures actually carry a mip chain. And ANISOTROPIC filtering fixes the blur on
+    // surfaces viewed at a grazing angle (like the receding floor): a plain mipmapped
+    // sampler must pick one square level for the whole pixel and over-blurs along the
+    // stretched axis, whereas anisotropy takes several taps along that axis to keep it
+    // sharp. max_anisotropy caps how many taps (8 is a common quality/cost balance).
     SDL_GPUSamplerCreateInfo info = {};
-    info.min_filter     = SDL_GPU_FILTER_LINEAR;   // minification (texture shrunk)
-    info.mag_filter     = SDL_GPU_FILTER_LINEAR;   // magnification (texture enlarged)
-    info.mipmap_mode    = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
-    info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-    info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-    info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    info.min_filter        = SDL_GPU_FILTER_LINEAR;   // minification (texture shrunk)
+    info.mag_filter        = SDL_GPU_FILTER_LINEAR;   // magnification (texture enlarged)
+    info.mipmap_mode       = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+    info.address_mode_u    = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    info.address_mode_v    = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    info.address_mode_w    = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    info.enable_anisotropy = true;
+    info.max_anisotropy    = 8.0f;
 
     sampler_ = SDL_CreateGPUSampler(device_, &info);
     if (sampler_ == nullptr) {
         KOI_ERROR("Failed to create sampler: %s", SDL_GetError());
+        return false;
+    }
+    return true;
+}
+
+SDL_GPUTexture* GpuRenderer::createSolidTexture(Uint8 r, Uint8 g, Uint8 b, Uint8 a) {
+    // A 1×1 RGBA texel, uploaded through the usual path (no mips — it's a single pixel).
+    const Uint8 texel[4] = {r, g, b, a};
+    return uploadToGpuTexture(texel, /*width=*/1, /*height=*/1, /*withMips=*/false);
+}
+
+bool GpuRenderer::createFallbackTextures() {
+    // whiteTex_ (255,255,255,255): a material without a metallic-roughness or AO map
+    // binds this, so `factor × sampledChannel` becomes just the scalar factor and
+    // `ao` becomes 1 — identical to the Step 12 scalar-only behaviour.
+    whiteTex_ = createSolidTexture(255, 255, 255, 255);
+    // flatNormalTex_ (128,128,255,255): decodes (×2−1) to tangent-space (0,0,1), a
+    // normal pointing straight out of the surface — i.e. no perturbation. So a
+    // material without a normal map is lit by its geometric normal, unchanged.
+    flatNormalTex_ = createSolidTexture(128, 128, 255, 255);
+    if (whiteTex_ == nullptr || flatNormalTex_ == nullptr) {
+        KOI_ERROR("Failed to create fallback textures.");
         return false;
     }
     return true;
@@ -811,20 +856,34 @@ SDL_GPUBuffer* GpuRenderer::uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
 }
 
 SDL_GPUTexture* GpuRenderer::uploadToGpuTexture(const void* pixels, Uint32 width,
-                                                Uint32 height) {
+                                                Uint32 height, bool withMips) {
     // The 2D sibling of uploadToGpuBuffer: same staging dance (CPU-visible transfer
     // buffer → copy pass → GPU resource), but the destination is a texture and the
     // copy is a texture region. (captureFrame does the reverse to read pixels back.)
 
-    // 1. The destination: a 2D texture we can sample in a shader.
+    // A MIP CHAIN is the texture pre-shrunk to 1/2, 1/4, 1/8 … down to 1×1. When a
+    // textured surface is far away, one screen pixel covers many texels; sampling just
+    // the full-res image then aliases (shimmers) as the surface moves. The sampler
+    // instead reads a smaller, pre-averaged level — so we compute how many levels fit
+    // (floor(log2(largest side)) + 1) and let the GPU generate them below.
+    Uint32 mipLevels = 1;
+    if (withMips) {
+        Uint32 maxDim = (width > height) ? width : height;
+        while (maxDim > 1) { maxDim >>= 1; ++mipLevels; }
+    }
+
+    // 1. The destination: a 2D texture we can sample in a shader. Generating mipmaps
+    //    needs the texture to ALSO be usable as a color target (the GPU renders the
+    //    downsampled levels into it), so we add COLOR_TARGET usage when mipping.
     SDL_GPUTextureCreateInfo texInfo = {};
     texInfo.type                 = SDL_GPU_TEXTURETYPE_2D;
     texInfo.format               = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;  // 8-bit RGBA
-    texInfo.usage                = SDL_GPU_TEXTUREUSAGE_SAMPLER;          // read in a shader
+    texInfo.usage                = SDL_GPU_TEXTUREUSAGE_SAMPLER |
+                                   (withMips ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET : 0u);
     texInfo.width                = width;
     texInfo.height               = height;
     texInfo.layer_count_or_depth = 1;
-    texInfo.num_levels           = 1;  // a single mip level — no mipmaps yet
+    texInfo.num_levels           = mipLevels;
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(device_, &texInfo);
     if (texture == nullptr) {
         KOI_ERROR("uploadToGpuTexture: failed to create texture: %s", SDL_GetError());
@@ -871,6 +930,13 @@ SDL_GPUTexture* GpuRenderer::uploadToGpuTexture(const void* pixels, Uint32 width
     dst.d       = 1;
     SDL_UploadToGPUTexture(copy, &src, &dst, /*cycle=*/false);
     SDL_EndGPUCopyPass(copy);
+
+    // Fill the smaller mip levels from the level-0 pixels we just uploaded. This is a
+    // GPU-side downsample, so it must run OUTSIDE any copy/render pass — here on the
+    // same command buffer, which orders it after the copy above.
+    if (withMips) {
+        SDL_GenerateMipmapsForGPUTexture(cmd, texture);
+    }
 
     // One-time init upload: no fence needed (command buffers run in submission
     // order, so the later draw sees the finished copy), and releasing the transfer
@@ -1010,12 +1076,13 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
     // out of the loop the way the single global texture was in Step 7.
     SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
 
-    // Bind the SHADOW MAP at fragment sampler slot 1 (the material texture is bound
-    // per node at slot 0). One shadow map for the whole frame, so bind it once here.
+    // Bind the SHADOW MAP at fragment sampler slot 4 (Step 13 moved it past the four
+    // per-material maps bound at slots 0–3 in recordNode). One shadow map for the whole
+    // frame, so bind it once here.
     SDL_GPUTextureSamplerBinding shadowBinding = {};
     shadowBinding.texture = shadowMap_;
     shadowBinding.sampler = shadowSampler_;
-    SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/1, &shadowBinding, /*num_bindings=*/1);
+    SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/4, &shadowBinding, /*num_bindings=*/1);
 
     // Pack the per-frame lighting environment (fragment set=3, binding 0): the ambient
     // fill, the eye (for specular), the sun's shadow matrix, and the ARRAY of active
@@ -1094,14 +1161,19 @@ void GpuRenderer::recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
     // (material). Pure group/pivot nodes have neither and just pass their transform
     // down to their children.
     if (mesh != nullptr && material != nullptr) {
-        // Bind THIS material's texture (+ the shared sampler) for the upcoming draw.
-        // Unlike Step 7's single global texture, each node can use a different one,
-        // so the texture is (re)bound per draw — the same per-node rhythm we already
-        // use for the mesh buffers below.
-        SDL_GPUTextureSamplerBinding samplerBinding = {};
-        samplerBinding.texture = material->texture->handle();
-        samplerBinding.sampler = sampler_;
-        SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, &samplerBinding, /*num_bindings=*/1);
+        // Bind THIS material's four maps (+ the shared sampler) at fragment slots 0–3
+        // for the upcoming draw: albedo, metallic-roughness, normal, AO. Each node can
+        // use different maps, so they're (re)bound per draw — the same per-node rhythm
+        // we already use for the mesh buffers below. A map the material omits falls
+        // back to a neutral 1×1 texture (white for MR/AO, a flat normal), which makes
+        // the shader reduce to the scalar-only look with no branching.
+        const SDL_GPUTextureSamplerBinding maps[4] = {
+            { material->albedo->handle(), sampler_ },
+            { material->metalRough ? material->metalRough->handle() : whiteTex_,      sampler_ },
+            { material->normalMap  ? material->normalMap->handle()  : flatNormalTex_, sampler_ },
+            { material->ao         ? material->ao->handle()         : whiteTex_,      sampler_ },
+        };
+        SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, maps, /*num_bindings=*/4);
 
         // Push this material's PBR parameters (fragment set=3, binding 1): a vec4 with
         // metallic in x and roughness in y. Per draw, so each object can be a rough
@@ -1153,6 +1225,10 @@ GpuRenderer::~GpuRenderer() {
             SDL_ReleaseGPUSampler(device_, sampler_);
             sampler_ = nullptr;
         }
+        // Neutral 1×1 fallback maps (Step 13). SDL_ReleaseGPUTexture tolerates null.
+        SDL_ReleaseGPUTexture(device_, whiteTex_);
+        SDL_ReleaseGPUTexture(device_, flatNormalTex_);
+        whiteTex_ = flatNormalTex_ = nullptr;
         // Shadow-mapping resources (Step 9).
         if (shadowMap_ != nullptr) {
             SDL_ReleaseGPUTexture(device_, shadowMap_);

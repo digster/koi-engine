@@ -3,7 +3,7 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 12 (window & render loop, the first triangle, geometry in GPU
+through Step 13 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
@@ -11,8 +11,10 @@ abstraction drawn through a **scene graph** of parent/child transforms,
 **materials**, **model loading** from OBJ/glTF files, **shadow mapping**, a
 **post-processing** chain — an off-screen HDR target run through bloom,
 tone-mapping, and FXAA before it reaches the screen — **multiple lights** of
-different kinds (directional/point/spot) accumulated in the shader, and
-physically-based **PBR** shading via a Cook-Torrance metallic-roughness BRDF).
+different kinds (directional/point/spot) accumulated in the shader, physically-based
+**PBR** shading via a Cook-Torrance metallic-roughness BRDF, and per-pixel material
+**texture maps** — metallic-roughness / AO / **normal maps** applied through a
+per-vertex tangent + **TBN** basis, with **mipmaps** and **anisotropic filtering**).
 
 ## Guiding principles
 
@@ -51,9 +53,9 @@ physically-based **PBR** shading via a Cook-Torrance metallic-roughness BRDF).
 |-----------|------|----------------|
 | `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera + the scene graph, runs the game loop, computes delta-time, routes input, builds the demo scene (`buildScene`: meshes + textures + materials, assigned to nodes), animates + propagates transforms each frame, controls startup/shutdown order. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler**, the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, and the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, and the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`; binds the material's four maps per draw, shadow map at slot 4) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
 | `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the Engine drives from input and hands to the renderer, plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
-| `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: a `shared_ptr<Texture>` (albedo) + **PBR** params `metallic` and `roughness` (Step 12, replacing Blinn-Phong's shininess/specStrength). Forward-declares `Texture` (stores it by `shared_ptr`). Shared by `shared_ptr`; a `Node` references one. The renderer binds it per draw. |
+| `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: an `albedo` texture + **PBR** params `metallic`/`roughness` (Step 12) — now **factors** — plus (Step 13) three optional map handles: `metalRough` (glTF-packed G=roughness, B=metallic), `normalMap` (tangent-space), and `ao`. Any map may be null; the renderer binds a neutral 1×1 fallback so map-less materials render as in Step 12. Shared by `shared_ptr`; a `Node` references one; the renderer binds all four maps per draw. |
 | `Pbr` | [src/renderer/Pbr.hpp](src/renderer/Pbr.hpp) | Header-only, SDL-free (Step 12): pure CPU mirrors of the Cook-Torrance BRDF sub-terms — `distributionGGX` (D), `geometrySmith`/`geometrySchlickGGX` (G), `fresnelSchlick` (F), plus `kPi`. The shader in `triangle.frag` is the runtime truth; these exist so the microfacet math's shape is unit-tested headlessly (`tests/test_pbr.cpp`), the same pattern as `PostProcess.hpp`/`Light.hpp`. |
 | `Light` | [src/scene/Light.hpp](src/scene/Light.hpp) | Header-only, SDL-free (Step 11): a `Light` struct (type = directional/point/spot, position, direction, colour, intensity, range, spot-cone cosines, an `enabled` flag) plus pure helpers (`attenuation`, `spotFactor`, `activeLightCount`) that mirror the shader math for headless tests (`tests/test_light.cpp`). The `Engine` owns a `std::vector<Light>` and hands it to the renderer each frame, exactly like the camera + `PostSettings`. `MAX_LIGHTS` matches the shader's fixed array size. |
 | `ModelLoader` | [src/renderer/ModelLoader.*](src/renderer/) | `loadModel(path)` reads a model file into a `Mesh` (positions/normals/UVs/indices, vertex color = white): `.obj` via **tinyobjloader** (de-duplicating its separate v/vt/vn indices), `.glb/.gltf` via **cgltf**. The single TU that pulls in those third-party headers — compiled warning-free (`-w`). |
@@ -63,7 +65,8 @@ physically-based **PBR** shading via a Cook-Torrance metallic-roughness BRDF).
 | `Transform` | [src/scene/Transform.hpp](src/scene/Transform.hpp) | Header-only, SDL-free: position / Euler rotation / scale, plus `localMatrix()` returning `T·R·S` (scale → rotate → translate). Unit-tested in `tests/test_transform.cpp`. |
 | `Node` | [src/scene/Node.*](src/scene/) | One element of the scene graph: a local `Transform`, an optional shared `Mesh` (shape) + `Material` (appearance), owned children (`unique_ptr`), and a cached world matrix. Draws only with both a mesh and a material. `updateWorldTransforms` walks the tree computing `world = parentWorld · local`. Unit-tested in `tests/test_node.cpp`. |
 | `Camera` | [src/scene/Camera.*](src/scene/) | A yaw/pitch fly camera (position + angles). Produces a `view` matrix via `lookAt`; `processKeyboard`/`addMouseLook` update it from input. Lives above the renderer and knows nothing about the GPU; its header is SDL-free. Logic unit-tested in `tests/test_camera.cpp`. |
-| `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color + uv + normal). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
+| `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color + uv + normal + **tangent**, 56 bytes since Step 13). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
+| `Tangents` | [src/renderer/Tangents.hpp](src/renderer/Tangents.hpp) | Header-only, SDL-free (Step 13): pure math to derive a per-vertex **tangent** for normal mapping — `triangleTangent` (Lengyel, from positions + UVs) and `orthonormalizeTangent` (Gram-Schmidt vs. the normal, with a safe fallback). Used by `ModelLoader`; unit-tested headlessly (`tests/test_tangent.cpp`), the same CPU-twin pattern as `Pbr.hpp`/`Light.hpp`. |
 | `math` (`Vec`, `Mat4`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`) and column-major 4×4 matrix math (translate/rotate/scale/`perspective`/**`orthographic`**/`lookAt`). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp`. |
 | `Shader` | [src/renderer/Shader.*](src/renderer/) | Loads a compiled shader for the active backend: `selectShaderVariant` (pure, unit-tested) picks the format/extension/entry point; `loadShader` reads the file and creates the `SDL_GPUShader` (with the right uniform-buffer and sampler counts). |
 | `Log` | [src/core/Log.hpp](src/core/Log.hpp) | Leveled logging macros over SDL's logger; one place to control verbosity. |
@@ -86,11 +89,12 @@ renderFrame(view,      → in GpuRenderer (view = camera.viewMatrix()); renderSc
                      3. SHADOW PASS: compute lightViewProj from the SUN's direction
                         (lights[0]); render scene depth into the shadow map (depth-only)
                      4. SCENE PASS: begin render pass into the HDR target (color + depth CLEAR);
-                        recordScene — bind pipeline + shadow map, pack the light LIST +
+                        recordScene — bind pipeline + shadow map (slot 4), pack the light LIST +
                         lightViewProj into the light UBO once (Step 11: an array of
                         directional/point/spot lights, only the sun shadowed), then walk
-                        the tree (per node: bind material texture + push material params,
-                        bind mesh buffers + push {mvp,model}, draw); end pass
+                        the tree (per node: bind the material's 4 maps [albedo/metal-rough/
+                        normal/AO, slots 0–3] + push material params, bind mesh buffers +
+                        push {mvp,model}, draw); end pass
                      5. POST CHAIN (runPostChain): bloom bright-pass + separable blur → composite
                         (exposure, ACES tone-map, vignette, gamma) → FXAA into the swapchain image
                      6. submit command buffer (queues present)
@@ -445,6 +449,46 @@ look dark** away from their sharp reflections (a metal has no diffuse and no
 environment to reflect). That is physically correct and is exactly what **image-based
 lighting (IBL)** — a natural future step — would supply.
 
+### Texture & normal maps (Step 13)
+
+Step 12's material parameters were **scalars** — one `metallic`/`roughness` for a whole
+object. Step 13 drives them (and the surface normal) **per pixel** from texture maps, and
+adds fine relief with **normal maps**. The Cook-Torrance BRDF above is *unchanged*; only
+its inputs now come from images.
+
+```
+   scene/Material.hpp                shader (triangle.frag) per fragment:
+   {albedo, metallic, roughness,     N   = TBN · (normalMap·2−1)         (perturbed normal)
+    metalRough, normalMap, ao}       metallic  = factor · mr.b           (glTF: B=metal)
+   renderer/Tangents.hpp ─ mirror ─► roughness = factor · mr.g           (glTF: G=rough)
+   T = per-vertex tangent            color = ambient·albedo·ao + Lo(N,…) (AO on ambient)
+```
+
+Three structural additions:
+
+- **A per-vertex tangent.** A normal map stores directions in **tangent space** (relative
+  to the UV layout), so the shader rotates a sampled normal into world space with the
+  **TBN** basis `mat3(T, B, N)` — `N` from Step 7, `B = N×T`, and `T` the new attribute.
+  `Vertex` grows a fifth `tangent` (pitch 44→56); the pipeline gains a 5th vertex
+  attribute. Primitives hardcode the tangent per face; `ModelLoader` computes it (Lengyel,
+  in `renderer/Tangents.hpp`) or reads glTF's `TANGENT`. We store a `vec3` tangent and take
+  `B = N×T` — correct for consistent UV handedness (mirrored UVs would need a signed
+  `vec4`, a noted simplification).
+- **Five fragment samplers, with fallbacks.** `set=2` now carries the four per-material maps
+  (albedo, metallic-roughness, normal, AO) at slots 0–3, bound per draw in `recordNode`, and
+  the shadow map moved to slot 4. A material that omits a map binds a neutral **1×1
+  fallback** (white, or a flat normal `(0,0,1)`), so the math reduces *exactly* to Step 12 —
+  no shader branch / no permutation (a deliberate dodge of the shader-variant pivot).
+- **Mipmaps + anisotropic filtering.** With per-pixel detail dominating, minified textures
+  alias; `uploadToGpuTexture` now generates a full **mip chain** (`SDL_GenerateMipmapsForGPUTexture`,
+  which is why sampled textures also get `COLOR_TARGET` usage), and the shared sampler enables
+  **anisotropy** so oblique surfaces (the receding floor) stay sharp instead of over-blurring.
+
+The demo maps come from `tools/gen_textures.py` (a `uv`-run script — a seed of the roadmap's
+offline asset-pipeline track) as BMPs, since the loader is still `SDL_LoadBMP`-only. glTF
+material/texture import + PNG loading (and thus the Damaged Helmet) are a deliberately
+separate later step.
+
 ## Lifecycle & ownership
 
 Startup builds bottom-up, shutdown tears down top-down — the standard RAII
@@ -563,8 +607,13 @@ Future milestones slot into this structure without reshaping it:
   per-light body uses GGX/Smith/Fresnel with energy conservation; pure BRDF helpers live in
   `renderer/Pbr.hpp` (unit-tested). No vertex/texture/binding changes — the material uniform
   lanes were repurposed.
-- **Step 13+:** the next features — texture/normal maps (a per-vertex tangent joins `Vertex`),
-  **image-based lighting** for ambient + metal reflections, more shadow casters (sun cascades,
-  point-light cube maps), and eventually deferred/clustered shading — slot into this same layering
-  without reshaping it. See [`ROADMAP.md`](ROADMAP.md) for the sequenced plan and the wider
-  engine-systems tracks (animation, physics, audio, tooling, gameplay) that grow alongside the renderer.
+- **Step 13 (done):** **texture &amp; normal maps** — a per-vertex `tangent` joined `Vertex` (with
+  pure TBN math in `renderer/Tangents.hpp`), `Material` gained optional metallic-roughness / normal /
+  AO map handles (with neutral 1×1 fallbacks so map-less materials are unchanged), the fragment shader
+  reads five samplers and perturbs the normal via the TBN basis, and textures gained **mipmaps** +
+  **anisotropic filtering**. No BRDF change — only the inputs became per-pixel.
+- **Step 14+:** the next features — a **skybox** / environment cubemap, then **image-based lighting**
+  for ambient + metal reflections, more shadow casters (sun cascades, point-light cube maps), and
+  eventually deferred/clustered shading — slot into this same layering without reshaping it. See
+  [`ROADMAP.md`](ROADMAP.md) for the sequenced plan and the wider engine-systems tracks (animation,
+  physics, audio, tooling, gameplay) that grow alongside the renderer.

@@ -22,6 +22,9 @@ layout(location = 2) in vec2 inUV;
 // Step 7: the surface normal — the unit direction the surface faces, in model space.
 // Lighting compares it against the light/eye directions to decide brightness.
 layout(location = 3) in vec3 inNormal;
+// Step 13: the surface tangent — the model-space direction of increasing texture U.
+// Together with the normal it forms the basis that orients a tangent-space normal map.
+layout(location = 4) in vec3 inTangent;
 
 // --- Per-draw uniform (the same for every vertex this draw) ----------------
 // A uniform buffer holds values constant across the whole draw call, unlike the
@@ -40,6 +43,7 @@ layout(location = 0) out vec3 vColor;
 layout(location = 1) out vec2 vUV;
 layout(location = 2) out vec3 vWorldPos;     // for the eye/specular direction
 layout(location = 3) out vec3 vWorldNormal;  // for diffuse/specular dot products
+layout(location = 4) out vec3 vWorldTangent; // for building the TBN (normal mapping)
 
 void main() {
     // Promote the 3D position to homogeneous coordinates (w = 1, marking it a
@@ -54,6 +58,11 @@ void main() {
     // only changes the normal's length, which the fragment shader's normalize()
     // undoes. Non-uniform scale would need the inverse-transpose "normal matrix".
     vWorldNormal = mat3(model) * inNormal;
+
+    // Rotate the tangent into world space too (same upper-left 3x3). The fragment
+    // shader re-orthonormalizes it against the interpolated normal and builds the TBN
+    // basis from the pair — so a tangent-space normal map can be lit in world space.
+    vWorldTangent = mat3(model) * inTangent;
 
     vColor = inColor;
     vUV = inUV;  // pass the texture coordinate straight through to the fragment stage

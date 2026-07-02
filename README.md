@@ -9,13 +9,13 @@ in [`documentation/docs/`](documentation/docs/index.html) that explains the unde
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`documentation/docs/index.html`](documentation/docs/index.html) in a browser.
 
-> **Current status — Step 12:** adds **PBR materials**. The ad-hoc Blinn-Phong shading is replaced
-> by the physically-based **Cook-Torrance metallic-roughness** model: every surface is described by
-> two intuitive dials — **metallic** (metal vs. non-metal) and **roughness** (polished vs. matte) —
-> that feed a microfacet BRDF (GGX distribution, Smith geometry, Fresnel) with proper **energy
-> conservation**. Metals reflect their albedo and have no diffuse; dielectrics reflect a dim 4% over
-> a matte body. (Metals look dark away from the highlights until **IBL** — a later step — gives them
-> an environment to reflect.)
+> **Current status — Step 13:** adds **texture &amp; normal maps**. Material parameters now vary
+> **per pixel** from images: a packed **metallic-roughness** map (glTF convention: G = roughness,
+> B = metallic), an **ambient-occlusion** map, and — the conceptually new part — a tangent-space
+> **normal map** that adds fine surface relief without extra geometry, applied through a per-vertex
+> **tangent** and the **TBN matrix**. Textures also gain **mipmaps** and **anisotropic filtering**,
+> so tiled/receding surfaces no longer shimmer. Maps are optional: a material without one binds a
+> neutral 1×1 fallback and renders exactly as it did in Step 12.
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
@@ -83,6 +83,10 @@ Full instructions, controls, and tests: [documentation/docs/00-getting-started.h
 - [documentation/docs/13-pbr-materials.html](documentation/docs/13-pbr-materials.html) — the Cook-Torrance metallic-roughness
   model: the microfacet BRDF (GGX, Smith, Fresnel), the metallic workflow, and energy conservation,
   mapped to the Step 12 code that swaps Blinn-Phong for physically-based shading.
+- [documentation/docs/14-texture-and-normal-maps.html](documentation/docs/14-texture-and-normal-maps.html) — driving material
+  parameters per-pixel from maps (metallic-roughness, AO), tangent space and the TBN matrix behind
+  normal mapping, and mipmaps + anisotropic filtering, mapped to the Step 13 code that adds surface
+  relief and a per-pixel metal/dielectric checker.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap

@@ -11,27 +11,38 @@
 //      placement  → Transform  (where/oriented/scaled, on the Node)
 //      appearance → Material   (what it looks like — this file)
 //
-//  A Material only DESCRIBES appearance; it owns no GPU state of its own beyond a
-//  shared reference to a Texture (the *sampler* — HOW to read a texture — stays
+//  A Material only DESCRIBES appearance; it owns no GPU state of its own beyond
+//  shared references to Textures (the *sampler* — HOW to read a texture — stays
 //  renderer-owned and shared). Materials are themselves shared (many cubes can use
 //  one), so nodes hold a std::shared_ptr<Material>.
 //
-//  Step 12 (PBR): the ad-hoc Blinn-Phong knobs (shininess/specStrength) are replaced
-//  by the two parameters of the industry-standard **metallic-roughness** model:
+//  Step 12 (PBR) reduced appearance to the two parameters of the industry-standard
+//  **metallic-roughness** model. Step 13 lets those parameters — and the surface
+//  normal — vary PER PIXEL by driving them from TEXTURE MAPS instead of a single
+//  scalar for the whole surface:
 //
-//    * metallic  — is this surface a METAL (1) or a non-metal / "dielectric" (0)?
-//      Metals tint their reflection with the albedo and have NO diffuse colour;
-//      dielectrics (plastic, wood, stone) reflect a dim, white-ish 4% and keep a
-//      diffuse albedo. Real surfaces are one or the other, so this is usually 0 or 1.
-//    * roughness — how MICROSCOPICALLY rough the surface is (0 = mirror-smooth, tight
-//      bright highlight; 1 = matte, highlight spread out and dim). This is the single
-//      most useful, intuitive material dial.
+//    * albedo      — the base colour image (as before).
+//    * metalRough  — a packed metallic-roughness map, glTF convention: the GREEN
+//                    channel is roughness, the BLUE channel is metallic. One texture
+//                    carries both, so a rusted-then-polished surface can vary across
+//                    a single face.
+//    * normalMap   — a tangent-space NORMAL map: each texel encodes a surface-normal
+//                    perturbation, adding fine bumps/grooves without extra geometry.
+//                    Requires the per-vertex tangent (see Vertex.hpp / Tangents.hpp).
+//    * ao          — an ambient-occlusion map (RED channel): darkens the ambient fill
+//                    in creases the direct lights don't reach.
+//
+//  The `metallic`/`roughness` scalars survive as multiplicative FACTORS (glTF's
+//  metallicFactor / roughnessFactor): the shader computes `factor * sampledChannel`.
+//  Any map may be null — the renderer then binds a neutral 1×1 fallback (white for
+//  metalRough/ao, a flat normal for normalMap), which makes the math collapse back to
+//  the scalar-only Step 12 behaviour with no shader branching.
 //
 //  These feed the Cook-Torrance BRDF in triangle.frag (mirrored, for tests, by the
-//  pure helpers in renderer/Pbr.hpp). The albedo texture is unchanged.
+//  pure helpers in renderer/Pbr.hpp).
 //
-//  Header-only: it's a plain data struct. We only store a shared_ptr<Texture>, so
-//  a forward declaration is enough here — no need to pull in the SDL-heavy header.
+//  Header-only: it's a plain data struct. We only store shared_ptr<Texture>s, so a
+//  forward declaration is enough here — no need to pull in the SDL-heavy header.
 // ============================================================================
 #pragma once
 
@@ -39,12 +50,17 @@
 
 namespace koi {
 
-class Texture;  // the albedo image; full definition in renderer/Texture.hpp
+class Texture;  // the map images; full definition in renderer/Texture.hpp
 
 struct Material {
-    std::shared_ptr<Texture> texture;             // the image sampled as the base color (albedo)
-    float                    metallic  = 0.0f;    // 0 = dielectric (non-metal), 1 = metal
-    float                    roughness = 0.5f;    // 0 = mirror-smooth, 1 = fully matte
+    // Field ORDER matters: positional aggregate inits like `Material{tex, 0, 0.85f}`
+    // rely on albedo/metallic/roughness staying first, so the new maps go last.
+    std::shared_ptr<Texture> albedo;              // base colour image
+    float                    metallic  = 0.0f;    // factor: 0 = dielectric, 1 = metal
+    float                    roughness = 0.5f;    // factor: 0 = mirror-smooth, 1 = matte
+    std::shared_ptr<Texture> metalRough;          // optional: G = roughness, B = metallic
+    std::shared_ptr<Texture> normalMap;           // optional: tangent-space normals
+    std::shared_ptr<Texture> ao;                  // optional: R = ambient occlusion
 };
 
 }  // namespace koi

@@ -17,6 +17,12 @@
 //  metals look dark here away from the highlights). Only the directional sun (light 0)
 //  casts a shadow. The three BRDF terms mirror renderer/Pbr.hpp. See the D/G/F helpers
 //  below and documentation/docs/13-pbr-materials.html.
+//
+//  Step 13 drives the material PER PIXEL from texture maps instead of scalars: an
+//  albedo map, a packed metallic-roughness map (glTF G=roughness, B=metallic), an AO
+//  map, and — the conceptually new part — a tangent-space NORMAL map. The normal map is
+//  applied via the TBN basis built from the interpolated normal + tangent, adding fine
+//  surface relief without extra geometry. See documentation/docs/14-texture-and-normal-maps.html.
 // ============================================================================
 #version 450
 
@@ -24,10 +30,22 @@ layout(location = 0) in vec3 vColor;
 layout(location = 1) in vec2 vUV;
 layout(location = 2) in vec3 vWorldPos;
 layout(location = 3) in vec3 vWorldNormal;
+layout(location = 4) in vec3 vWorldTangent;
 
-// Fragment samplers: the material's texture (slot 0) and the shadow map (slot 1).
-layout(set = 2, binding = 0) uniform sampler2D uTex;
-layout(set = 2, binding = 1) uniform sampler2D uShadowMap;
+// Fragment samplers (Step 13). Slots 0–3 are the per-material maps bound per draw;
+// slot 4 is the shared shadow map bound once per frame:
+//   0 uAlbedoMap      — base colour
+//   1 uMetalRoughMap  — glTF packing: G = roughness, B = metallic
+//   2 uNormalMap      — tangent-space normals (rgb, ×2−1 to decode)
+//   3 uAoMap          — ambient occlusion (R channel)
+//   4 uShadowMap      — the sun's depth map
+// A material that omits a map gets a neutral 1×1 fallback (white, or a flat normal),
+// so the maths below reduces to the scalar-only Step 12 look with no branching.
+layout(set = 2, binding = 0) uniform sampler2D uAlbedoMap;
+layout(set = 2, binding = 1) uniform sampler2D uMetalRoughMap;
+layout(set = 2, binding = 2) uniform sampler2D uNormalMap;
+layout(set = 2, binding = 3) uniform sampler2D uAoMap;
+layout(set = 2, binding = 4) uniform sampler2D uShadowMap;
 
 // Must match koi::MAX_LIGHTS (scene/Light.hpp): the uniform array is a FIXED size
 // because the buffer's layout is fixed when the pipeline is built.
@@ -53,9 +71,10 @@ layout(set = 3, binding = 0) uniform LightUBO {
     GpuLight lights[MAX_LIGHTS];
 };
 
-// Per-object material (set 3, binding 1): x = metallic (0=dielectric, 1=metal),
-// y = roughness (0=mirror-smooth, 1=matte). Repurposed Blinn-Phong's x/y lanes, so
-// the buffer size is unchanged.
+// Per-object material (set 3, binding 1): x = metallic FACTOR, y = roughness FACTOR.
+// Since Step 13 these are multipliers on the metallic-roughness MAP's channels (a
+// white fallback map leaves them unchanged), not the final values themselves. The
+// buffer size is unchanged from Step 12.
 layout(set = 3, binding = 1) uniform MaterialUBO {
     vec4 material;
 };
@@ -138,14 +157,31 @@ vec3 fresnelSchlick(float cosTheta, vec3 f0) {
 }
 
 void main() {
-    vec3 albedo = texture(uTex, vUV).rgb * vColor;
+    vec3 albedo = texture(uAlbedoMap, vUV).rgb * vColor;
 
+    // --- Normal mapping: perturb the geometric normal with the normal map ---------
+    // Build the TBN basis at this fragment. The interpolated tangent may have drifted
+    // slightly non-perpendicular to the normal, so re-orthonormalize it (Gram-Schmidt);
+    // the bitangent is N×T (we store only a vec3 tangent — see Tangents.hpp). The map's
+    // rgb is a unit normal packed into [0,1]; ×2−1 decodes it back to [-1,1], then the
+    // TBN matrix rotates it from tangent space into world space. A flat fallback normal
+    // (0,0,1) leaves N equal to the geometric normal.
     vec3 N = normalize(vWorldNormal);
+    vec3 T = normalize(vWorldTangent - N * dot(N, vWorldTangent));
+    vec3 B = cross(N, T);
+    vec3 nTex = texture(uNormalMap, vUV).xyz * 2.0 - 1.0;
+    N = normalize(mat3(T, B, N) * nTex);
+
     vec3 V = normalize(cameraPos.xyz - vWorldPos);
     float nDotV = max(dot(N, V), 0.0);
 
-    float metallic  = clamp(material.x, 0.0, 1.0);
-    float roughness = clamp(material.y, 0.04, 1.0);  // a floor avoids a zero-width, unstable highlight
+    // Per-pixel material: the packed metallic-roughness map (glTF G=roughness,
+    // B=metallic) scaled by the material factors, and the AO map. White fallbacks make
+    // these reduce to the scalar-only Step 12 values.
+    vec3 mr = texture(uMetalRoughMap, vUV).rgb;
+    float metallic  = clamp(material.x * mr.b, 0.0, 1.0);
+    float roughness = clamp(material.y * mr.g, 0.04, 1.0);  // floor avoids a zero-width highlight
+    float ao = texture(uAoMap, vUV).r;
 
     // Base reflectance F0: dielectrics reflect a dim ~4% (grey), metals reflect their
     // own albedo (tinted). `mix` interpolates for the rare in-between.
@@ -203,8 +239,10 @@ void main() {
     }
 
     // Ambient fill added ONCE — a crude stand-in for bounced/environment light
-    // (proper ambient + metal reflections need IBL, a later step).
-    vec3 color = ambient.rgb * albedo + Lo;
+    // (proper ambient + metal reflections need IBL, a later step). The AO map darkens
+    // it in creases the direct lights can't reach; direct light (Lo) is left untouched,
+    // since real occlusion of direct light comes from the shadow map.
+    vec3 color = ambient.rgb * albedo * ao + Lo;
 
     outColor = vec4(color, 1.0);
 }

@@ -20,16 +20,52 @@
 #include "math/Vec.hpp"
 #include "renderer/GpuRenderer.hpp"
 #include "renderer/Mesh.hpp"
+#include "renderer/Tangents.hpp"
 #include "renderer/Vertex.hpp"
 
 namespace koi {
 namespace {
 
 // Build one koi::Vertex. Loaded models get a white vertex color (the shader does
-// texture * color, so white = the material's texture shown unchanged).
+// texture * color, so white = the material's texture shown unchanged). The tangent
+// defaults to zero; it's either read from the file (glTF TANGENT) or filled by
+// computeTangents() below.
 Vertex makeVertex(float px, float py, float pz, float u, float v,
-                  float nx, float ny, float nz) {
-    return Vertex{{px, py, pz}, {1.0f, 1.0f, 1.0f}, {u, v}, {nx, ny, nz}};
+                  float nx, float ny, float nz,
+                  float tx = 0.0f, float ty = 0.0f, float tz = 0.0f) {
+    return Vertex{{px, py, pz}, {1.0f, 1.0f, 1.0f}, {u, v}, {nx, ny, nz}, {tx, ty, tz}};
+}
+
+// Derive a per-vertex TANGENT (needed to orient tangent-space normal maps, Step 13)
+// from the mesh's positions + UVs when the file doesn't supply one. Mirrors
+// computeSmoothNormals: accumulate each triangle's tangent onto its three vertices
+// (so shared vertices average), then orthonormalize each against its normal. The pure
+// math lives in renderer/Tangents.hpp (unit-tested headlessly).
+void computeTangents(std::vector<Vertex>& verts, const std::vector<Uint32>& idx) {
+    for (Vertex& vert : verts) { vert.tangent[0] = vert.tangent[1] = vert.tangent[2] = 0.0f; }
+    for (size_t i = 0; i + 2 < idx.size(); i += 3) {
+        const Vertex& A = verts[idx[i]];
+        const Vertex& B = verts[idx[i + 1]];
+        const Vertex& C = verts[idx[i + 2]];
+        const Vec3 t = triangleTangent(
+            {A.position[0], A.position[1], A.position[2]},
+            {B.position[0], B.position[1], B.position[2]},
+            {C.position[0], C.position[1], C.position[2]},
+            {A.uv[0], A.uv[1]}, {B.uv[0], B.uv[1]}, {C.uv[0], C.uv[1]});
+        for (Uint32 k : {idx[i], idx[i + 1], idx[i + 2]}) {
+            verts[k].tangent[0] += t.x;
+            verts[k].tangent[1] += t.y;
+            verts[k].tangent[2] += t.z;
+        }
+    }
+    for (Vertex& vert : verts) {
+        const Vec3 tang = orthonormalizeTangent(
+            {vert.tangent[0], vert.tangent[1], vert.tangent[2]},
+            normalize(Vec3{vert.normal[0], vert.normal[1], vert.normal[2]}));
+        vert.tangent[0] = tang.x;
+        vert.tangent[1] = tang.y;
+        vert.tangent[2] = tang.z;
+    }
 }
 
 // Fill missing normals by averaging the surrounding face normals (smooth shading).
@@ -121,6 +157,9 @@ std::shared_ptr<Mesh> loadObj(GpuRenderer& renderer, const char* path) {
         return nullptr;
     }
     if (!haveNormals) { computeSmoothNormals(vertices, indices); }
+    // OBJ has no tangents, so always derive them from positions + UVs (after the
+    // normals exist, since the tangent is orthonormalized against the normal).
+    computeTangents(vertices, indices);
 
     KOI_INFO("Loaded model '%s' (%zu verts, %zu tris).", path, vertices.size(),
              indices.size() / 3);
@@ -152,11 +191,13 @@ std::shared_ptr<Mesh> loadGltf(GpuRenderer& renderer, const char* path) {
     cgltf_accessor* posAcc = nullptr;
     cgltf_accessor* nrmAcc = nullptr;
     cgltf_accessor* uvAcc = nullptr;
+    cgltf_accessor* tanAcc = nullptr;
     for (cgltf_size i = 0; i < prim.attributes_count; ++i) {
         const cgltf_attribute& a = prim.attributes[i];
         if (a.type == cgltf_attribute_type_position) { posAcc = a.data; }
         else if (a.type == cgltf_attribute_type_normal) { nrmAcc = a.data; }
         else if (a.type == cgltf_attribute_type_texcoord && a.index == 0) { uvAcc = a.data; }
+        else if (a.type == cgltf_attribute_type_tangent) { tanAcc = a.data; }
     }
     if (posAcc == nullptr) {
         KOI_ERROR("loadModel: glTF '%s' primitive has no POSITION.", path);
@@ -173,8 +214,13 @@ std::shared_ptr<Mesh> loadGltf(GpuRenderer& renderer, const char* path) {
         if (nrmAcc != nullptr) { cgltf_accessor_read_float(nrmAcc, i, n, 3); }
         float uv[2] = {0.0f, 0.0f};
         if (uvAcc != nullptr) { cgltf_accessor_read_float(uvAcc, i, uv, 2); }
+        // glTF stores TANGENT as a vec4 (xyz + w handedness); we keep just the xyz
+        // direction (see Tangents.hpp on the handedness simplification).
+        float t[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        if (tanAcc != nullptr) { cgltf_accessor_read_float(tanAcc, i, t, 4); }
         // glTF UV origin is top-left already (matches our textures) — no V flip.
-        vertices[i] = makeVertex(p[0], p[1], p[2], uv[0], uv[1], n[0], n[1], n[2]);
+        vertices[i] = makeVertex(p[0], p[1], p[2], uv[0], uv[1], n[0], n[1], n[2],
+                                 t[0], t[1], t[2]);
     }
 
     std::vector<Uint32> indices;
@@ -188,10 +234,14 @@ std::shared_ptr<Mesh> loadGltf(GpuRenderer& renderer, const char* path) {
         for (size_t i = 0; i < vcount; ++i) { indices[i] = static_cast<Uint32>(i); }
     }
 
-    const bool haveNormals = (nrmAcc != nullptr);
+    const bool haveNormals  = (nrmAcc != nullptr);
+    const bool haveTangents = (tanAcc != nullptr);
     cgltf_free(data);  // the accessors are read out; the parsed data is no longer needed
 
     if (!haveNormals) { computeSmoothNormals(vertices, indices); }
+    // Derive tangents only when the file didn't ship them (they need valid normals to
+    // orthonormalize against, so this runs after the normals are settled).
+    if (!haveTangents) { computeTangents(vertices, indices); }
 
     KOI_INFO("Loaded model '%s' (%zu verts, %zu tris).", path, vertices.size(),
              indices.size() / 3);

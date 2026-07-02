@@ -18,7 +18,8 @@
 //      color      [12, 24)   layout(location = 1) vec3   VERTEXELEMENTFORMAT_FLOAT3
 //      uv         [24, 32)   layout(location = 2) vec2   VERTEXELEMENTFORMAT_FLOAT2
 //      normal     [32, 44)   layout(location = 3) vec3   VERTEXELEMENTFORMAT_FLOAT3
-//      sizeof  == 44 == the vertex buffer "pitch" (stride between vertices)
+//      tangent    [44, 56)   layout(location = 4) vec3   VERTEXELEMENTFORMAT_FLOAT3
+//      sizeof  == 56 == the vertex buffer "pitch" (stride between vertices)
 //
 //  Step 3 widened the position from 2D to 3D (z added), so the cube lives in
 //  real 3D space; that pushed color's offset from 8 to 12 and the pitch to 24.
@@ -26,6 +27,11 @@
 //  goes last, position/color keep their offsets and only the pitch grows to 32.
 //  Step 7 appended a surface normal (the direction the surface faces) for lighting;
 //  again last, so earlier offsets are unchanged and the pitch grows to 44.
+//  Step 13 appended a TANGENT: the surface direction along which the texture's U
+//  coordinate increases. A normal map stores directions in "tangent space" (relative
+//  to the surface's UV layout), so to rotate a sampled normal into world space we
+//  need this per-vertex basis vector — the normal alone can't say which way is "U".
+//  Once more it goes last, so earlier offsets hold and the pitch grows to 56.
 //
 //  We deliberately use plain `float[]` members (not koi::Vec3) so the layout is
 //  obvious and trivially standard-layout. The static_asserts below pin the
@@ -43,14 +49,16 @@ struct Vertex {
     float color[3];     // r, g, b in 0..1 — a tint multiplied with the texture
     float uv[2];        // texture coordinates: (0,0) = top-left, (1,1) = bottom-right
     float normal[3];    // unit surface normal (which way the surface faces), model space
+    float tangent[3];   // unit surface direction of increasing U, model space (for TBN)
 };
 
 // The vertex input layout we describe to the GPU is derived from these facts.
 // If any of them changes, update createTrianglePipeline()'s attributes to match.
-static_assert(sizeof(Vertex) == 44, "Vertex must be tightly packed (pitch = 44 bytes)");
+static_assert(sizeof(Vertex) == 56, "Vertex must be tightly packed (pitch = 56 bytes)");
 static_assert(offsetof(Vertex, position) == 0, "position must be the first attribute");
 static_assert(offsetof(Vertex, color) == 12, "color must follow the 3-float position");
 static_assert(offsetof(Vertex, uv) == 24, "uv must follow the 3-float color");
 static_assert(offsetof(Vertex, normal) == 32, "normal must follow the 2-float uv");
+static_assert(offsetof(Vertex, tangent) == 44, "tangent must follow the 3-float normal");
 
 }  // namespace koi

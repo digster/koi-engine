@@ -104,11 +104,14 @@ TEST_CASE("a parent's scale also scales its children's offsets") {
 
 TEST_CASE("a node stores and returns its material (Step 8)") {
     // A node holds an appearance (Material) alongside its shape. The Material here
-    // has a null texture — fine, since we're only testing the Node plumbing, no GPU.
+    // has no maps (null albedo) — fine, since we're only testing the Node plumbing,
+    // no GPU. Designated initializers name the fields and silence the missing-field
+    // warning now that Material carries the optional map handles.
     Node node;
     CHECK(node.material() == nullptr);  // none by default
 
-    auto mat = std::make_shared<Material>(Material{nullptr, /*metallic=*/1.0f, /*roughness=*/0.25f});
+    auto mat = std::make_shared<Material>(Material{
+        .albedo = nullptr, .metallic = 1.0f, .roughness = 0.25f});
     node.setMaterial(mat);
     REQUIRE(node.material() != nullptr);
     CHECK(node.material()->metallic == doctest::Approx(1.0f));
