@@ -228,3 +228,28 @@ table from `docs/index.html`**; number the next few steps then theme the rest.
   "Step 13+" bullet to ROADMAP.md while keeping its architectural claim.
 - Verified: **0 `<table>`** left in `index.html`; all 14 repo-relative links in ROADMAP.md resolve;
   docs-only change (no C++/shader/CMake) → build + 49-test suite unaffected.
+
+**Roadmap review request (2026-07-02):**
+> At some point I want to take this engine to a professional level and use it for production apps.
+> So from this pov have a look at the current ROADMAP.md file and see if any improvements can be
+> made. Don't change anything at this point, just let me know the improvements.
+
+**Outcome:** analysis only (no ROADMAP.md changes) — a written review of production-readiness gaps:
+engine/app separation, architectural pivots to flag early (threading, render queue, shader variants,
+memory strategy), promoting cross-platform CI + golden-image regression testing, asset pipeline,
+robustness/fuzzing, and a "definition of 1.0" section.
+
+**Roadmap update request (2026-07-02):**
+> Also think of some additions other than those mentioned above (does not have to be related to
+> productionizing the engine). Then combine and update all the recommendations to the roadmap.
+
+**Outcome:** `ROADMAP.md` restructured (docs-only). New third guiding principle ("learning first,
+production eventually"); Step 13 gains mipmaps/aniso + Damaged Helmet verification; new
+**Architecture pivots** section (render queue, threading, shader variants, memory, render graph);
+new **Transparency & blended effects** subsection (blending/sorting, cutout, particles, OIT);
+Image quality gains emissive/sRGB/reversed-Z/fog; Geometry gains terrain+noise and standard test
+scenes; Math gains a geometry utility layer (AABB/ray/plane/frustum); Physics gains a fixed-timestep
+prerequisite; UI & tools gains debug draw, shader hot-reload, CVars; **Platform & build replaced by
+a "Path to 1.0 — production hardening" track** (engine/app separation, golden-image CI, asset
+cooking, robustness/fuzzing, packaging); new **Definition of 1.0** quality-gates checklist;
+suggested-path diagram reworked; hot-reload duplication removed.
