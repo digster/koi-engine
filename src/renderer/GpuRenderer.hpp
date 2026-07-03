@@ -85,11 +85,28 @@ public:
     [[nodiscard]] std::shared_ptr<Mesh> createMesh(std::span<const Vertex> vertices,
                                                    std::span<const Uint32> indices);
 
-    // Load an image file (BMP) from `path` and upload it into a new GPU Texture
-    // (shared, so it could be reused by many draws). Returns nullptr (after logging)
-    // on failure. Like createMesh, this is the only place textures are born — it
-    // holds both the device and the upload helper.
-    [[nodiscard]] std::shared_ptr<Texture> loadTexture(const char* path);
+    // Load an image file from `path` and upload it into a new GPU Texture (shared, so
+    // it could be reused by many draws). Returns nullptr (after logging) on failure.
+    // Like createMesh, this is the only place textures are born — it holds both the
+    // device and the upload helper.
+    //
+    // BMP is decoded via SDL (no extra dependency); every other format (PNG/JPG, used
+    // by glTF — Step 16) via stb_image. Pass `srgb = true` for COLOUR images
+    // (base-colour, emissive) so the GPU decodes their gamma to linear before shading;
+    // leave it false for DATA maps (metallic-roughness, normal, AO) whose bytes are
+    // already linear (see createTextureFromRGBA / uploadToGpuTexture).
+    [[nodiscard]] std::shared_ptr<Texture> loadTexture(const char* path, bool srgb = false);
+
+    // Upload already-decoded, tightly-packed RGBA pixels (4 bytes/texel) into a new
+    // GPU Texture. This is the entry point the glTF loader uses after decoding an
+    // embedded image with stb_image — the shared tail of loadTexture, exposed so image
+    // bytes that never touched the filesystem can still become a Texture. `srgb` picks
+    // an sRGB texture format for colour maps; see uploadToGpuTexture. `withMips` mirrors
+    // that helper's flag — decoded images want a mip chain, but 1×1 solids pass false.
+    [[nodiscard]] std::shared_ptr<Texture> createTextureFromRGBA(const void* pixels,
+                                                                 Uint32 width, Uint32 height,
+                                                                 bool srgb = false,
+                                                                 bool withMips = true);
 
     // Load the six BMP faces of an environment CUBEMAP (Step 14) and upload them
     // into a single cube GPU texture the renderer owns, then draw it as the sky
@@ -160,8 +177,12 @@ private:
     // its size) and the extra COLOR_TARGET usage the GPU needs to generate them, and
     // SDL_GenerateMipmapsForGPUTexture is run after the upload — so minified/oblique
     // textures don't shimmer (Step 13). Tiny 1×1 fallbacks pass false.
+    //
+    // `srgb` (Step 16) selects an sRGB texture format so the GPU converts the stored
+    // gamma-encoded bytes to LINEAR when sampled (correct for colour/base-colour maps).
+    // The bytes uploaded are identical either way — sRGB is purely a sample-time decode.
     SDL_GPUTexture* uploadToGpuTexture(const void* pixels, Uint32 width, Uint32 height,
-                                       bool withMips = true);
+                                       bool withMips = true, bool srgb = false);
 
     // Create a solid-colour 1×1 RGBA texture (no mips) — used for the neutral map
     // fallbacks a material binds when it lacks a given map. See whiteTex_/flatNormalTex_.

@@ -8,6 +8,13 @@
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
 
+// stb_image's function bodies are compiled HERE (this is already the third-party TU,
+// built with warnings off). It decodes the PNG/JPG bytes glTF stores for its textures
+// (Step 16). GpuRenderer.cpp includes the same header WITHOUT this define, so it sees
+// only the declarations and links against these bodies.
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #include "renderer/ModelLoader.hpp"
 
 #include <cstdint>
@@ -22,6 +29,7 @@
 #include "renderer/Mesh.hpp"
 #include "renderer/Tangents.hpp"
 #include "renderer/Vertex.hpp"
+#include "scene/Material.hpp"  // Step 16: glTF material import populates a koi::Material
 
 namespace koi {
 namespace {
@@ -95,10 +103,12 @@ void computeSmoothNormals(std::vector<Vertex>& verts, const std::vector<Uint32>&
     }
 }
 
-std::shared_ptr<Mesh> loadObj(GpuRenderer& renderer, const char* path) {
+LoadedModel loadObj(GpuRenderer& renderer, const char* path) {
     // tinyobjloader gives us flat attribute arrays plus faces that index position,
     // texcoord and normal SEPARATELY. The GPU wants ONE index per combined vertex,
     // so we de-duplicate each unique (v, vt, vn) triple into a single koi::Vertex.
+    // We import geometry only — the .mtl material is left to the caller (material
+    // stays null in the returned LoadedModel).
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
@@ -107,7 +117,7 @@ std::shared_ptr<Mesh> loadObj(GpuRenderer& renderer, const char* path) {
                                      /*mtl_basedir=*/nullptr, /*triangulate=*/true);
     if (!ok) {
         KOI_ERROR("loadModel: failed to load OBJ '%s': %s", path, err.c_str());
-        return nullptr;
+        return {};
     }
     if (!err.empty()) { KOI_WARN("loadModel('%s'): %s", path, err.c_str()); }
 
@@ -154,7 +164,7 @@ std::shared_ptr<Mesh> loadObj(GpuRenderer& renderer, const char* path) {
 
     if (vertices.empty()) {
         KOI_ERROR("loadModel: OBJ '%s' produced no geometry.", path);
-        return nullptr;
+        return {};
     }
     if (!haveNormals) { computeSmoothNormals(vertices, indices); }
     // OBJ has no tangents, so always derive them from positions + UVs (after the
@@ -163,10 +173,121 @@ std::shared_ptr<Mesh> loadObj(GpuRenderer& renderer, const char* path) {
 
     KOI_INFO("Loaded model '%s' (%zu verts, %zu tris).", path, vertices.size(),
              indices.size() / 3);
-    return renderer.createMesh(vertices, indices);
+    return LoadedModel{renderer.createMesh(vertices, indices), /*material=*/nullptr};
 }
 
-std::shared_ptr<Mesh> loadGltf(GpuRenderer& renderer, const char* path) {
+// --- glTF material import (Step 16) -----------------------------------------
+// Decode one glTF image into a GPU Texture. A glTF image is either EMBEDDED in the
+// binary blob (a buffer_view — the .glb case, decoded straight from memory) or an
+// EXTERNAL file (a uri, resolved relative to the .gltf). `srgb` marks COLOUR images
+// (base-colour, emissive) so the GPU un-gammas them to linear when sampled; DATA maps
+// (metallic-roughness, normal, AO) stay linear.
+std::shared_ptr<Texture> loadGltfImage(GpuRenderer& renderer, const cgltf_image* image,
+                                       const std::string& gltfDir, bool srgb) {
+    if (image == nullptr) { return nullptr; }
+
+    if (image->buffer_view != nullptr) {
+        // Embedded: cgltf_buffer_view_data hands us a pointer that already accounts for
+        // the view's offset (and any extension override). Decode those bytes in place.
+        const uint8_t* bytes = cgltf_buffer_view_data(image->buffer_view);
+        if (bytes == nullptr) {
+            KOI_WARN("loadGltfImage: image buffer not loaded; skipping a texture.");
+            return nullptr;
+        }
+        int w = 0, h = 0, channels = 0;
+        stbi_uc* pixels = stbi_load_from_memory(
+            bytes, static_cast<int>(image->buffer_view->size), &w, &h, &channels, /*desired=*/4);
+        if (pixels == nullptr) {
+            KOI_WARN("loadGltfImage: embedded image decode failed: %s", stbi_failure_reason());
+            return nullptr;
+        }
+        std::shared_ptr<Texture> tex = renderer.createTextureFromRGBA(
+            pixels, static_cast<Uint32>(w), static_cast<Uint32>(h), srgb);
+        stbi_image_free(pixels);
+        return tex;
+    }
+
+    if (image->uri != nullptr) {
+        // base64 data: URIs are a documented deferral (the .glb verification asset uses
+        // buffer_views, and real .gltf files ship external image files).
+        if (std::strncmp(image->uri, "data:", 5) == 0) {
+            KOI_WARN("loadGltfImage: data-URI images are not supported yet; skipping a texture.");
+            return nullptr;
+        }
+        const std::string full = gltfDir + image->uri;  // resolve relative to the glTF
+        return renderer.loadTexture(full.c_str(), srgb);
+    }
+    return nullptr;
+}
+
+// Import a glTF PBR material into a koi::Material: the base-colour, metallic-roughness,
+// normal, occlusion and emissive maps + the scalar factors. Colour maps (base-colour,
+// emissive) load as sRGB; data maps stay linear. `mat` may be null (a primitive without
+// a material) — we still return a valid white material so downstream code (which always
+// samples an albedo map) has something to bind.
+std::shared_ptr<Material> loadGltfMaterial(GpuRenderer& renderer, const cgltf_material* mat,
+                                           const std::string& gltfDir) {
+    auto material = std::make_shared<Material>();
+
+    // Base-colour factor (linear); tints the surface and, absent a base-colour texture,
+    // becomes a 1×1 solid so the albedo slot is never empty. Defaults to opaque white.
+    float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+
+    if (mat != nullptr && mat->has_pbr_metallic_roughness) {
+        const cgltf_pbr_metallic_roughness& pbr = mat->pbr_metallic_roughness;
+        for (int i = 0; i < 4; ++i) { baseColor[i] = pbr.base_color_factor[i]; }
+        if (pbr.base_color_texture.texture != nullptr) {
+            material->albedo = loadGltfImage(renderer, pbr.base_color_texture.texture->image,
+                                             gltfDir, /*srgb=*/true);
+        }
+        // The scalars are FACTORS the shader multiplies by the MR map's B/G channels
+        // (a white fallback map leaves them unchanged) — exactly the Step 13 convention.
+        material->metallic  = pbr.metallic_factor;
+        material->roughness = pbr.roughness_factor;
+        if (pbr.metallic_roughness_texture.texture != nullptr) {
+            material->metalRough = loadGltfImage(
+                renderer, pbr.metallic_roughness_texture.texture->image, gltfDir, /*srgb=*/false);
+        }
+    }
+
+    if (mat != nullptr) {
+        if (mat->normal_texture.texture != nullptr) {
+            material->normalMap = loadGltfImage(renderer, mat->normal_texture.texture->image,
+                                                gltfDir, /*srgb=*/false);
+        }
+        if (mat->occlusion_texture.texture != nullptr) {
+            material->ao = loadGltfImage(renderer, mat->occlusion_texture.texture->image,
+                                         gltfDir, /*srgb=*/false);
+        }
+        if (mat->emissive_texture.texture != nullptr) {
+            material->emissive = loadGltfImage(renderer, mat->emissive_texture.texture->image,
+                                               gltfDir, /*srgb=*/true);
+        }
+        // Emissive factor (× the KHR_materials_emissive_strength extension when present).
+        // Left at the Material default of 0 when the file has no emission.
+        const float strength = mat->has_emissive_strength
+                                   ? mat->emissive_strength.emissive_strength : 1.0f;
+        for (int i = 0; i < 3; ++i) {
+            material->emissiveFactor[i] = mat->emissive_factor[i] * strength;
+        }
+    }
+
+    // recordNode samples material->albedo unconditionally, so it must never be null.
+    // With no base-colour texture, synthesize a 1×1 solid from the (linear) factor.
+    if (!material->albedo) {
+        const auto toByte = [](float v) -> Uint8 {
+            const float c = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+            return static_cast<Uint8>(c * 255.0f + 0.5f);
+        };
+        const Uint8 texel[4] = {toByte(baseColor[0]), toByte(baseColor[1]),
+                                toByte(baseColor[2]), toByte(baseColor[3])};
+        material->albedo = renderer.createTextureFromRGBA(texel, 1, 1, /*srgb=*/false,
+                                                          /*withMips=*/false);
+    }
+    return material;
+}
+
+LoadedModel loadGltf(GpuRenderer& renderer, const char* path) {
     // cgltf parses .glb/.gltf into accessors (typed views into binary buffers). We
     // read the first mesh's first primitive — glTF already stores ONE index per
     // combined vertex, so no de-duplication is needed.
@@ -174,17 +295,17 @@ std::shared_ptr<Mesh> loadGltf(GpuRenderer& renderer, const char* path) {
     cgltf_data* data = nullptr;
     if (cgltf_parse_file(&options, path, &data) != cgltf_result_success) {
         KOI_ERROR("loadModel: cgltf failed to parse '%s'.", path);
-        return nullptr;
+        return {};
     }
     if (cgltf_load_buffers(&options, data, path) != cgltf_result_success) {
         KOI_ERROR("loadModel: cgltf failed to load buffers for '%s'.", path);
         cgltf_free(data);
-        return nullptr;
+        return {};
     }
     if (data->meshes_count == 0 || data->meshes[0].primitives_count == 0) {
         KOI_ERROR("loadModel: glTF '%s' has no mesh primitive.", path);
         cgltf_free(data);
-        return nullptr;
+        return {};
     }
 
     const cgltf_primitive& prim = data->meshes[0].primitives[0];
@@ -202,7 +323,7 @@ std::shared_ptr<Mesh> loadGltf(GpuRenderer& renderer, const char* path) {
     if (posAcc == nullptr) {
         KOI_ERROR("loadModel: glTF '%s' primitive has no POSITION.", path);
         cgltf_free(data);
-        return nullptr;
+        return {};
     }
 
     const size_t vcount = posAcc->count;
@@ -236,7 +357,17 @@ std::shared_ptr<Mesh> loadGltf(GpuRenderer& renderer, const char* path) {
 
     const bool haveNormals  = (nrmAcc != nullptr);
     const bool haveTangents = (tanAcc != nullptr);
-    cgltf_free(data);  // the accessors are read out; the parsed data is no longer needed
+
+    // Import the file's PBR material (Step 16) BEFORE freeing cgltf's data — the image
+    // decode reads bytes straight out of the still-live glTF buffers. gltfDir lets an
+    // external-texture .gltf resolve its image URIs relative to the model file.
+    std::string gltfDir;
+    { const std::string sp = path;
+      const size_t slash = sp.find_last_of("/\\");
+      gltfDir = (slash == std::string::npos) ? std::string() : sp.substr(0, slash + 1); }
+    std::shared_ptr<Material> material = loadGltfMaterial(renderer, prim.material, gltfDir);
+
+    cgltf_free(data);  // accessors read out + material imported; parsed data no longer needed
 
     if (!haveNormals) { computeSmoothNormals(vertices, indices); }
     // Derive tangents only when the file didn't ship them (they need valid normals to
@@ -245,7 +376,7 @@ std::shared_ptr<Mesh> loadGltf(GpuRenderer& renderer, const char* path) {
 
     KOI_INFO("Loaded model '%s' (%zu verts, %zu tris).", path, vertices.size(),
              indices.size() / 3);
-    return renderer.createMesh(vertices, indices);
+    return LoadedModel{renderer.createMesh(vertices, indices), material};
 }
 
 bool endsWith(const std::string& s, const char* ext) {
@@ -255,12 +386,12 @@ bool endsWith(const std::string& s, const char* ext) {
 
 }  // namespace
 
-std::shared_ptr<Mesh> loadModel(GpuRenderer& renderer, const char* path) {
+LoadedModel loadModel(GpuRenderer& renderer, const char* path) {
     const std::string p = path;
     if (endsWith(p, ".obj")) { return loadObj(renderer, path); }
     if (endsWith(p, ".glb") || endsWith(p, ".gltf")) { return loadGltf(renderer, path); }
     KOI_ERROR("loadModel: unsupported model extension for '%s' (want .obj/.glb/.gltf).", path);
-    return nullptr;
+    return {};
 }
 
 }  // namespace koi

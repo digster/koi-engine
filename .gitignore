@@ -30,6 +30,10 @@ _deps/
 *.dll
 *.exe
 
+# Step 16: the Damaged Helmet glTF (~3.6 MB) is DOWNLOADED at configure time
+# (see CMakeLists.txt), not committed. Other .glb models (sphere.glb) stay tracked.
+assets/DamagedHelmet.glb
+
 # ----------------------------------------------------------------------------
 #  Editor / IDE
 # ----------------------------------------------------------------------------

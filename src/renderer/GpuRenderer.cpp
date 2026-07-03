@@ -4,6 +4,7 @@
 #include <cstddef>  // offsetof
 #include <cstring>  // std::memcpy
 #include <memory>   // std::make_shared
+#include <string>   // std::string (texture path extension dispatch)
 #include <vector>   // std::vector (repack texture rows to a tight pitch)
 
 #include "core/Log.hpp"
@@ -14,6 +15,12 @@
 #include "renderer/Texture.hpp"
 #include "renderer/Vertex.hpp"
 #include "scene/Node.hpp"
+
+// stb_image DECLARATIONS only — the bodies are compiled once in ModelLoader.cpp
+// (which #defines STB_IMAGE_IMPLEMENTATION). We use it here to decode PNG/JPG in
+// loadTexture, since SDL_LoadBMP handles only BMP. Fetched into MODELS_DIR (a
+// private include dir on koi_core) alongside cgltf.h — see CMakeLists.txt (Step 16).
+#include "stb_image.h"
 
 namespace koi {
 
@@ -194,10 +201,10 @@ bool GpuRenderer::createTrianglePipeline() {
     // The vertex shader declares one uniform buffer (the MVP matrix); the
     // fragment shader declares none.
     SDL_GPUShader* vertexShader   = loadShader(device_, "triangle.vert", SDL_GPU_SHADERSTAGE_VERTEX, /*numUniformBuffers=*/1);
-    // Step 15: the fragment shader now reads EIGHT samplers — the four per-material maps
-    // (albedo, metallic-roughness, normal, AO), the shared shadow map, and the three IBL
-    // maps (irradiance cube, prefilter cube, BRDF LUT) added for image-based ambient light.
-    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/2, /*numSamplers=*/8);
+    // Step 16: the fragment shader now reads NINE samplers — the four per-material maps
+    // (albedo, metallic-roughness, normal, AO), the shared shadow map, the three IBL maps
+    // (irradiance cube, prefilter cube, BRDF LUT), and the per-material EMISSIVE map.
+    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/2, /*numSamplers=*/9);
     if (vertexShader == nullptr || fragmentShader == nullptr) {
         // loadShader already logged the cause. Clean up whichever did load.
         if (vertexShader != nullptr)   SDL_ReleaseGPUShader(device_, vertexShader);
@@ -1239,7 +1246,7 @@ SDL_GPUBuffer* GpuRenderer::uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
 }
 
 SDL_GPUTexture* GpuRenderer::uploadToGpuTexture(const void* pixels, Uint32 width,
-                                                Uint32 height, bool withMips) {
+                                                Uint32 height, bool withMips, bool srgb) {
     // The 2D sibling of uploadToGpuBuffer: same staging dance (CPU-visible transfer
     // buffer → copy pass → GPU resource), but the destination is a texture and the
     // copy is a texture region. (captureFrame does the reverse to read pixels back.)
@@ -1258,9 +1265,13 @@ SDL_GPUTexture* GpuRenderer::uploadToGpuTexture(const void* pixels, Uint32 width
     // 1. The destination: a 2D texture we can sample in a shader. Generating mipmaps
     //    needs the texture to ALSO be usable as a color target (the GPU renders the
     //    downsampled levels into it), so we add COLOR_TARGET usage when mipping.
+    // sRGB colour maps use the _SRGB variant so the GPU un-gammas each texel to linear
+    // when sampled (shading is done in linear light); DATA maps and the BMP path stay
+    // plain UNORM. Same byte layout either way — only the sampling interpretation differs.
     SDL_GPUTextureCreateInfo texInfo = {};
     texInfo.type                 = SDL_GPU_TEXTURETYPE_2D;
-    texInfo.format               = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;  // 8-bit RGBA
+    texInfo.format               = srgb ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
+                                        : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;  // 8-bit RGBA
     texInfo.usage                = SDL_GPU_TEXTUREUSAGE_SAMPLER |
                                    (withMips ? SDL_GPU_TEXTUREUSAGE_COLOR_TARGET : 0u);
     texInfo.width                = width;
@@ -1506,51 +1517,75 @@ std::shared_ptr<Mesh> GpuRenderer::createMesh(std::span<const Vertex> vertices,
                           SDL_GPU_INDEXELEMENTSIZE_32BIT);
 }
 
-std::shared_ptr<Texture> GpuRenderer::loadTexture(const char* path) {
-    // 1. Load the image file. SDL_LoadBMP reads the BMP format with no extra
-    //    library (so we avoid an SDL_image dependency) and returns a CPU surface.
-    SDL_Surface* surface = SDL_LoadBMP(path);
-    if (surface == nullptr) {
-        KOI_ERROR("loadTexture: SDL_LoadBMP('%s') failed: %s", path, SDL_GetError());
-        return nullptr;
-    }
-
-    // 2. Convert to a known 32-bit RGBA layout that matches our GPU texture format.
-    //    SDL_PIXELFORMAT_RGBA32 is an endian-aware alias whose byte order lines up
-    //    with SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, so the bytes need no swizzling
-    //    regardless of how the BMP stored its pixels.
-    SDL_Surface* rgba = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
-    SDL_DestroySurface(surface);
-    if (rgba == nullptr) {
-        KOI_ERROR("loadTexture: SDL_ConvertSurface failed: %s", SDL_GetError());
-        return nullptr;
-    }
-
-    const Uint32 width  = static_cast<Uint32>(rgba->w);
-    const Uint32 height = static_cast<Uint32>(rgba->h);
-
-    // 3. Repack into a tightly-packed (pitch == width*4) buffer. A surface's `pitch`
-    //    (bytes per row) can include padding; the GPU uploader wants no gaps, so we
-    //    copy row by row. (For our 256×256 RGBA image the pitch is already tight, but
-    //    this keeps the loader correct for any width.)
-    std::vector<Uint8> packed(static_cast<size_t>(width) * height * 4);
-    const Uint8* srcRows = static_cast<const Uint8*>(rgba->pixels);
-    for (Uint32 row = 0; row < height; ++row) {
-        std::memcpy(packed.data() + static_cast<size_t>(row) * width * 4,
-                    srcRows + static_cast<size_t>(row) * static_cast<size_t>(rgba->pitch),
-                    static_cast<size_t>(width) * 4);
-    }
-    SDL_DestroySurface(rgba);
-
-    // 4. Upload the pixels into a GPU texture and wrap it in a Texture (which now
-    //    owns it and frees it via the same device when its last shared_ptr drops).
-    SDL_GPUTexture* gpuTex = uploadToGpuTexture(packed.data(), width, height);
+std::shared_ptr<Texture> GpuRenderer::createTextureFromRGBA(const void* pixels,
+                                                            Uint32 width, Uint32 height,
+                                                            bool srgb, bool withMips) {
+    // The shared tail of every texture load: upload tightly-packed RGBA into a GPU
+    // texture (with mipmaps + the sRGB choice) and wrap it in a Texture, which now
+    // owns it and frees it via the same device when its last shared_ptr drops.
+    SDL_GPUTexture* gpuTex = uploadToGpuTexture(pixels, width, height, withMips, srgb);
     if (gpuTex == nullptr) {
         return nullptr;  // uploadToGpuTexture already logged the cause
     }
-
-    KOI_INFO("Loaded texture '%s' (%ux%u).", path, width, height);
     return std::make_shared<Texture>(device_, gpuTex, width, height);
+}
+
+std::shared_ptr<Texture> GpuRenderer::loadTexture(const char* path, bool srgb) {
+    // Decode the file to tightly-packed RGBA, then hand it to createTextureFromRGBA.
+    // BMP goes through SDL (no extra dependency); PNG/JPG (used by glTF — Step 16)
+    // through stb_image. We dispatch on the extension so the common BMP path is byte-
+    // for-byte the same as before.
+    const std::string p = path;
+    const bool isBmp = p.size() >= 4 && (p.compare(p.size() - 4, 4, ".bmp") == 0 ||
+                                         p.compare(p.size() - 4, 4, ".BMP") == 0);
+
+    if (isBmp) {
+        // 1. SDL_LoadBMP reads BMP with no extra library and returns a CPU surface.
+        SDL_Surface* surface = SDL_LoadBMP(path);
+        if (surface == nullptr) {
+            KOI_ERROR("loadTexture: SDL_LoadBMP('%s') failed: %s", path, SDL_GetError());
+            return nullptr;
+        }
+        // 2. Convert to a known 32-bit RGBA layout that matches our GPU texture format.
+        //    SDL_PIXELFORMAT_RGBA32 is an endian-aware alias whose byte order lines up
+        //    with SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, so the bytes need no swizzling
+        //    regardless of how the BMP stored its pixels.
+        SDL_Surface* rgba = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
+        SDL_DestroySurface(surface);
+        if (rgba == nullptr) {
+            KOI_ERROR("loadTexture: SDL_ConvertSurface failed: %s", SDL_GetError());
+            return nullptr;
+        }
+        const Uint32 width  = static_cast<Uint32>(rgba->w);
+        const Uint32 height = static_cast<Uint32>(rgba->h);
+        // 3. Repack into a tightly-packed (pitch == width*4) buffer. A surface's `pitch`
+        //    (bytes per row) can include padding; the GPU uploader wants no gaps.
+        std::vector<Uint8> packed(static_cast<size_t>(width) * height * 4);
+        const Uint8* srcRows = static_cast<const Uint8*>(rgba->pixels);
+        for (Uint32 row = 0; row < height; ++row) {
+            std::memcpy(packed.data() + static_cast<size_t>(row) * width * 4,
+                        srcRows + static_cast<size_t>(row) * static_cast<size_t>(rgba->pitch),
+                        static_cast<size_t>(width) * 4);
+        }
+        SDL_DestroySurface(rgba);
+        std::shared_ptr<Texture> tex = createTextureFromRGBA(packed.data(), width, height, srgb);
+        if (tex) { KOI_INFO("Loaded texture '%s' (%ux%u%s).", path, width, height,
+                            srgb ? ", sRGB" : ""); }
+        return tex;
+    }
+
+    // Non-BMP: stb_image decodes PNG/JPG/etc. to RGBA (forcing 4 channels).
+    int w = 0, h = 0, channels = 0;
+    stbi_uc* data = stbi_load(path, &w, &h, &channels, /*desired_channels=*/4);
+    if (data == nullptr) {
+        KOI_ERROR("loadTexture: stbi_load('%s') failed: %s", path, stbi_failure_reason());
+        return nullptr;
+    }
+    std::shared_ptr<Texture> tex = createTextureFromRGBA(
+        data, static_cast<Uint32>(w), static_cast<Uint32>(h), srgb);
+    stbi_image_free(data);
+    if (tex) { KOI_INFO("Loaded texture '%s' (%dx%d%s).", path, w, h, srgb ? ", sRGB" : ""); }
+    return tex;
 }
 
 // Choose a depth texture format the device supports — see chooseDepthFormat above.
@@ -1748,11 +1783,20 @@ void GpuRenderer::recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
         };
         SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, maps, /*num_bindings=*/4);
 
-        // Push this material's PBR parameters (fragment set=3, binding 1): a vec4 with
-        // metallic in x and roughness in y. Per draw, so each object can be a rough
-        // dielectric or a polished metal independently of the next.
-        const float materialParams[4] = { material->metallic, material->roughness,
-                                          0.0f, 0.0f };
+        // The EMISSIVE map (Step 16) sits at slot 8 — slots 5–7 are the shared IBL maps,
+        // bound once per frame — so it's bound on its own rather than extending maps[].
+        // No emissive map ⇒ the white fallback, which (with a zero factor) adds nothing.
+        const SDL_GPUTextureSamplerBinding emissiveBinding = {
+            material->emissive ? material->emissive->handle() : whiteTex_, sampler_ };
+        SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/8, &emissiveBinding, /*num_bindings=*/1);
+
+        // Push this material's parameters (fragment set=3, binding 1), matching the two
+        // vec4s of MaterialUBO in triangle.frag: {metallic, roughness, -, -} then the
+        // emissive factor {r, g, b, -}. Per draw, so each object's PBR + glow is its own.
+        const float materialParams[8] = {
+            material->metallic, material->roughness, 0.0f, 0.0f,
+            material->emissiveFactor[0], material->emissiveFactor[1],
+            material->emissiveFactor[2], 0.0f };
         SDL_PushGPUFragmentUniformData(cmd, /*slot=*/1, materialParams, sizeof(materialParams));
 
         // Bind THIS mesh's geometry. Different meshes (e.g. cube vs. ground plane)

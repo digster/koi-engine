@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>glTF PBR Import · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
+    <a class="navlink" href="16-image-based-lighting.html">Image-based Lighting</a>
+    <a class="navlink" href="17-gltf-pbr-import.html" aria-current="page">glTF PBR Import</a>
+  </div>
+</nav>
+
+<main>
+  <h1>glTF PBR Import</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 16:</strong> stop hand-building materials and <strong>load a real one from a
+    file</strong>. Since <a href="13-pbr-materials.html">Step 12</a> the engine has had a full
+    physically-based shader, and <a href="14-texture-and-normal-maps.html">Step 13</a> gave it per-pixel
+    texture, metallic-roughness, normal and AO maps — but every map so far was a synthetic BMP we generated
+    with a Python script. This step imports the <strong>base-colour, metallic-roughness, normal, occlusion
+    and emissive maps directly out of a glTF file</strong>, so we can load the industry-standard
+    <em>Damaged Helmet</em> test asset and see all of that machinery run on real data.</p>
+    <p>Two things ride along because a real asset demands them: an <strong>emissive</strong> term (the
+    helmet's panels glow), and <strong>sRGB</strong> handling for colour textures (without it, the imported
+    albedo comes out visibly wrong).</p>
+  </blockquote>
+
+  <h2>1. What glTF actually is</h2>
+
+  <p><strong>glTF</strong> ("GL Transmission Format") is the runtime-friendly 3D format — often called
+  "the JPEG of 3D". A glTF asset is three kinds of thing, stitched together by references:</p>
+
+  <ul>
+    <li>a <strong>JSON</strong> document describing the scene: which meshes exist, how their vertex data is
+    laid out, which materials they use, and how materials reference textures;</li>
+    <li>one or more <strong>binary buffers</strong> holding the raw bytes — vertex positions, normals, UVs,
+    indices — as tightly packed arrays;</li>
+    <li><strong>images</strong> (PNG/JPG) for the textures.</li>
+  </ul>
+
+  <p>It comes in two packagings. A <code>.gltf</code> is the JSON as a text file, with the buffers and
+  images sitting <em>next to it</em> as separate files. A <code>.glb</code> is the same content packed into
+  a <strong>single binary file</strong> — the JSON plus one big blob with the buffers and images embedded.
+  We use the <code>.glb</code> of the Damaged Helmet precisely because everything is in one file, which (as
+  we'll see) makes loading its textures simpler.</p>
+
+  <p>We don't hand-write a glTF parser — the JSON-and-accessor bookkeeping has little to teach us about
+  graphics, so since <a href="10-models-and-shadows.html">Step 9</a> we've used the single-header library
+  <strong>cgltf</strong> for it (just as we use tinyobjloader for <code>.obj</code>). What's new here is
+  that we finally read the <em>material</em> half of what cgltf parses, not just the geometry.</p>
+
+  <h2>2. Image vs. texture vs. sampler</h2>
+
+  <p>glTF is careful to separate three ideas that beginners often blur together — and the distinction is
+  exactly the one <a href="07-textures-and-samplers.html">Step 6</a> drew:</p>
+
+  <ul>
+    <li>an <strong>image</strong> is the pixel data — a decoded PNG. Just colours.</li>
+    <li>a <strong>sampler</strong> is <em>how</em> to read an image: filtering (smooth vs. blocky) and wrap
+    mode (repeat vs. clamp). No pixels of its own.</li>
+    <li>a <strong>texture</strong> pairs one image with one sampler — "read <em>this</em> picture <em>this</em>
+    way".</li>
+  </ul>
+
+  <p>A material then points at textures: base-colour texture, normal texture, and so on. So importing a
+  material means: for each of its texture slots, find the referenced <em>image</em>, decode it to pixels,
+  and upload it as one of our <a href="../../src/renderer/Texture.hpp">Texture</a> objects. Our engine still
+  reads every texture through a single shared sampler (we don't yet honour glTF's per-texture sampler
+  settings — a small, deliberate simplification), so the interesting work is decoding the images.</p>
+
+  <h2>3. cgltf hands us bytes; stb_image turns them into pixels</h2>
+
+  <p>Here's a subtlety that trips people up: <strong>cgltf does not decode images.</strong> It parses the
+  JSON and loads the binary buffers, but a texture's image is still a <em>compressed PNG/JPG</em> — cgltf
+  just tells you <em>where the compressed bytes are</em>. Decoding those bytes into raw RGBA pixels is a
+  separate job, and it's the one genuinely new dependency this step adds:
+  <strong>stb_image</strong> — another single-header library, fetched and compiled exactly like cgltf. Our
+  own <a href="../../src/renderer/GpuRenderer.cpp">loadTexture</a> previously handled only BMP (via SDL, to
+  avoid a dependency); now BMP still goes through SDL and everything else (PNG/JPG) goes through stb_image.</p>
+
+  <p>Where <em>are</em> the compressed bytes? Two cases, and the loader handles both:</p>
+
+  <pre class="diagram">EMBEDDED (.glb)   image → buffer_view → { buffer bytes, offset, size }   → stbi_load_from_memory
+EXTERNAL (.gltf)  image → uri "textures/albedo.png"                       → resolve path → stbi_load</pre>
+
+  <p>For the <code>.glb</code> helmet, every image is a <strong>buffer view</strong> — a byte range inside
+  the file's embedded blob — so we decode straight from memory with no filesystem access. That's the whole
+  reason we picked the <code>.glb</code>: it sidesteps path resolution entirely. (Base64 <code>data:</code>
+  URIs are a third case we deliberately leave for later.)</p>
+
+  <h2>4. sRGB vs. linear: the gamma trap</h2>
+
+  <p>This is the concept most worth understanding, because getting it wrong is <em>invisible until you load
+  a real asset</em>. Lighting maths must be done in <strong>linear</strong> light — where "twice the number"
+  really means "twice the photons", so that adding two lights, or averaging texels for a mipmap, gives a
+  physically correct result. But image files that store <em>colour</em> — a base-colour or emissive
+  texture — are almost always saved in <strong>sRGB</strong>, a non-linear encoding that devotes more of its
+  256 levels to the darks, matching how human vision works. An sRGB texel value of <code>0.5</code> is
+  <em>not</em> half-brightness; it's roughly <code>0.5<sup>2.2</sup> ≈ 0.22</code> of full light.</p>
+
+  <p>So a colour texture must be <strong>decoded from sRGB to linear before it's used in shading</strong>.
+  If you skip that (as the engine did up to now — a documented Step 10 shortcut), every albedo comes out
+  too bright and slightly washed-out, and the PBR maths is subtly off everywhere.</p>
+
+  <p>The clean fix is to let the GPU do it for free. GPUs have <strong>sRGB texture formats</strong>
+  (<code>R8G8B8A8_UNORM_SRGB</code>): the stored bytes are identical, but every time a shader samples the
+  texture the hardware converts sRGB → linear on the way out. So "fixing sRGB" is purely a choice of texture
+  <em>format</em> — one flag, no pixel processing:</p>
+
+  <pre class="diagram">base-colour, emissive   → *_SRGB format   (COLOUR data → GPU un-gammas on sample)
+metallic-roughness, normal, AO → plain UNORM (DATA, already linear — must NOT be touched)</pre>
+
+  <p>The second line is the other half of the rule, and it matters just as much: metallic-roughness, normal
+  and occlusion maps are <em>data</em>, not colour. A normal map's <code>(0.5, 0.5, 1.0)</code> encodes a
+  direction; running it through an sRGB decode would corrupt the geometry. So only the two colour slots get
+  the sRGB format; the data maps stay linear. The renderer's
+  <a href="../../src/renderer/GpuRenderer.cpp">uploadToGpuTexture</a> gained a single <code>srgb</code>
+  parameter, and the loader passes <code>true</code> for exactly the base-colour and emissive images.</p>
+
+  <h2>5. Emissive: surfaces that make their own light</h2>
+
+  <p>Everything the shader did before was <em>reflected</em> light — surfaces lit by lamps or the
+  environment. <strong>Emissive</strong> is different: it's light a surface <em>emits on its own</em>, like a
+  glowing screen or the Damaged Helmet's lit vents. Because it isn't reflected, it doesn't participate in the
+  lighting loop at all — it's simply <strong>added on top</strong> of the shaded result:</p>
+
+  <pre class="diagram">color = ambientIBL · ao + directLighting;         // everything reflected
+color += texture(uEmissiveMap, uv).rgb · emissiveFactor;   // + light the surface emits</pre>
+
+  <p>Two nice consequences fall out of that one added line. First, a material with no emissive map binds the
+  neutral white 1×1 fallback and carries an <code>emissiveFactor</code> of zero, so the term adds nothing —
+  every existing object is untouched, with no shader branching (the same fallback trick as
+  <a href="14-texture-and-normal-maps.html">Step 13</a>). Second, a bright emissive pixel can cross the
+  <a href="11-post-processing.html">Step 10</a> bloom threshold, so it <strong>glows</strong> — which is the
+  first time our bloom pass has had a genuine in-scene light source to feed on rather than just a bright sky.
+  The <code>emissiveFactor</code> travels to the shader in a second <code>vec4</code> of the per-material
+  uniform, which grew from one <code>vec4</code> to two — a bigger push, but still a single uniform buffer.</p>
+
+  <h2>6. A model is geometry <em>and</em> a material</h2>
+
+  <p>There's a small but meaningful design change in the loader. Through Step 9,
+  <code>loadModel</code> returned just a <code>Mesh</code> — geometry only — and the engine attached a
+  hand-written material. That can't express "use the material from the file", so <code>loadModel</code> now
+  returns a <strong><code>LoadedModel</code></strong>: a mesh <em>and</em> an optional material
+  (<a href="../../src/renderer/ModelLoader.hpp">ModelLoader.hpp</a>). glTF fills in the material; OBJ leaves
+  it null (we still import OBJ geometry only). This is the natural shape — "a model is a shape plus an
+  appearance" — and it's what lets the Damaged Helmet arrive fully dressed while the older sphere and torus
+  keep the showcase materials the demo assigns them.</p>
+
+  <p>One ordering detail worth noting: the images are decoded straight out of cgltf's still-live buffers, so
+  the material must be imported <em>before</em> <code>cgltf_free</code> releases the parsed data — the kind
+  of lifetime care that RAII usually hides but that a C library makes explicit.</p>
+
+  <h2>7. The orientation gotcha (and why it lives in the app)</h2>
+
+  <p>Load the helmet and it arrives lying on its back. That's not a bug — it's a <em>scope boundary</em>. A
+  glTF file is a whole scene graph: nodes with their own transforms, arranged in a hierarchy, and the
+  Damaged Helmet's mesh sits under a node that rotates it upright (the model is authored Z-up; the node
+  brings it to our Y-up world). We import only the <strong>raw primitive geometry</strong> and ignore the
+  node transforms — a deliberate deferral — so the correction becomes our job: the demo gives the helmet its
+  own <code>rotationEuler</code> in <a href="../../src/core/Engine.cpp">Engine.cpp</a> to stand it up and
+  turn it toward the camera. Importing the full node hierarchy is a future step.</p>
+
+  <blockquote>
+    <p><strong>Verify by looking, not by reasoning.</strong> Whether the helmet is upright, whether the
+    albedo looks right, whether the vents glow — none of that shows up in a compile. As with every rendering
+    step, we confirm with a captured frame: <code>KOI_CAPTURE=out.bmp ./build/koi-engine</code> renders one
+    frame headlessly to a BMP. The first capture is how the orientation and the emissive strength get
+    dialled in.</p>
+  </blockquote>
+
+  <h2>8. Try it yourself</h2>
+
+  <ol>
+    <li><strong>See it at all.</strong> The helmet downloads at CMake configure time. Build and run —
+    <code>KOI_CAPTURE=out.bmp ./build/koi-engine</code>, then <code>sips -s format png out.bmp --out
+    out.png</code> — and you'll see the imported base colour, metallic reflections of the sky (IBL on the
+    <em>file's</em> metallic-roughness map), normal-mapped surface relief, and glowing emissive vents.</li>
+    <li><strong>Prove the sRGB fix matters.</strong> In
+    <a href="../../src/renderer/ModelLoader.cpp">ModelLoader.cpp</a>, temporarily pass <code>false</code> for
+    the base-colour image's <code>srgb</code> argument, rebuild, recapture: the helmet's paint turns pale and
+    washed-out. Put it back.</li>
+    <li><strong>Turn the glow up.</strong> The emissive strength comes straight from the file. Multiply the
+    imported <code>emissiveFactor</code> in <code>loadGltfMaterial</code> by, say, 4, and watch the vents
+    bloom harder — the bright pixels sailing past the Step 10 threshold.</li>
+    <li><strong>Load your own.</strong> Point <code>loadModel</code> at any other <code>.glb</code> with
+    embedded textures and it should come in fully materialled — the import isn't hard-coded to the helmet.</li>
+  </ol>
+
+  <h2>9. What's next</h2>
+
+  <p>➡️ The material/lighting pipeline is now exercised end-to-end by a real production asset. The natural
+  follow-ups branch out: <strong>multi-primitive / multi-material</strong> meshes and the full glTF
+  <strong>node hierarchy</strong> (so models arrive upright on their own); loading <strong>Sponza</strong> as
+  a culling-and-lighting stress scene; and, on the systems side, the flagged production moves —
+  engine/app separation and cross-platform CI with golden-image capture tests. See the
+  <a href="../../ROADMAP.md">roadmap</a> for the sequenced plan and its dependencies.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

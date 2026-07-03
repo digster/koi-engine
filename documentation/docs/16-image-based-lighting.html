@@ -29,6 +29,7 @@
     <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
     <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
     <a class="navlink" href="16-image-based-lighting.html" aria-current="page">Image-based Lighting</a>
+    <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
   </div>
 </nav>
 
@@ -233,10 +234,10 @@ ambient = (kD · diffuseIBL + specularIBL) · ao;</pre>
 
   <p>➡️ IBL closes the core material/lighting arc that <a href="13-pbr-materials.html">Step 12</a> opened:
   physically-based surfaces now respond to both direct lights <em>and</em> their environment. From here the
-  engine fans out — full glTF PBR material import (to load the Damaged Helmet and Sponza test scenes),
-  transparency and blending, and the first production-hardening moves (engine/app separation, cross-platform
-  CI with golden-image capture tests). See the <a href="../../ROADMAP.md">roadmap</a> for the sequenced
-  plan and its dependencies.</p>
+  engine fans out — <a href="17-gltf-pbr-import.html">full glTF PBR material import</a> (to load the Damaged
+  Helmet, done in Step 16, and Sponza next), transparency and blending, and the first production-hardening
+  moves (engine/app separation, cross-platform CI with golden-image capture tests). See the
+  <a href="../../ROADMAP.md">roadmap</a> for the sequenced plan and its dependencies.</p>
 </main>
 
 <footer class="site-footer">

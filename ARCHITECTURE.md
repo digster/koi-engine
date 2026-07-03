@@ -3,7 +3,7 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 15 (window & render loop, the first triangle, geometry in GPU
+through Step 16 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
@@ -17,7 +17,10 @@ different kinds (directional/point/spot) accumulated in the shader, physically-b
 per-vertex tangent + **TBN** basis, with **mipmaps** and **anisotropic filtering**, a
 **skybox** — a **cubemap** environment sampled by direction and drawn behind the scene — and
 **image-based lighting**, which bakes that cubemap into irradiance / prefiltered / BRDF-LUT maps so
-the environment lights the surfaces themselves and metals reflect their surroundings).
+the environment lights the surfaces themselves and metals reflect their surroundings, and **glTF PBR
+material import** — reading a model's base-colour / metallic-roughness / normal / AO / **emissive** maps
+straight from the file (PNG/JPG decoded by **stb_image**, colour textures handled as **sRGB**), proven by
+loading the Khronos **Damaged Helmet**).
 
 ## Guiding principles
 
@@ -56,14 +59,14 @@ the environment lights the surfaces themselves and metals reflect their surround
 |-----------|------|----------------|
 | `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera + the scene graph, runs the game loop, computes delta-time, routes input, builds the demo scene (`buildScene`: meshes + textures + materials, assigned to nodes), animates + propagates transforms each frame, controls startup/shutdown order. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines), the (Step 14) **skybox** resources (a `CUBE` **cubemap** texture, a CLAMP_TO_EDGE cubemap sampler, a skybox pipeline, and the cube mesh drawn around the camera), and the (Step 15) **image-based-lighting** resources (three bake pipelines, a trilinear CLAMP sampler, and the baked **irradiance** cube + **prefiltered** cube + **BRDF LUT** targets). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload; `loadCubemap` uploads six faces into one cube texture, then `bakeIbl` bakes the IBL maps from it) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`; binds the material's four maps per draw, shadow map at slot 4, the three IBL maps at slots 5–7, then draws the **sky last** via `recordSkybox`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines), the (Step 14) **skybox** resources (a `CUBE` **cubemap** texture, a CLAMP_TO_EDGE cubemap sampler, a skybox pipeline, and the cube mesh drawn around the camera), and the (Step 15) **image-based-lighting** resources (three bake pipelines, a trilinear CLAMP sampler, and the baked **irradiance** cube + **prefiltered** cube + **BRDF LUT** targets). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload and choosing an **sRGB** format for colour maps — Step 16; `createTextureFromRGBA` for already-decoded bytes; `loadCubemap` uploads six faces into one cube texture, then `bakeIbl` bakes the IBL maps from it) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`; binds the material's four maps per draw + the **emissive** map at slot 8 (Step 16), shadow map at slot 4, the three IBL maps at slots 5–7, then draws the **sky last** via `recordSkybox`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
 | `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the Engine drives from input and hands to the renderer, plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
-| `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: an `albedo` texture + **PBR** params `metallic`/`roughness` (Step 12) — now **factors** — plus (Step 13) three optional map handles: `metalRough` (glTF-packed G=roughness, B=metallic), `normalMap` (tangent-space), and `ao`. Any map may be null; the renderer binds a neutral 1×1 fallback so map-less materials render as in Step 12. Shared by `shared_ptr`; a `Node` references one; the renderer binds all four maps per draw. |
+| `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: an `albedo` texture + **PBR** params `metallic`/`roughness` (Step 12) — now **factors** — plus (Step 13) three optional map handles: `metalRough` (glTF-packed G=roughness, B=metallic), `normalMap` (tangent-space), and `ao`; and (Step 16) an optional `emissive` map + `emissiveFactor` (default 0 ⇒ no glow, so existing materials are unchanged). Any map may be null; the renderer binds a neutral 1×1 fallback so map-less materials render as in Step 12. Shared by `shared_ptr`; a `Node` references one; the renderer binds all five maps per draw. |
 | `Pbr` | [src/renderer/Pbr.hpp](src/renderer/Pbr.hpp) | Header-only, SDL-free (Step 12): pure CPU mirrors of the Cook-Torrance BRDF sub-terms — `distributionGGX` (D), `geometrySmith`/`geometrySchlickGGX` (G), `fresnelSchlick` (F), plus `kPi`. The shader in `triangle.frag` is the runtime truth; these exist so the microfacet math's shape is unit-tested headlessly (`tests/test_pbr.cpp`), the same pattern as `PostProcess.hpp`/`Light.hpp`. |
 | `Light` | [src/scene/Light.hpp](src/scene/Light.hpp) | Header-only, SDL-free (Step 11): a `Light` struct (type = directional/point/spot, position, direction, colour, intensity, range, spot-cone cosines, an `enabled` flag) plus pure helpers (`attenuation`, `spotFactor`, `activeLightCount`) that mirror the shader math for headless tests (`tests/test_light.cpp`). The `Engine` owns a `std::vector<Light>` and hands it to the renderer each frame, exactly like the camera + `PostSettings`. `MAX_LIGHTS` matches the shader's fixed array size. |
-| `ModelLoader` | [src/renderer/ModelLoader.*](src/renderer/) | `loadModel(path)` reads a model file into a `Mesh` (positions/normals/UVs/indices, vertex color = white): `.obj` via **tinyobjloader** (de-duplicating its separate v/vt/vn indices), `.glb/.gltf` via **cgltf**. The single TU that pulls in those third-party headers — compiled warning-free (`-w`). |
+| `ModelLoader` | [src/renderer/ModelLoader.*](src/renderer/) | `loadModel(path)` reads a model file into a **`LoadedModel`** (a `Mesh` **+** an optional `Material`): `.obj` via **tinyobjloader** (de-duplicating its separate v/vt/vn indices; geometry only — material null), `.glb/.gltf` via **cgltf**, which since **Step 16** also imports the file's PBR **material** (base-colour / metallic-roughness / normal / occlusion / **emissive** maps + factors). Its images (PNG/JPG) are decoded by **stb_image** — embedded `.glb` `buffer_view`s straight from memory, external URIs via `loadTexture` — with colour maps flagged **sRGB**. The single TU that pulls in those three third-party headers (defines their `*_IMPLEMENTATION`) — compiled warning-free (`-w`). |
 | `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count + element size: 16-bit for primitives, 32-bit for big loaded models). Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must die before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
-| `Texture` | [src/renderer/Texture.*](src/renderer/) | RAII owner of one `SDL_GPUTexture` (sampled image). Same non-owning-device lifetime rule as `Mesh`. Created via `GpuRenderer::loadTexture` (load BMP → convert → upload); held by `shared_ptr`. A *sampler* (how to read it) is separate, reusable device state owned by the renderer. |
+| `Texture` | [src/renderer/Texture.*](src/renderer/) | RAII owner of one `SDL_GPUTexture` (sampled image). Same non-owning-device lifetime rule as `Mesh`. Created via `GpuRenderer::loadTexture` (BMP → SDL; PNG/JPG → **stb_image**; decode → upload) or `createTextureFromRGBA` (already-decoded bytes, e.g. embedded glTF images), with an **sRGB** option for colour maps (Step 16); held by `shared_ptr`. A *sampler* (how to read it) is separate, reusable device state owned by the renderer. |
 | `Primitives` | [src/renderer/Primitives.*](src/renderer/) | Free functions (`makeCubeMesh`, `makePlaneMesh`) that define a shape's vertex/index data and upload it via `createMesh`, keeping the renderer geometry-agnostic. |
 | `Transform` | [src/scene/Transform.hpp](src/scene/Transform.hpp) | Header-only, SDL-free: position / Euler rotation / scale, plus `localMatrix()` returning `T·R·S` (scale → rotate → translate). Unit-tested in `tests/test_transform.cpp`. |
 | `Node` | [src/scene/Node.*](src/scene/) | One element of the scene graph: a local `Transform`, an optional shared `Mesh` (shape) + `Material` (appearance), owned children (`unique_ptr`), and a cached world matrix. Draws only with both a mesh and a material. `updateWorldTransforms` walks the tree computing `world = parentWorld · local`. Unit-tested in `tests/test_node.cpp`. |
@@ -324,8 +327,9 @@ time like `doctest`; the one TU that `#define`s their `*_IMPLEMENTATION` is comp
 with warnings off. OBJ indexes position/uv/normal separately, so the loader
 de-duplicates each unique triple into one combined `Vertex`; glTF stores combined
 vertices already. Real models can exceed 65 535 vertices, so `Mesh` now carries a
-16- or 32-bit index element size and `createMesh` has a `Uint32` overload. The engine
-gives each loaded model its own `Material` (geometry is read; file materials are not).
+16- or 32-bit index element size and `createMesh` has a `Uint32` overload. *(As of Step 16
+`loadModel` returns a `LoadedModel` — mesh **+** the glTF file's imported material; OBJ
+still yields geometry only. See* glTF PBR material import (Step 16) *below.)*
 
 **Shadow mapping** is a two-pass technique:
 
@@ -491,9 +495,10 @@ Three structural additions:
   **anisotropy** so oblique surfaces (the receding floor) stay sharp instead of over-blurring.
 
 The demo maps come from `tools/gen_textures.py` (a `uv`-run script — a seed of the roadmap's
-offline asset-pipeline track) as BMPs, since the loader is still `SDL_LoadBMP`-only. glTF
-material/texture import + PNG loading (and thus the Damaged Helmet) are a deliberately
-separate later step.
+offline asset-pipeline track) as BMPs. glTF material/texture import + PNG loading (and thus the
+**Damaged Helmet**) landed in **Step 16**: `loadModel` now returns a `LoadedModel` (mesh + material),
+`loadGltf` imports the file's PBR material, and `loadTexture` decodes PNG/JPG via **stb_image** with
+an **sRGB** option for colour maps. See *glTF PBR material import (Step 16)* below.
 
 ### Skybox & cubemaps (Step 14)
 
@@ -574,6 +579,33 @@ The design mirrors the rest of the renderer:
   (standard cube-capture up-vectors, `cubeCaptureViews`), or reflections come out mirrored/seamed — a
   compile-clean-render-wrong bug caught only by a `KOI_CAPTURE` frame, like the Step 9 sampler swap.
 
+### glTF PBR material import (Step 16)
+
+Materials stop being hand-authored and start coming **from the file**. The Step 13 machinery (five
+fragment samplers, TBN normal mapping, per-pixel MR/AO) was built and tested against *generated BMPs*;
+this step feeds it a real asset — the Khronos **Damaged Helmet** — by importing the glTF material.
+
+- **`loadModel` now returns geometry *and* appearance.** The return type is a `LoadedModel { mesh,
+  material }` (`ModelLoader.hpp`). `loadGltf` reads `primitive.material` via cgltf into a `koi::Material`;
+  `loadObj` still returns geometry only (`.mtl` import out of scope). The engine uses the file's material
+  for the helmet while keeping its own showcase materials on the older sphere/torus.
+- **Two libraries, clean split of work.** cgltf parses the JSON + buffers but does **not** decode images —
+  it hands us the *compressed* PNG/JPG bytes. **stb_image** decodes them: embedded `.glb` images come from
+  a `buffer_view` (`stbi_load_from_memory`, no filesystem); external `.gltf` images resolve their URI to a
+  file. stb_image is a third single-header dep, its implementation compiled once in `ModelLoader.cpp`.
+- **sRGB vs. linear — a format choice, not a pass.** Colour textures (base-colour, emissive) are authored
+  in sRGB and must be linearised before shading; data maps (MR/normal/AO) are already linear and must not
+  be touched. `uploadToGpuTexture` gained an `srgb` flag that selects `R8G8B8A8_UNORM_SRGB` (the GPU
+  un-gammas on sample) for exactly the two colour slots. Same bytes uploaded — only the sampling differs.
+- **Emissive — added, not reflected.** `Material` gained `emissive` + `emissiveFactor` (default 0 ⇒ no
+  change, no shader branch). `triangle.frag` reads a 9th sampler (slot 8) and *adds* `emissive` after all
+  shading, so it stays bright regardless of lights and its bright pixels feed the Step 10 **bloom**. The
+  factor rides in a second `vec4` of the per-material UBO (still one uniform buffer, just larger).
+- **Deferred (documented):** glTF **node hierarchy** (we import raw primitive geometry, so the demo
+  rotates the Z-up helmet upright itself), multi-primitive/multi-material meshes, per-texture **samplers**,
+  base64 data-URI images, and colour management beyond colour textures. The helmet `.glb` is downloaded at
+  configure time (soft-fail) and gitignored.
+
 ## Lifecycle & ownership
 
 Startup builds bottom-up, shutdown tears down top-down — the standard RAII
@@ -627,8 +659,11 @@ CMake (≥ 3.28) with `CMakePresets.json` for one-command builds.
 package). doctest is fetched as a single header at configure time (we download the
 header directly rather than building doctest's CMake project, whose minimum
 version is too old for CMake 4.x). Step 9's model loaders — **tinyobjloader** and
-**cgltf** — are fetched the same way (single headers into `build/_deps/models`);
-the one TU that implements them is compiled warning-free. Shader compilation needs
+**cgltf** — plus Step 16's image decoder **stb_image** are fetched the same way (single
+headers into `build/_deps/models`, stb_image pinned to a commit); the one TU
+(`ModelLoader.cpp`) that implements all three is compiled warning-free. Step 16 also
+downloads the **Damaged Helmet** `.glb` at configure time (a soft-fail: the engine warns
+and continues if it's absent) — gitignored, not committed. Shader compilation needs
 `glslc` (shaderc) and `spirv-cross` on `PATH` (`brew install shaderc spirv-cross`);
 MSL is generated with `--msl-decoration-binding` so resource indices follow the GLSL
 `binding=` decorations (matching SDL's slot-based binding).

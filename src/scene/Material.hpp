@@ -31,12 +31,20 @@
 //                    Requires the per-vertex tangent (see Vertex.hpp / Tangents.hpp).
 //    * ao          — an ambient-occlusion map (RED channel): darkens the ambient fill
 //                    in creases the direct lights don't reach.
+//    * emissive    — a light-EMITTING colour map (Step 16): surfaces that glow on their
+//                    own (a helmet's lit panels, a screen). It's ADDED after shading, so
+//                    it stays bright regardless of scene lights, and — since it can push
+//                    a pixel past the bloom threshold — it's what finally gives the Step
+//                    10 bloom pass a real in-scene light source. Scaled by emissiveFactor.
 //
 //  The `metallic`/`roughness` scalars survive as multiplicative FACTORS (glTF's
 //  metallicFactor / roughnessFactor): the shader computes `factor * sampledChannel`.
-//  Any map may be null — the renderer then binds a neutral 1×1 fallback (white for
-//  metalRough/ao, a flat normal for normalMap), which makes the math collapse back to
-//  the scalar-only Step 12 behaviour with no shader branching.
+//  emissiveFactor is glTF's emissiveFactor (× KHR_materials_emissive_strength when
+//  present); it defaults to 0, so a material with no emissive is unchanged. Any map may
+//  be null — the renderer then binds a neutral 1×1 fallback (white for metalRough/ao/
+//  emissive, a flat normal for normalMap), which makes the math collapse back to the
+//  scalar-only Step 12 behaviour (emissive contributes nothing at factor 0) with no
+//  shader branching.
 //
 //  These feed the Cook-Torrance BRDF in triangle.frag (mirrored, for tests, by the
 //  pure helpers in renderer/Pbr.hpp).
@@ -61,6 +69,11 @@ struct Material {
     std::shared_ptr<Texture> metalRough;          // optional: G = roughness, B = metallic
     std::shared_ptr<Texture> normalMap;           // optional: tangent-space normals
     std::shared_ptr<Texture> ao;                  // optional: R = ambient occlusion
+    std::shared_ptr<Texture> emissive;            // optional: emissive colour map (sRGB)
+    // Emissive strength/tint (glTF emissiveFactor). Default 0 ⇒ no emission, so existing
+    // materials render exactly as before. Kept as three floats (not a Vec3) so this
+    // header stays include-light — it only forward-declares its dependencies.
+    float                    emissiveFactor[3] = {0.0f, 0.0f, 0.0f};
 };
 
 }  // namespace koi

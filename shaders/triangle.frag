@@ -50,6 +50,8 @@ layout(location = 4) in vec3 vWorldTangent;
 //   5 uIrradianceMap  — DIFFUSE environment light (the sky cosine-convolved), by normal
 //   6 uPrefilterMap   — SPECULAR environment (the sky GGX-blurred), roughness in the mips
 //   7 uBrdfLut        — the split-sum's environment-independent scale/bias, by (N·V,rough)
+// Slot 8 is the per-material EMISSIVE map (Step 16), bound per draw like slots 0–3:
+//   8 uEmissiveMap    — self-emitted colour, ADDED after shading (glTF emissive_texture)
 layout(set = 2, binding = 0) uniform sampler2D uAlbedoMap;
 layout(set = 2, binding = 1) uniform sampler2D uMetalRoughMap;
 layout(set = 2, binding = 2) uniform sampler2D uNormalMap;
@@ -58,6 +60,7 @@ layout(set = 2, binding = 4) uniform sampler2D uShadowMap;
 layout(set = 2, binding = 5) uniform samplerCube uIrradianceMap;
 layout(set = 2, binding = 6) uniform samplerCube uPrefilterMap;
 layout(set = 2, binding = 7) uniform sampler2D   uBrdfLut;
+layout(set = 2, binding = 8) uniform sampler2D   uEmissiveMap;
 
 // Must match koi::MAX_LIGHTS (scene/Light.hpp): the uniform array is a FIXED size
 // because the buffer's layout is fixed when the pipeline is built.
@@ -83,12 +86,13 @@ layout(set = 3, binding = 0) uniform LightUBO {
     GpuLight lights[MAX_LIGHTS];
 };
 
-// Per-object material (set 3, binding 1): x = metallic FACTOR, y = roughness FACTOR.
-// Since Step 13 these are multipliers on the metallic-roughness MAP's channels (a
-// white fallback map leaves them unchanged), not the final values themselves. The
-// buffer size is unchanged from Step 12.
+// Per-object material (set 3, binding 1). `material`: x = metallic FACTOR, y = roughness
+// FACTOR — multipliers on the metallic-roughness MAP's channels since Step 13 (a white
+// fallback leaves them unchanged). `emissive` (Step 16): rgb = the emissive FACTOR
+// (glTF emissiveFactor × emissive_strength), multiplying the emissive map; 0 = no glow.
 layout(set = 3, binding = 1) uniform MaterialUBO {
     vec4 material;
+    vec4 emissive;
 };
 
 const float PI = 3.14159265359;
@@ -294,6 +298,11 @@ void main() {
     // AO darkens the ambient in creases the direct lights can't reach; direct light (Lo) is
     // left untouched, since real occlusion of direct light comes from the shadow map.
     vec3 color = ambientLight * ao + Lo;
+
+    // Emissive (Step 16): self-emitted light ADDED on top, so it stays bright regardless of
+    // scene lighting. A white 1×1 fallback map + a zero factor means non-emissive materials
+    // add nothing. Bright emissive pixels also cross the Step 10 bloom threshold and glow.
+    color += texture(uEmissiveMap, vUV).rgb * emissive.rgb;
 
     outColor = vec4(color, 1.0);
 }

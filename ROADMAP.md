@@ -24,19 +24,22 @@ Three principles shape the plan:
   number, because [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) is a prerequisites
   page rather than a step. So **Step N → `documentation/docs/(N+1)-*.html`** (e.g. Step 12 →
   [`documentation/docs/13-pbr-materials.html`](documentation/docs/13-pbr-materials.html)).
-- **Step 15** (image-based lighting) shipped as
-  [`documentation/docs/16-image-based-lighting.html`](documentation/docs/16-image-based-lighting.html); it
-  closed the core material/lighting arc. With the numbered rendering track caught up, **the highest-leverage
-  next moves are the production items** — engine/app separation, then cross-platform CI + golden images
-  (see *Path to 1.0*) — interleaved with glTF PBR import and quaternions (see the suggested path).
+- **Step 16** (glTF PBR material import) shipped as
+  [`documentation/docs/17-gltf-pbr-import.html`](documentation/docs/17-gltf-pbr-import.html); it loads a real
+  production asset (the Khronos **Damaged Helmet**) with its material imported straight from the file — and
+  brought **emissive** surfaces and **sRGB colour textures** along with it. With the material/lighting arc
+  closed *and* now proven on real content, **the highest-leverage next moves are the production items** —
+  engine/app separation, then cross-platform CI + golden images (see *Path to 1.0*) — interleaved with
+  quaternions and transparency (see the suggested path).
 
 ---
 
-## ✅ Completed — Steps 0–15
+## ✅ Completed — Steps 0–16
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
 post-processed shading of loaded models under many lights, with per-pixel texture + normal maps,
-a cubemap sky, and image-based lighting that lets the environment light the scene.
+a cubemap sky, and image-based lighting that lets the environment light the scene — now proven by
+importing a real glTF PBR asset (the Damaged Helmet) with emissive surfaces and correct sRGB colour.
 Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
 [`documentation/docs/index.html`](documentation/docs/index.html).
@@ -59,6 +62,7 @@ linked per row below (note how the doc number runs one ahead of the step), and a
 | **13** | Texture & normal maps | per-pixel albedo/metallic-roughness/AO maps, tangent space + TBN matrix (normal mapping), mipmaps + anisotropic filtering | [documentation/docs/14](documentation/docs/14-texture-and-normal-maps.html) |
 | **14** | Skybox & cubemaps | cubemap textures sampled by direction, cube-around-camera skybox, translation-stripped view, far-plane depth trick (LEQUAL + `.xyww`) | [documentation/docs/15](documentation/docs/15-skybox-and-cubemaps.html) |
 | **15** | Image-based lighting | diffuse irradiance convolution, specular split-sum (prefiltered env + BRDF LUT), importance sampling + Hammersley, baking into cubemap faces | [documentation/docs/16](documentation/docs/16-image-based-lighting.html) |
+| **16** | glTF PBR import | glTF material/texture import (base-colour/MR/normal/AO/**emissive**), PNG/JPG decode via stb_image, **sRGB** colour textures, emissive term feeding bloom, the Damaged Helmet | [documentation/docs/17](documentation/docs/17-gltf-pbr-import.html) |
 
 > The prerequisites page [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) (building,
 > running, testing, project layout) is not a numbered step.
@@ -121,6 +125,23 @@ provides, and both build toward "metals that reflect their surroundings."
   environments (the demo bakes from the procedural BMP sky); a roughness-showcase row of spheres.
 - **Why here:** it depended on Step 14's cubemaps and **closed out the core material/lighting arc** —
   from here the engine fans out into the wider tracks below.
+
+### ✅ Step 16 — glTF PBR material import *(done — [tutorial](documentation/docs/17-gltf-pbr-import.html))*
+- **Shipped:** materials are now **imported from glTF files**, not hand-authored. `loadModel` returns a
+  `LoadedModel` (mesh **+** material); `loadGltf` reads `primitive.material` into
+  [`Material`](src/scene/Material.hpp) — base-colour, metallic-roughness, normal, occlusion and **emissive**
+  maps + the scalar factors. A new single-header dep, **stb_image** (fetched like cgltf), decodes the
+  PNG/JPG images — embedded `.glb` `buffer_view`s decode straight from memory. Two correctness upgrades ride
+  along: **sRGB** colour textures (base-colour/emissive upload as `*_SRGB` so the GPU un-gammas them; data
+  maps stay linear — `uploadToGpuTexture` gained an `srgb` flag) and an **emissive** term
+  (`Material.emissive`/`emissiveFactor`, a 9th fragment sampler + a second material-UBO `vec4`, added after
+  shading in [`shaders/triangle.frag`](shaders/triangle.frag) so it also feeds the Step 10 bloom). The
+  **Damaged Helmet** loads as the hero, verified via `KOI_CAPTURE`.
+- **Deliberately deferred:** OBJ `.mtl` import; multi-primitive / multi-material meshes; base64 **data-URI**
+  images; the full glTF **node hierarchy** (we import raw primitive geometry, so the app rotates the Z-up
+  helmet upright itself); engine-wide colour management beyond colour textures; **Sponza**.
+- **Why here:** it pays off the Step 13 IOU (that step built the per-pixel map machinery but fed it
+  generated BMPs), and it puts every Step 12–15 subsystem to work on a single real asset.
 
 ---
 
@@ -194,20 +215,21 @@ state, so glass, smoke, and foliage are all impossible.
 - Anti-aliasing beyond FXAA: **MSAA**, then temporal AA (**TAA**).
 - **SSAO** (ambient occlusion in screen space).
 - **SSR** (screen-space reflections).
-- **Emissive materials** (glowing surfaces — gives the Step 10 bloom pass genuine bright sources,
-  and it's one of the glTF PBR maps).
-- **Color management**: sample albedo as **sRGB** (today all textures are read as linear — a
-  documented Step 10 shortcut that subtly skews PBR albedo).
+- ✅ **Emissive materials** (glowing surfaces — gives the Step 10 bloom pass genuine bright sources,
+  and it's one of the glTF PBR maps) — *done in Step 16* (`Material.emissive`, added post-shading).
+- **Color management**: ✅ colour textures (base-colour/emissive) now sample as **sRGB** *(Step 16)*;
+  the broader pipeline (render targets, tonemap, remaining shortcuts) is still open.
 - **Reversed-Z** depth (float depth precision concentrated where it matters; small change, big
   z-fighting win on far planes).
 - **Fog** — distance and height fog (small, classic, sells scale immediately).
 - Depth of field, motion blur, richer color grading.
 
 **Geometry & content**
-- Full **glTF PBR material import** (read base-color / metallic-roughness / normal / AO / emissive
-  and samplers from the file — Steps 9 and 13 make this a small step).
-- **Standard test scenes** — load the Khronos glTF samples (**Damaged Helmet** for materials,
-  **Sponza** for culling/lighting stress) as recurring verification + benchmarking content.
+- ✅ Full **glTF PBR material import** — read base-color / metallic-roughness / normal / AO / emissive
+  from the file *(Step 16, via cgltf + stb_image)*. Still to do: honour glTF **samplers**,
+  multi-primitive/multi-material meshes, and data-URI images.
+- **Standard test scenes** — load the Khronos glTF samples: ✅ **Damaged Helmet** (materials) *loads as of
+  Step 16*; **Sponza** (culling/lighting stress) still to come, as recurring verification + benchmarking.
 - **Terrain**: heightmap-based, chunked; **noise** utilities (Perlin/simplex) to generate it — and
   to feed particles and procedural content later.
 - Level-of-detail (LODs), mesh optimization, texture compression (KTX2 / Basis).
@@ -317,9 +339,11 @@ Step 14  skybox / cubemaps                           ✅ done
    │
 Step 15  image-based lighting (IBL)                  ✅ done
    │
+Step 16  glTF PBR material import (Damaged Helmet)   ✅ done
+   │
 engine/app separation ──▶ CI + golden images     ◀── next; highest production leverage, do early
    │
-quaternions ──▶ glTF PBR import ──▶ transparency + blending
+quaternions ──▶ transparency + blending ──▶ glTF node hierarchy / Sponza
    │
 geometry utils (AABB/ray/frustum) ──▶ render queue ──▶ frustum culling ──▶ cascaded shadows
    │

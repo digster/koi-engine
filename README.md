@@ -9,14 +9,14 @@ in [`documentation/docs/`](documentation/docs/index.html) that explains the unde
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`documentation/docs/index.html`](documentation/docs/index.html) in a browser.
 
-> **Current status — Step 15:** adds **image-based lighting (IBL)**. The **skybox** from Step 14 now
-> *lights the scene*, not just sits behind it. At load, three maps are baked from the cubemap — a
-> **diffuse irradiance** map (the sky cosine-convolved over the hemisphere), a **prefiltered specular**
-> map (the sky GGX-blurred, roughness across its mips), and an environment-independent **BRDF LUT** — via
-> the *split-sum* approximation. The fragment shader reads them for the ambient term, so surfaces gather
-> colour from their surroundings and **metals finally reflect the sky** (the open problem from Step 12).
-> The bakes render into cubemap faces at startup (reusing the Step 14 cubemap plumbing). Toggle IBL at
-> runtime with `9` for a clean before/after; a smooth metal sphere is the showcase.
+> **Current status — Step 16:** adds **glTF PBR material import**. Materials are now loaded **from a
+> file** instead of hand-authored: `loadModel` returns a mesh *and* a material, and the glTF loader reads
+> base-colour, metallic-roughness, normal, occlusion and **emissive** maps (+ factors) straight out of the
+> file. A new single-header dependency, **stb_image**, decodes the PNG/JPG images (embedded `.glb` textures
+> decode from memory). Two upgrades ride along: **sRGB** colour textures (so imported albedo is correct)
+> and an **emissive** term that also feeds the Step 10 bloom. The showcase is the Khronos **Damaged
+> Helmet** — a real production asset that now renders with correct base colour, sky reflections (IBL on its
+> imported metallic-roughness map), normal-mapped relief, AO, and glowing emissive vents.
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
@@ -96,12 +96,16 @@ Full instructions, controls, and tests: [documentation/docs/00-getting-started.h
   from the environment: the diffuse irradiance map, the specular split-sum (a prefiltered environment
   cube plus a BRDF LUT), importance sampling + the Hammersley sequence, and baking it by rendering into
   cube faces, mapped to the Step 15 code that finally makes metals reflect the sky.
+- [documentation/docs/17-gltf-pbr-import.html](documentation/docs/17-gltf-pbr-import.html) — loading a real material
+  from a file: what glTF is, image vs. texture vs. sampler, decoding embedded PNGs with stb_image, the
+  sRGB-vs-linear gamma trap, and an emissive term that feeds bloom, mapped to the Step 16 code that
+  imports the Damaged Helmet's full PBR material from its `.glb`.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
 
 The engine grows one runnable milestone at a time. See **[ROADMAP.md](ROADMAP.md)** for the full
-picture — every completed step (0–12) and the phased plan beyond: numbered next steps, then themed
+picture — every completed step (0–16) and the phased plan beyond: numbered next steps, then themed
 tracks across rendering, animation, physics, audio, tooling, and gameplay.
 
 ## Requirements

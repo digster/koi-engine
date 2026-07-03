@@ -95,6 +95,38 @@ koi_fetch_header(
 koi_fetch_header(
     https://raw.githubusercontent.com/jkuhlmann/cgltf/v1.14/cgltf.h
     ${MODELS_DIR}/cgltf.h)
+# stb_image decodes PNG/JPG (Step 16). glTF stores its textures as PNG/JPG — either
+# in external files or embedded in a .glb — and our own loader only read BMP before,
+# so we need a decoder. It's the same single-header pattern as above; pinned to a
+# specific commit (stb has no release tags) for reproducible builds.
+koi_fetch_header(
+    https://raw.githubusercontent.com/nothings/stb/31c1ad37456438565541f4919958214b6e762fb4/stb_image.h
+    ${MODELS_DIR}/stb_image.h)
+
+# ----------------------------------------------------------------------------
+#  Verification asset — the Khronos "Damaged Helmet" (Step 16). This single-file
+#  .glb (all textures embedded) is the canonical PBR test model; loading it is how
+#  we verify the new glTF material/texture import end-to-end. At ~3.6 MB it's too
+#  large to commit, so we DOWNLOAD it at configure time into assets/ (gitignored),
+#  and the asset-copy step below mirrors it into build/assets/ like any other model.
+#  Unlike the header fetch this is a SOFT failure: if the download fails (e.g. no
+#  network) configure still succeeds and the engine just logs + runs without the
+#  helmet (see the warn-and-continue path in Engine::buildScene).
+# ----------------------------------------------------------------------------
+set(HELMET_GLB ${CMAKE_CURRENT_SOURCE_DIR}/assets/DamagedHelmet.glb)
+if(NOT EXISTS ${HELMET_GLB})
+    message(STATUS "Downloading DamagedHelmet.glb (Step 16 verification asset)...")
+    file(DOWNLOAD
+        https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf/Models/DamagedHelmet/glTF-Binary/DamagedHelmet.glb
+        ${HELMET_GLB} TLS_VERIFY ON STATUS _helmet_st)
+    list(GET _helmet_st 0 _helmet_code)
+    if(NOT _helmet_code EQUAL 0)
+        list(GET _helmet_st 1 _helmet_msg)
+        message(WARNING "Could not download DamagedHelmet.glb (${_helmet_msg}); "
+                        "the engine will run without it.")
+        file(REMOVE ${HELMET_GLB})  # avoid leaving a partial/empty file for the GLOB
+    endif()
+endif()
 
 # ----------------------------------------------------------------------------
 #  Shared warning flags

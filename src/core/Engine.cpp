@@ -148,11 +148,14 @@ bool Engine::buildScene() {
         .albedo = tileAlbedo, .metallic = 1.0f, .roughness = 1.0f,
         .metalRough = tileMr, .normalMap = tileNormal, .ao = tileAo});
 
-    // Step 9: load two MODELS from files (geometry only — we give them our own
-    // materials). sphere.glb exercises the cgltf loader; torus.obj the tinyobjloader
-    // one. Both produce a Mesh exactly like a primitive does.
-    std::shared_ptr<Mesh> sphere = loadModel(*renderer_, (base + "assets/sphere.glb").c_str());
-    std::shared_ptr<Mesh> torus  = loadModel(*renderer_, (base + "assets/torus.obj").c_str());
+    // Step 9: load two MODELS from files. sphere.glb exercises the cgltf loader; torus.obj
+    // the tinyobjloader one. We take only their geometry (.mesh) and give them our OWN
+    // showcase materials below — unlike the Damaged Helmet further down, which keeps the
+    // material imported from its file (Step 16).
+    LoadedModel sphereModel = loadModel(*renderer_, (base + "assets/sphere.glb").c_str());
+    LoadedModel torusModel  = loadModel(*renderer_, (base + "assets/torus.obj").c_str());
+    std::shared_ptr<Mesh> sphere = sphereModel.mesh;
+    std::shared_ptr<Mesh> torus  = torusModel.mesh;
     if (!sphere || !torus) {
         KOI_ERROR("buildScene: failed to load one or more models.");
         return false;
@@ -220,7 +223,32 @@ bool Engine::buildScene() {
     torusNode->transform().rotationEuler = {radians(90.0f), 0.0f, 0.0f};  // stand the donut up
     sceneRoot_->addChild(std::move(torusNode));
 
-    KOI_INFO("Scene built: ground + cube hierarchy + 2 loaded models (sphere.glb, torus.obj).");
+    // Step 16: the HERO — the Khronos "Damaged Helmet", a real production glTF PBR asset
+    // (downloaded at configure time; see CMakeLists.txt). Loading it exercises the new
+    // glTF material import end-to-end: its base-colour, metallic-roughness, normal, AO and
+    // EMISSIVE maps all come straight out of the .glb, decoded via stb_image. Unlike the
+    // sphere/torus above we keep the FILE's material (helmet.material), not one we author.
+    // The asset is optional — if it didn't download we log and carry on.
+    //
+    // We import raw primitive geometry and ignore glTF NODE transforms (a documented
+    // deferral), and this model is authored Z-up, so we rotate it upright ourselves and
+    // give it a 3/4 turn so the lit visor + emissive vents face the camera.
+    LoadedModel helmet = loadModel(*renderer_, (base + "assets/DamagedHelmet.glb").c_str());
+    if (helmet.mesh && helmet.material) {
+        auto helmetNode = std::make_unique<Node>(helmet.mesh, helmet.material);
+        helmetNode->transform().position      = {0.0f, 0.4f, 4.2f};
+        helmetNode->transform().scale         = {1.6f, 1.6f, 1.6f};
+        // Z-up asset → stand upright (~72° about X, a touch under 90° so the visor tilts
+        // toward the elevated camera) + a 3/4 turn so the glowing eyes read as the hero.
+        helmetNode->transform().rotationEuler = {radians(72.0f), radians(-22.0f), 0.0f};
+        sceneRoot_->addChild(std::move(helmetNode));
+        KOI_INFO("Scene built: ground + cube hierarchy + 3 loaded models "
+                 "(sphere.glb, torus.obj, DamagedHelmet.glb w/ imported PBR material).");
+    } else {
+        KOI_WARN("buildScene: DamagedHelmet.glb not loaded — continuing without it "
+                 "(re-run CMake configure with network access to fetch the asset).");
+        KOI_INFO("Scene built: ground + cube hierarchy + 2 loaded models (sphere.glb, torus.obj).");
+    }
     return true;
 }
 

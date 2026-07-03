@@ -338,3 +338,29 @@ at load), and a `KOI_CAPTURE` A/B (IBL on vs off) confirms the metal sphere goes
 the sky. New tutorial `documentation/docs/16-image-based-lighting.html` + nav/index links (586/586 doc
 links resolve); README/ARCHITECTURE/ROADMAP updated. Deferred: SDL3 GPU compute-based baking, real
 HDR/equirectangular environments.
+
+---
+
+**Step 16 — glTF PBR material import (2026-07-03):**
+> Pick a topic from the roadmap to work on next.
+> [chose glTF PBR import "using libraries similar to obj loading"; via clarifying questions:
+> INCLUDE emissive, and FIX sRGB for colour textures]
+
+Delivered **Step 16**: materials are now **imported from glTF files** instead of hand-authored, proven
+by loading the Khronos **Damaged Helmet**. `loadModel` returns a `LoadedModel` (mesh **+** material);
+`loadGltf` reads `primitive.material` into `koi::Material` — base-colour, metallic-roughness, normal,
+occlusion and **emissive** maps + factors. New single-header dep **stb_image** (fetched/pinned like
+cgltf, implemented in `ModelLoader.cpp`) decodes the PNG/JPG images — embedded `.glb` `buffer_view`s via
+`stbi_load_from_memory`, external URIs via `loadTexture`. Two correctness upgrades: **sRGB** colour
+textures (`uploadToGpuTexture` gained an `srgb` flag → `R8G8B8A8_UNORM_SRGB` for base-colour/emissive;
+data maps stay linear) and an **emissive** term (`Material.emissive`/`emissiveFactor`, a 9th fragment
+sampler at slot 8 + a second material-UBO `vec4`, added post-shading in `triangle.frag` so it feeds the
+Step 10 bloom; default factor 0 leaves existing objects unchanged). The helmet `.glb` is downloaded at
+configure time (soft-fail, gitignored) and placed as a hero node (rotated upright — we ignore glTF node
+transforms). Verified: clean build (no warnings; `triangle.frag` recompiles GLSL→SPIR-V→MSL), **59
+doctest cases pass**, `KOI_MAX_FRAMES` shows **zero GPU validation errors** (9 samplers, sRGB formats,
+larger material UBO), and a `KOI_CAPTURE` frame shows the helmet with correct sRGB base colour, sky
+reflections (IBL on its imported MR map), normal-mapped relief, AO, and glowing emissive vents. New
+tutorial `documentation/docs/17-gltf-pbr-import.html` + nav/index links (641/641 doc links resolve);
+README/ARCHITECTURE/ROADMAP updated. Deferred: OBJ `.mtl`, multi-primitive/multi-material meshes, glTF
+node hierarchy, data-URI images, per-texture samplers, Sponza.
