@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skybox &amp; Cubemaps · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html" aria-current="page">Skybox &amp; Cubemaps</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Skybox &amp; Cubemaps</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 14:</strong> put a <strong>world behind the scene</strong> — a sky that
+    stretches to the horizon in every direction — instead of a flat background colour. The vehicle is
+    a new kind of texture, the <strong>cubemap</strong>, sampled by a <em>direction</em> rather than a
+    2D coordinate.</p>
+    <p>The sky is the cheap, visible pay-off. The real prize is the plumbing: a cubemap is exactly
+    what the next step, <strong>image-based lighting</strong>, needs to light surfaces from their
+    surroundings — the fix for the dark metals <a href="13-pbr-materials.html">Step 12</a> left
+    behind. Build the data structure now with a simple consumer (draw it); reuse it next with the
+    hard one (light with it).</p>
+  </blockquote>
+
+  <h2>1. Why a flat clear colour isn't enough</h2>
+
+  <p>Every frame so far has begun by wiping the screen to a single colour, and anything the geometry
+  didn't cover stayed that colour. That reads as "the void", not "outdoors". A real scene sits inside
+  an <strong>environment</strong>: a sky, a horizon, distant hills — things infinitely far away that
+  you can look toward but never reach. We want the background to depend on <em>which way the camera is
+  looking</em>, and to stay put in the world as the camera moves around.</p>
+
+  <p>"A colour per direction you look" is the whole idea, and it's precisely what a cubemap stores.</p>
+
+  <h2>2. What a cubemap is</h2>
+
+  <p>An ordinary texture (<a href="07-textures-and-samplers.html">Step 6</a>) is a flat image you
+  read with a 2D coordinate <code>(u, v)</code>. But directions live on a <em>sphere</em>, not a
+  square, and there's no seamless, low-distortion way to wrap one square image around a whole sphere.
+  A <strong>cubemap</strong> sidesteps that: it's <strong>six square textures</strong>, one per face
+  of a cube (<code>+X, −X, +Y, −Y, +Z, −Z</code>), and you sample it with a <strong>3D direction
+  vector</strong> instead of a 2D coordinate.</p>
+
+  <pre class="diagram">              +Y  (up)
+               ┌─────┐
+   look along  │     │        sample(cubemap, dir):
+   a DIRECTION │ +Z  │  ──▶     1. which face does `dir` point at?  (its biggest component)
+        dir ──▶│     │          2. where on that face does it pierce?  (the other two, ÷ the biggest)
+               └─────┘          3. read that texel
+              −Y (down)</pre>
+
+  <p>The hardware does all three steps for you: give <code>texture(uSky, dir)</code> any direction and
+  it finds the face that direction stabs through, works out the spot, and returns the texel — with
+  smooth filtering, mipmaps, the works. That's the entire interface. A cubemap is "a function from
+  direction to colour", implemented as six images.</p>
+
+  <h2>3. Drawing the sky: a cube around the camera</h2>
+
+  <p>There are two classic ways to paint a cubemap across the background. We use the more direct one
+  for a first cubemap: draw a <strong>unit cube centred on the camera</strong>. Here's the neat part —
+  we don't need to compute a sample direction at all. A cube corner's <em>object-space position</em>
+  (say <code>(0.5, −0.5, 0.5)</code>) already <em>is</em> a direction pointing out from the cube's
+  centre. So the vertex shader just forwards the raw position; the rasterizer interpolates it across
+  each face into a smooth per-fragment ray, and the fragment shader samples the cubemap with it.</p>
+
+  <pre class="diagram">skybox.vert                          skybox.frag
+  vDir = inPosition;  ──────────▶       dir = normalize(vDir);
+  (cube corner = direction)             outColor = texture(uSky, dir);</pre>
+
+  <p>(The other technique draws a single fullscreen triangle and reconstructs the ray from the
+  <em>inverse</em> view-projection. It avoids drawing a cube, but needs a matrix inverse our math
+  library doesn't have yet — and "a cube you sample by direction" is the clearer mental model for a
+  first cubemap. We may revisit it later.)</p>
+
+  <h2>4. Keeping the sky infinitely far: strip the translation</h2>
+
+  <p>If we drew the cube with the ordinary view matrix, it would be a small box floating at the
+  origin — walk toward it and you'd hit its wall. We want the opposite: a sky that <em>rotates</em>
+  as you turn your head but never slides as you walk. The trick is to feed the skybox the camera's
+  <strong>rotation only</strong>, with its <strong>position removed</strong>.</p>
+
+  <p>Recall from <a href="05-camera-and-input.html">Step 4</a> that the view matrix is the camera's
+  inverse: an orientation (its upper-left 3×3) plus a translation (its last column — see
+  <a href="../../src/math/Mat4.hpp">Mat4.hpp</a>). Zero that last column and only the orientation
+  survives, so the sky turns with the camera but is pinned at infinity, unreachable:</p>
+
+  <pre class="diagram">  Mat4 viewNoTranslation = view;
+  viewNoTranslation.at(0,3) = 0;   // wipe the camera's world position
+  viewNoTranslation.at(1,3) = 0;   // (the last column of a column-major Mat4)
+  viewNoTranslation.at(2,3) = 0;
+  skyViewProj = projection * viewNoTranslation;   // pushed to the sky vertex shader</pre>
+
+  <h2>5. Sitting behind everything: the far-plane depth trick</h2>
+
+  <p>The sky must appear <em>behind</em> all the geometry and hide none of it. Two moving parts make
+  that automatic — and understanding them means recalling the <strong>depth buffer</strong>
+  (<a href="04-3d-cube-mvp-and-depth.html">Step 3</a>): each pixel stores the depth of the nearest
+  thing drawn so far, cleared to <code>1.0</code> (the far plane) at the start of the frame.</p>
+
+  <p><strong>(a) Force the sky's depth to the far plane.</strong> After the vertex shader the GPU
+  divides <code>gl_Position</code> by its <code>w</code> (the perspective divide). If we set
+  <code>z = w</code>, that divide yields <code>w / w = 1.0</code> — the maximum depth — for every sky
+  pixel. A one-token swizzle does it:</p>
+
+  <pre class="diagram">  vec4 clip = skyViewProj * vec4(inPosition, 1.0);
+  gl_Position = clip.xyww;      // z := w, so post-divide depth = 1.0 (far plane)</pre>
+
+  <p><strong>(b) Draw the sky <em>last</em>, testing with <code>LEQUAL</code> and writing no
+  depth.</strong> We render the scene first, then the sky. By now the depth buffer holds each
+  object's real (nearer-than-1.0) depth, while untouched background pixels are still at the
+  <code>1.0</code> clear. The sky, emitting depth <code>1.0</code>, is kept only where it passes a
+  <strong>less-than-or-equal</strong> test:</p>
+
+  <pre class="diagram">  background pixel:  depth buffer = 1.0,   sky depth 1.0  →  1.0 ≤ 1.0   ✔ drawn
+  covered pixel:     depth buffer = 0.37,  sky depth 1.0  →  1.0 ≤ 0.37  ✗ rejected</pre>
+
+  <p>So the sky lands in exactly the gaps the scene left, and nowhere else. We also turn depth
+  <em>writes</em> off — the sky must not stamp a wall of far-plane depth into the buffer. (The main
+  geometry uses a plain <code>LESS</code> test; the sky needs <code>LESS_OR_EQUAL</code> precisely
+  because its depth <em>equals</em> the clear value it's trying to pass.) Drawing last also means the
+  GPU can skip shading sky pixels that geometry already covered — no wasted work painting behind the
+  torus.</p>
+
+  <h2>6. No seams: clamp the sampler to the edges</h2>
+
+  <p>A cubemap's six faces meet along twelve shared edges. If the sampler <em>wrapped</em> texture
+  coordinates past <code>[0,1]</code> (the <code>REPEAT</code> mode our tiled floor uses), a texel at
+  a face's edge would blend with the <em>opposite</em> edge of the same face — producing a visible
+  seam where faces join. The fix is <strong>CLAMP_TO_EDGE</strong> on all three axes: edge texels
+  clamp to the border, so neighbouring faces line up cleanly. Our main sampler wraps, so the skybox
+  gets its own dedicated clamping sampler.</p>
+
+  <h2>7. Where the sky comes from — <a href="../../tools/gen_skybox.py">tools/gen_skybox.py</a></h2>
+
+  <p>Rather than ship six photographs, a small Python script (run with <code>uv</code>) generates a
+  procedural <strong>day sky</strong> as six BMP faces — the format our loader reads. The sky is a
+  pure function of direction: a vertical gradient (deep blue overhead fading to a hazy horizon), a
+  muted ground below the horizon, and a sun disk placed at the direction of the scene's actual sun
+  light (so the bright spot in the sky and the shading on the objects agree).</p>
+
+  <p>The one subtle part is <strong>face orientation</strong>. To make six flat images meet seamlessly,
+  the script does exactly what the GPU does — in reverse. For every texel it computes the world-space
+  <em>direction</em> the hardware will later use to sample that texel (using the standard cube-face
+  convention below), then evaluates the sky at that direction. Because generation and sampling share
+  one direction convention, adjacent faces agree along every shared edge with no hand-alignment:</p>
+
+  <pre class="diagram">  standard face → direction  (sc across columns, tc down rows):
+     +X: ( +1, −tc, −sc)      −X: ( −1, −tc, +sc)
+     +Y: (+sc,  +1, +tc)      −Y: (+sc,  −1, −tc)
+     +Z: (+sc, −tc,  +1)      −Z: (−sc, −tc,  −1)</pre>
+
+  <h3>A cross-system gotcha: the sky met the bloom threshold</h3>
+
+  <p>The first attempt made the sky far too pale. The culprit was Step 10's <strong>bloom</strong>:
+  its bright-pass treats any pixel brighter than a luminance threshold (<code>0.9</code>) as a glowing
+  light source. A realistically <em>pale</em> horizon sailed over that line, so the whole upper sky
+  bloomed and washed to white. The lesson is that new content has to respect the post-processing
+  pipeline it renders into: we deliberately keep the sky's body <em>below</em> the bloom threshold, so
+  it reads as a surface, and reserve the bright range for the one thing meant to glow — the sun disk,
+  which is left near <code>1.0</code> so it (and only it) blooms. This is the kind of interaction you
+  only catch by looking at a rendered frame — hence the <code>KOI_CAPTURE</code> check below.</p>
+
+  <h2>8. Uploading six faces into one cube texture</h2>
+
+  <p>A cube texture is really six 2D <strong>layers</strong>. Uploading it is the same staging dance
+  as an ordinary texture (<a href="07-textures-and-samplers.html">Step 6</a>) — a CPU-visible transfer
+  buffer, a copy pass — with three differences, all in
+  <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> (<code>uploadCubemap</code>):
+  the texture's <code>type</code> is <code>CUBE</code>, its <code>layer_count_or_depth</code> is
+  <code>6</code>, and we run one copy per face into the matching <code>layer</code>. A single
+  <code>SDL_GenerateMipmapsForGPUTexture</code> then fills every layer's mip chain at once (so distant
+  sky stays smooth — and so IBL later has the pre-averaged levels it will need).</p>
+
+  <p>The sky is engine-global infrastructure, like the shadow map — so the renderer <em>owns</em> the
+  cube texture, its clamping sampler, and the cube mesh (it reuses <code>makeCubeMesh</code>, reading
+  only the positions). The <a href="../../src/core/Engine.cpp">Engine</a> loads the six face files at
+  scene-build time via <code>loadCubemap(...)</code>; if they're missing the engine logs and carries
+  on with the flat clear colour.</p>
+
+  <h2>9. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Toggle the sky.</strong> Run the engine and press <strong>8</strong>: the sky vanishes
+    to the flat clear colour and comes back. That's the whole skybox draw, gated on one flag.</li>
+    <li><strong>Prove it's infinitely far.</strong> Fly around with WASD — the sky rotates as you turn
+    but never gets closer. Now comment out the three translation-zeroing lines in
+    <code>recordSkybox</code> (<a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a>),
+    rebuild, and watch the sky turn into a small box you can fly out of.</li>
+    <li><strong>Recolour the sky.</strong> Edit the palette (or the sun direction) in
+    <a href="../../tools/gen_skybox.py">gen_skybox.py</a>, run <code>uv run tools/gen_skybox.py</code>,
+    rebuild, and see a new sky — try pushing a colour past the bloom threshold and watch it glow.</li>
+    <li><strong>Verify headlessly.</strong> <code>KOI_CAPTURE=out.bmp ./build/koi-engine</code> then
+    <code>sips -s format png out.bmp --out out.png</code> — the sky sits behind every object, seamless
+    at the horizon, with the sun's glow blooming near the top.</li>
+  </ol>
+
+  <h2>10. What's next</h2>
+
+  <p>➡️ <strong>Make the environment light the scene.</strong> Right now the cubemap is only a
+  backdrop. In <strong>Step 15 — image-based lighting (IBL)</strong> we pre-process this same cubemap
+  into a <em>diffuse irradiance</em> map and a <em>prefiltered specular</em> map, then sample them for
+  the ambient term — so surfaces finally reflect their surroundings and the dark metals from
+  <a href="13-pbr-materials.html">Step 12</a> come to life. The cubemap plumbing built here is exactly
+  what that step consumes. See the <a href="../../ROADMAP.md">roadmap</a> for the sequenced plan.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

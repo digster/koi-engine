@@ -1,5 +1,6 @@
 #include "renderer/GpuRenderer.hpp"
 
+#include <array>    // std::array (the six cubemap face paths / faces)
 #include <cstddef>  // offsetof
 #include <cstring>  // std::memcpy
 #include <memory>   // std::make_shared
@@ -8,6 +9,7 @@
 #include "core/Log.hpp"
 #include "math/Mat4.hpp"
 #include "renderer/Mesh.hpp"
+#include "renderer/Primitives.hpp"  // makeCubeMesh — reused as the skybox cube
 #include "renderer/Shader.hpp"
 #include "renderer/Texture.hpp"
 #include "renderer/Vertex.hpp"
@@ -128,6 +130,16 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     //     composite, FXAA). If this fails, isValid() reports it.
     // ------------------------------------------------------------------------
     if (!createPostResources()) {
+        return;
+    }
+
+    // ------------------------------------------------------------------------
+    //  7. Create the skybox resources (Step 14): the skybox pipeline, its
+    //     CLAMP_TO_EDGE cubemap sampler, and the cube mesh drawn around the camera.
+    //     The cubemap TEXTURE is loaded later by the Engine (loadCubemap). If this
+    //     fails, isValid() reports it.
+    // ------------------------------------------------------------------------
+    if (!createSkyboxResources()) {
         return;
     }
 
@@ -441,6 +453,92 @@ bool GpuRenderer::createShadowResources() {
     SDL_ReleaseGPUShader(device_, fs);
     if (shadowPipeline_ == nullptr) {
         KOI_ERROR("Failed to create shadow pipeline: %s", SDL_GetError());
+        return false;
+    }
+    return true;
+}
+
+bool GpuRenderer::createSkyboxResources() {
+    // 1. The skybox pipeline. skybox.vert reads one vertex uniform (the
+    //    translation-stripped view-projection); skybox.frag reads one cubemap sampler.
+    SDL_GPUShader* vs = loadShader(device_, "skybox.vert", SDL_GPU_SHADERSTAGE_VERTEX,
+                                   /*numUniformBuffers=*/1);
+    SDL_GPUShader* fs = loadShader(device_, "skybox.frag", SDL_GPU_SHADERSTAGE_FRAGMENT,
+                                   /*numUniformBuffers=*/0, /*numSamplers=*/1);
+    if (vs == nullptr || fs == nullptr) {
+        if (vs != nullptr) SDL_ReleaseGPUShader(device_, vs);
+        if (fs != nullptr) SDL_ReleaseGPUShader(device_, fs);
+        return false;
+    }
+
+    // The cube mesh carries the full Vertex layout, but the sky only needs the
+    // position (its object-space corner IS the sample direction) — so, exactly like
+    // the shadow pass, we declare a single position attribute at the full stride.
+    SDL_GPUVertexBufferDescription vbDesc = {};
+    vbDesc.slot       = 0;
+    vbDesc.pitch      = static_cast<Uint32>(sizeof(Vertex));
+    vbDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    const SDL_GPUVertexAttribute posAttr = {
+        /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+        offsetof(Vertex, position)};
+
+    // Same HDR color target + depth format as the main pass — the sky is drawn INTO
+    // the scene pass, not as a separate fullscreen pass.
+    SDL_GPUColorTargetDescription colorTargetDesc = {};
+    colorTargetDesc.format = kSceneHdrFormat;
+
+    SDL_GPUGraphicsPipelineCreateInfo info = {};
+    info.vertex_shader   = vs;
+    info.fragment_shader = fs;
+    info.vertex_input_state.vertex_buffer_descriptions = &vbDesc;
+    info.vertex_input_state.num_vertex_buffers         = 1;
+    info.vertex_input_state.vertex_attributes          = &posAttr;
+    info.vertex_input_state.num_vertex_attributes      = 1;
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    // The depth trick: the sky emits depth 1.0 (far plane) for every fragment. We
+    // keep the depth TEST but compare with LEQUAL — so a sky fragment survives where
+    // the depth buffer is still at its 1.0 clear (background) and is rejected where
+    // geometry already wrote a nearer depth. Depth WRITE is OFF: the sky must not
+    // occlude anything or leave a wall of far-plane depth behind.
+    info.depth_stencil_state.enable_depth_test  = true;
+    info.depth_stencil_state.enable_depth_write = false;
+    info.depth_stencil_state.compare_op         = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+    info.target_info.num_color_targets         = 1;
+    info.target_info.color_target_descriptions = &colorTargetDesc;
+    info.target_info.has_depth_stencil_target  = true;
+    info.target_info.depth_stencil_format      = depthFormat_;
+    // Culling stays off (engine default): we're inside the cube, and with depth-write
+    // off both facings resolve to the same far-plane sky colour anyway.
+
+    skyboxPipeline_ = SDL_CreateGPUGraphicsPipeline(device_, &info);
+    SDL_ReleaseGPUShader(device_, vs);
+    SDL_ReleaseGPUShader(device_, fs);
+    if (skyboxPipeline_ == nullptr) {
+        KOI_ERROR("Failed to create skybox pipeline: %s", SDL_GetError());
+        return false;
+    }
+
+    // 2. The cubemap sampler. CLAMP_TO_EDGE on ALL THREE axes is essential: a cube
+    //    face's edge texels must clamp (not wrap) so the six faces meet seamlessly.
+    //    Linear + trilinear (mipmap) filtering keeps the sky smooth as it minifies.
+    SDL_GPUSamplerCreateInfo sInfo = {};
+    sInfo.min_filter     = SDL_GPU_FILTER_LINEAR;
+    sInfo.mag_filter     = SDL_GPU_FILTER_LINEAR;
+    sInfo.mipmap_mode    = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+    sInfo.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sInfo.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sInfo.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    skyboxSampler_ = SDL_CreateGPUSampler(device_, &sInfo);
+    if (skyboxSampler_ == nullptr) {
+        KOI_ERROR("Failed to create skybox sampler: %s", SDL_GetError());
+        return false;
+    }
+
+    // 3. The cube mesh drawn around the camera. We reuse makeCubeMesh — the sky only
+    //    reads its positions, so the extra per-vertex data is simply ignored.
+    skyboxMesh_ = makeCubeMesh(*this);
+    if (skyboxMesh_ == nullptr) {
+        KOI_ERROR("Failed to create skybox cube mesh.");
         return false;
     }
     return true;
@@ -946,6 +1044,136 @@ SDL_GPUTexture* GpuRenderer::uploadToGpuTexture(const void* pixels, Uint32 width
     return texture;
 }
 
+SDL_GPUTexture* GpuRenderer::uploadCubemap(const std::array<const void*, 6>& faces,
+                                           Uint32 width, Uint32 height) {
+    // A cube texture is really SIX 2D layers (one per face). The upload is the same
+    // staging dance as uploadToGpuTexture, done once per layer into a texture created
+    // with type CUBE and layer_count_or_depth = 6. We keep the mip chain (COLOR_TARGET
+    // usage lets the GPU render the downsampled levels) so distant/minified sky stays
+    // smooth — and so IBL later has the levels to work from.
+    Uint32 mipLevels = 1;
+    { Uint32 maxDim = (width > height) ? width : height;
+      while (maxDim > 1) { maxDim >>= 1; ++mipLevels; } }
+
+    SDL_GPUTextureCreateInfo texInfo = {};
+    texInfo.type                 = SDL_GPU_TEXTURETYPE_CUBE;
+    texInfo.format               = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    texInfo.usage                = SDL_GPU_TEXTUREUSAGE_SAMPLER |
+                                   SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;  // for mip generation
+    texInfo.width                = width;
+    texInfo.height               = height;
+    texInfo.layer_count_or_depth = 6;  // the six cube faces
+    texInfo.num_levels           = mipLevels;
+    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device_, &texInfo);
+    if (texture == nullptr) {
+        KOI_ERROR("uploadCubemap: failed to create cube texture: %s", SDL_GetError());
+        return nullptr;
+    }
+
+    // One transfer buffer holds all six faces back to back (face i at i*faceBytes).
+    const Uint32 faceBytes = width * height * 4;
+    SDL_GPUTransferBufferCreateInfo tbInfo = {};
+    tbInfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    tbInfo.size  = faceBytes * 6;
+    SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device_, &tbInfo);
+    if (transfer == nullptr) {
+        KOI_ERROR("uploadCubemap: failed to create transfer buffer: %s", SDL_GetError());
+        SDL_ReleaseGPUTexture(device_, texture);
+        return nullptr;
+    }
+    Uint8* mapped = static_cast<Uint8*>(SDL_MapGPUTransferBuffer(device_, transfer, false));
+    if (mapped == nullptr) {
+        KOI_ERROR("uploadCubemap: failed to map transfer buffer: %s", SDL_GetError());
+        SDL_ReleaseGPUTransferBuffer(device_, transfer);
+        SDL_ReleaseGPUTexture(device_, texture);
+        return nullptr;
+    }
+    for (Uint32 i = 0; i < 6; ++i) {
+        std::memcpy(mapped + static_cast<size_t>(i) * faceBytes, faces[i], faceBytes);
+    }
+    SDL_UnmapGPUTransferBuffer(device_, transfer);
+
+    // Copy each face from its slice of the staging buffer into the matching cube
+    // LAYER (dst.layer = face index). SDL layer order is +X,-X,+Y,-Y,+Z,-Z.
+    SDL_GPUCommandBuffer* cmd  = SDL_AcquireGPUCommandBuffer(device_);
+    SDL_GPUCopyPass*      copy = SDL_BeginGPUCopyPass(cmd);
+    for (Uint32 i = 0; i < 6; ++i) {
+        SDL_GPUTextureTransferInfo src = {};
+        src.transfer_buffer = transfer;
+        src.offset          = i * faceBytes;
+        src.pixels_per_row  = width;
+        src.rows_per_layer  = height;
+        SDL_GPUTextureRegion dst = {};
+        dst.texture   = texture;
+        dst.layer     = i;
+        dst.w         = width;
+        dst.h         = height;
+        dst.d         = 1;
+        SDL_UploadToGPUTexture(copy, &src, &dst, /*cycle=*/false);
+    }
+    SDL_EndGPUCopyPass(copy);
+    SDL_GenerateMipmapsForGPUTexture(cmd, texture);  // fills all layers' mip levels
+    SDL_SubmitGPUCommandBuffer(cmd);
+    SDL_ReleaseGPUTransferBuffer(device_, transfer);
+    return texture;
+}
+
+bool GpuRenderer::loadCubemap(const std::array<std::string, 6>& facePaths) {
+    // Load the six BMP faces the same way loadTexture loads one: SDL_LoadBMP →
+    // convert to a known RGBA layout → repack to a tight pitch. All faces must share
+    // one square size (the cube texture has a single width/height).
+    std::array<std::vector<Uint8>, 6> packed;
+    Uint32 width = 0, height = 0;
+    for (Uint32 i = 0; i < 6; ++i) {
+        SDL_Surface* surface = SDL_LoadBMP(facePaths[i].c_str());
+        if (surface == nullptr) {
+            KOI_ERROR("loadCubemap: SDL_LoadBMP('%s') failed: %s",
+                      facePaths[i].c_str(), SDL_GetError());
+            return false;
+        }
+        SDL_Surface* rgba = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
+        SDL_DestroySurface(surface);
+        if (rgba == nullptr) {
+            KOI_ERROR("loadCubemap: SDL_ConvertSurface failed: %s", SDL_GetError());
+            return false;
+        }
+        const Uint32 w = static_cast<Uint32>(rgba->w);
+        const Uint32 h = static_cast<Uint32>(rgba->h);
+        if (i == 0) {
+            width = w;
+            height = h;
+        } else if (w != width || h != height) {
+            KOI_ERROR("loadCubemap: face '%s' is %ux%u, expected %ux%u (all faces must match).",
+                      facePaths[i].c_str(), w, h, width, height);
+            SDL_DestroySurface(rgba);
+            return false;
+        }
+        packed[i].resize(static_cast<size_t>(width) * height * 4);
+        const Uint8* srcRows = static_cast<const Uint8*>(rgba->pixels);
+        for (Uint32 row = 0; row < height; ++row) {
+            std::memcpy(packed[i].data() + static_cast<size_t>(row) * width * 4,
+                        srcRows + static_cast<size_t>(row) * static_cast<size_t>(rgba->pitch),
+                        static_cast<size_t>(width) * 4);
+        }
+        SDL_DestroySurface(rgba);
+    }
+
+    const std::array<const void*, 6> faces = {
+        packed[0].data(), packed[1].data(), packed[2].data(),
+        packed[3].data(), packed[4].data(), packed[5].data()};
+    SDL_GPUTexture* cube = uploadCubemap(faces, width, height);
+    if (cube == nullptr) {
+        return false;  // uploadCubemap already logged the cause
+    }
+    // Replace any previously loaded sky (harmless no-op on first load).
+    if (skyboxCubemap_ != nullptr) {
+        SDL_ReleaseGPUTexture(device_, skyboxCubemap_);
+    }
+    skyboxCubemap_ = cube;
+    KOI_INFO("Loaded skybox cubemap (%ux%u per face).", width, height);
+    return true;
+}
+
 std::shared_ptr<Mesh> GpuRenderer::createMeshImpl(std::span<const Vertex> vertices,
                                                   const void* indexData, Uint32 indexBytes,
                                                   Uint32 indexCount,
@@ -1151,6 +1379,46 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
     // Walk the scene tree, drawing as we go. The nodes' world matrices were
     // computed by Node::updateWorldTransforms() before this render pass began.
     recordNode(cmd, pass, root, projView);
+
+    // Draw the sky LAST (Step 14): with the depth buffer now holding the scene's
+    // depths, the skybox's LEQUAL test + far-plane depth make it fill ONLY the
+    // background pixels — no overdraw of shaded geometry. Skipped if no cubemap was
+    // loaded or the sky is toggled off.
+    if (skyboxCubemap_ != nullptr && skyboxEnabled_) {
+        recordSkybox(cmd, pass, view, projection);
+    }
+}
+
+void GpuRenderer::recordSkybox(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                               const Mat4& view, const Mat4& projection) const {
+    // Strip the TRANSLATION from the view matrix, keeping only the camera's rotation,
+    // so the sky turns with the camera yet never slides — it reads as infinitely far.
+    // In our column-major Mat4 the translation is the last column (indices 12,13,14).
+    Mat4 viewNoTranslation = view;
+    viewNoTranslation.at(0, 3) = 0.0f;
+    viewNoTranslation.at(1, 3) = 0.0f;
+    viewNoTranslation.at(2, 3) = 0.0f;
+    const Mat4 skyViewProj = projection * viewNoTranslation;
+
+    // Binding a new pipeline resets the pass's bindings, so (re)bind everything the
+    // sky draw needs: the pipeline, the cubemap sampler, the sky matrix, the cube.
+    SDL_BindGPUGraphicsPipeline(pass, skyboxPipeline_);
+
+    SDL_GPUTextureSamplerBinding sky = {};
+    sky.texture = skyboxCubemap_;
+    sky.sampler = skyboxSampler_;
+    SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, &sky, /*num_bindings=*/1);
+
+    SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, skyViewProj.m, sizeof(skyViewProj.m));
+
+    SDL_GPUBufferBinding vb = {};
+    vb.buffer = skyboxMesh_->vertexBuffer();
+    SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vb, /*num_bindings=*/1);
+    SDL_GPUBufferBinding ib = {};
+    ib.buffer = skyboxMesh_->indexBuffer();
+    SDL_BindGPUIndexBuffer(pass, &ib, skyboxMesh_->indexElementSize());
+    SDL_DrawGPUIndexedPrimitives(pass, skyboxMesh_->indexCount(), /*num_instances=*/1,
+                                 /*first_index=*/0, /*vertex_offset=*/0, /*first_instance=*/0);
 }
 
 void GpuRenderer::recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
@@ -1241,6 +1509,23 @@ GpuRenderer::~GpuRenderer() {
         if (shadowPipeline_ != nullptr) {
             SDL_ReleaseGPUGraphicsPipeline(device_, shadowPipeline_);
             shadowPipeline_ = nullptr;
+        }
+        // Skybox resources (Step 14). The cube mesh is a member shared_ptr, so we must
+        // drop it HERE (while the device is still alive) — member destructors run only
+        // after this body, by which point SDL_DestroyGPUDevice below has torn the device
+        // down and Mesh::~Mesh could no longer free its buffers.
+        skyboxMesh_.reset();
+        if (skyboxCubemap_ != nullptr) {
+            SDL_ReleaseGPUTexture(device_, skyboxCubemap_);
+            skyboxCubemap_ = nullptr;
+        }
+        if (skyboxSampler_ != nullptr) {
+            SDL_ReleaseGPUSampler(device_, skyboxSampler_);
+            skyboxSampler_ = nullptr;
+        }
+        if (skyboxPipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, skyboxPipeline_);
+            skyboxPipeline_ = nullptr;
         }
         // Post-processing resources (Step 10). SDL_ReleaseGPU* tolerate null, so the
         // lazily-created targets are safe to release even if a frame never ran.

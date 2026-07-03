@@ -24,15 +24,16 @@ Three principles shape the plan:
   number, because [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) is a prerequisites
   page rather than a step. So **Step N → `documentation/docs/(N+1)-*.html`** (e.g. Step 12 →
   [`documentation/docs/13-pbr-materials.html`](documentation/docs/13-pbr-materials.html)).
-- **The next milestone is Step 14** (skybox), which will ship as `documentation/docs/15-*.html`.
-  Step 13 shipped as [`documentation/docs/14-texture-and-normal-maps.html`](documentation/docs/14-texture-and-normal-maps.html).
+- **The next milestone is Step 15** (image-based lighting), which will ship as `documentation/docs/16-*.html`.
+  Step 14 shipped as [`documentation/docs/15-skybox-and-cubemaps.html`](documentation/docs/15-skybox-and-cubemaps.html).
 
 ---
 
-## ✅ Completed — Steps 0–13
+## ✅ Completed — Steps 0–14
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
-post-processed shading of loaded models under many lights, with per-pixel texture + normal maps.
+post-processed shading of loaded models under many lights, with per-pixel texture + normal maps
+and a cubemap sky.
 Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
 [`documentation/docs/index.html`](documentation/docs/index.html).
@@ -53,6 +54,7 @@ linked per row below (note how the doc number runs one ahead of the step), and a
 | **11** | Multiple lights | directional/point/spot lights, distance attenuation, spot cones | [documentation/docs/12](documentation/docs/12-multiple-lights.html) |
 | **12** | PBR materials | Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation | [documentation/docs/13](documentation/docs/13-pbr-materials.html) |
 | **13** | Texture & normal maps | per-pixel albedo/metallic-roughness/AO maps, tangent space + TBN matrix (normal mapping), mipmaps + anisotropic filtering | [documentation/docs/14](documentation/docs/14-texture-and-normal-maps.html) |
+| **14** | Skybox & cubemaps | cubemap textures sampled by direction, cube-around-camera skybox, translation-stripped view, far-plane depth trick (LEQUAL + `.xyww`) | [documentation/docs/15](documentation/docs/15-skybox-and-cubemaps.html) |
 
 > The prerequisites page [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) (building,
 > running, testing, project layout) is not a numbered step.
@@ -79,14 +81,19 @@ provides, and both build toward "metals that reflect their surroundings."
   material import* under Geometry & content. This step verified with generated BMP maps on the demo
   meshes via `KOI_CAPTURE`.
 
-### Step 14 — Skybox & environment maps
-- **Goal:** render an environment — a cubemap sky — behind the scene.
-- **Concepts:** **cubemap** textures and how they're sampled by *direction*; drawing the environment
-  (a cube around the camera, or a fullscreen pass using the inverse view-projection); sampling at the
-  far plane so the sky sits behind everything.
-- **Likely touches:** cubemap support in [`src/renderer/Texture.hpp`](src/renderer/Texture.hpp) and
-  the renderer; a new skybox pipeline in [`src/renderer/GpuRenderer.cpp`](src/renderer/GpuRenderer.cpp)
-  with `shaders/skybox.vert` / `shaders/skybox.frag`.
+### ✅ Step 14 — Skybox & environment maps *(done — [tutorial](documentation/docs/15-skybox-and-cubemaps.html))*
+- **Shipped:** a **cubemap sky** drawn behind the scene. A new `uploadCubemap`/`loadCubemap` path in
+  [`src/renderer/GpuRenderer.cpp`](src/renderer/GpuRenderer.cpp) uploads six BMP faces into one
+  `SDL_GPU_TEXTURETYPE_CUBE` texture; a new skybox pipeline (`shaders/skybox.vert` /
+  `shaders/skybox.frag`) draws the cube around the camera, sampling the cubemap by the cube's
+  object-space direction. The chosen technique is the **cube-around-the-camera** one (reusing
+  `makeCubeMesh`), with the view's **translation stripped** (sky stays infinitely far) and the depth
+  **pinned to the far plane** (`.xyww` + `LEQUAL` + no depth write, drawn last) so it fills only
+  background pixels. A dedicated **CLAMP_TO_EDGE** cubemap sampler avoids face seams. The demo sky is
+  generated procedurally by [`tools/gen_skybox.py`](tools/gen_skybox.py) (a day-sky gradient + a sun
+  aligned to the scene's sun light); toggle it at runtime with `8`.
+- **Deliberately deferred:** the *fullscreen-triangle + inverse-view-projection* variant (needs a
+  `Mat4` inverse the math library doesn't have yet); loading real HDR/equirectangular skies.
 - **Why here:** the cubemap plumbing is the prerequisite for IBL — and a sky immediately makes every
   scene look better.
 
@@ -294,7 +301,9 @@ If you're unsure what to pick up next, a sensible interleaving that respects the
 ```
 Step 13  texture + normal maps (+ mipmaps)          ✅ done
    │
-Step 14  skybox / cubemaps ──▶ Step 15  IBL          ◀── next
+Step 14  skybox / cubemaps                           ✅ done
+   │
+Step 15  image-based lighting (IBL)                  ◀── next
    │
 engine/app separation ──▶ CI + golden images     ◀── highest production leverage; do early
    │

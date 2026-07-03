@@ -3,7 +3,7 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 13 (window & render loop, the first triangle, geometry in GPU
+through Step 14 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
@@ -14,7 +14,8 @@ tone-mapping, and FXAA before it reaches the screen — **multiple lights** of
 different kinds (directional/point/spot) accumulated in the shader, physically-based
 **PBR** shading via a Cook-Torrance metallic-roughness BRDF, and per-pixel material
 **texture maps** — metallic-roughness / AO / **normal maps** applied through a
-per-vertex tangent + **TBN** basis, with **mipmaps** and **anisotropic filtering**).
+per-vertex tangent + **TBN** basis, with **mipmaps** and **anisotropic filtering**, and a
+**skybox** — a **cubemap** environment sampled by direction and drawn behind the scene).
 
 ## Guiding principles
 
@@ -53,7 +54,7 @@ per-vertex tangent + **TBN** basis, with **mipmaps** and **anisotropic filtering
 |-----------|------|----------------|
 | `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera + the scene graph, runs the game loop, computes delta-time, routes input, builds the demo scene (`buildScene`: meshes + textures + materials, assigned to nodes), animates + propagates transforms each frame, controls startup/shutdown order. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, and the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`; binds the material's four maps per draw, shadow map at slot 4) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines), and the (Step 14) **skybox** resources (a `CUBE` **cubemap** texture, a CLAMP_TO_EDGE cubemap sampler, a skybox pipeline, and the cube mesh drawn around the camera). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload; `loadCubemap` uploads six faces into one cube texture) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`; binds the material's four maps per draw, shadow map at slot 4, then draws the **sky last** via `recordSkybox`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
 | `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the Engine drives from input and hands to the renderer, plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
 | `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: an `albedo` texture + **PBR** params `metallic`/`roughness` (Step 12) — now **factors** — plus (Step 13) three optional map handles: `metalRough` (glTF-packed G=roughness, B=metallic), `normalMap` (tangent-space), and `ao`. Any map may be null; the renderer binds a neutral 1×1 fallback so map-less materials render as in Step 12. Shared by `shared_ptr`; a `Node` references one; the renderer binds all four maps per draw. |
 | `Pbr` | [src/renderer/Pbr.hpp](src/renderer/Pbr.hpp) | Header-only, SDL-free (Step 12): pure CPU mirrors of the Cook-Torrance BRDF sub-terms — `distributionGGX` (D), `geometrySmith`/`geometrySchlickGGX` (G), `fresnelSchlick` (F), plus `kPi`. The shader in `triangle.frag` is the runtime truth; these exist so the microfacet math's shape is unit-tested headlessly (`tests/test_pbr.cpp`), the same pattern as `PostProcess.hpp`/`Light.hpp`. |
@@ -94,7 +95,9 @@ renderFrame(view,      → in GpuRenderer (view = camera.viewMatrix()); renderSc
                         directional/point/spot lights, only the sun shadowed), then walk
                         the tree (per node: bind the material's 4 maps [albedo/metal-rough/
                         normal/AO, slots 0–3] + push material params, bind mesh buffers +
-                        push {mvp,model}, draw); end pass
+                        push {mvp,model}, draw); then recordSkybox draws the SKY LAST (Step 14:
+                        cube around the camera, translation-stripped view, far-plane depth,
+                        LEQUAL) so it fills only background pixels; end pass
                      5. POST CHAIN (runPostChain): bloom bright-pass + separable blur → composite
                         (exposure, ACES tone-map, vignette, gamma) → FXAA into the swapchain image
                      6. submit command buffer (queues present)
@@ -489,6 +492,47 @@ offline asset-pipeline track) as BMPs, since the loader is still `SDL_LoadBMP`-o
 material/texture import + PNG loading (and thus the Damaged Helmet) are a deliberately
 separate later step.
 
+### Skybox & cubemaps (Step 14)
+
+The scene finally gets a **world behind it**: a **cubemap** sky drawn in the same scene pass,
+after the geometry. A cubemap is six square textures forming a cube, sampled by a 3D
+**direction** rather than a 2D UV — exactly the shape "a colour per viewing direction" needs.
+The chosen technique is the **cube-around-the-camera** one (over the fullscreen-triangle +
+inverse-view-projection variant, which would need a `Mat4` inverse the math library doesn't
+have yet).
+
+```
+   tools/gen_skybox.py  ─ 6 BMP faces ─►  loadCubemap → uploadCubemap (type CUBE, 6 layers, mips)
+   (procedural day sky,                   recordSkybox (end of recordScene), per fragment:
+    sun aligned to lights[0])               dir = normalize(cubeCornerPos)   (object pos = direction)
+                                            skyColor = texture(uSky, dir) · kSkyIntensity
+```
+
+Four ideas make it sit right, all in `GpuRenderer` + `shaders/skybox.*`:
+
+- **Sampled by direction.** The skybox reuses `makeCubeMesh`; its object-space corner position
+  *is* the sample direction, forwarded from `skybox.vert` and interpolated per fragment — so no
+  separate direction attribute is needed. Only the position attribute is declared (the full
+  `Vertex` stride, mirroring the shadow pass).
+- **Infinitely far.** `recordSkybox` zeroes the **translation** column of the view matrix
+  (keeping only the camera's rotation) before combining with the projection, so the sky turns
+  with the camera but never slides — unreachable.
+- **Behind everything.** The vertex shader emits `gl_Position = clip.xyww`, pinning post-divide
+  depth to `1.0` (far plane); the skybox pipeline tests **`LESS_OR_EQUAL`** with depth-write
+  **off** and is drawn **last**, so the sky fills only pixels the scene left at the far-plane
+  clear — no overdraw of shaded geometry.
+- **Seam-free + tone-map-aware.** A dedicated **CLAMP_TO_EDGE** cubemap sampler stops the six
+  faces seaming at their edges. The sky is rendered into the HDR target and later tone-mapped,
+  so `skybox.frag` lifts it by a constant tuned to sit *below* the Step 10 **bloom threshold**
+  (a real cross-system constraint — a too-bright sky blooms and washes out), while the sun disk
+  is left bright enough to bloom on its own.
+
+The cubemap upload path (`uploadCubemap`: `SDL_GPU_TEXTURETYPE_CUBE`, `layer_count_or_depth = 6`,
+one copy region per face layer, a single mip-gen) is the reusable groundwork the next step —
+**image-based lighting** — consumes to bake irradiance/prefiltered maps. The demo sky is
+generated procedurally by `tools/gen_skybox.py` (same `uv`-run, BMP-only pattern as the texture
+maps); loading real HDR/equirectangular skies is a later step.
+
 ## Lifecycle & ownership
 
 Startup builds bottom-up, shutdown tears down top-down — the standard RAII
@@ -505,6 +549,12 @@ and the **scene and the texture** must be destroyed before `GpuRenderer` (each `
 and `Texture` frees its GPU resource through the renderer's device — see the lifetime
 rule above). So `shutdown()` resets `sceneRoot_` and `texture_`, then `renderer_`,
 then `window_`.
+
+> One in-renderer exception (Step 14): the skybox **cube mesh** is a `shared_ptr<Mesh>`
+> *member* of `GpuRenderer`, not part of the scene. Since member destructors run only
+> *after* `~GpuRenderer`'s body — by which point the device is already destroyed — the
+> destructor explicitly `.reset()`s `skyboxMesh_` (and releases the cubemap/sampler/pipeline)
+> **while the device is still alive**, preserving the same "meshes die before the device" rule.
 
 > Implementation note: `Engine`'s constructor and destructor are **defined in the
 > `.cpp`**, not the header. Its `unique_ptr` members point to forward-declared

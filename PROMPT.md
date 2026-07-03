@@ -286,3 +286,29 @@ shimmer-free recede. Deferred (roadmap-separate): glTF material/texture import, 
 Helmet. Verified: build clean under strict warnings, 54 doctest cases pass, `KOI_MAX_FRAMES` shows no
 GPU validation errors, `KOI_CAPTURE` confirms all effects. New tutorial
 `documentation/docs/14-texture-and-normal-maps.html` + nav/index links; README/ARCHITECTURE/ROADMAP updated.
+
+**Step 14 — skybox & environment cubemap (2026-07-02):**
+> Pick something from the roadmap to work on next.
+> [technique chosen via clarifying question: cube-mesh skybox (over fullscreen-triangle); day-sky look]
+
+**Outcome:** Implemented **Step 14** (skybox & environment cubemap). Added a **cubemap** upload path
+(`GpuRenderer::uploadCubemap` → `SDL_GPU_TEXTURETYPE_CUBE`, `layer_count_or_depth = 6`, one copy region
+per face layer + a single mip-gen; `loadCubemap` loads six BMP faces the same way `loadTexture` loads
+one) and a **skybox pipeline** (`shaders/skybox.vert`/`.frag`) that draws a unit cube around the camera
+(reusing `makeCubeMesh`, position attribute only — mirroring the shadow pass). The cube's object-space
+corner *is* the sample direction. Three rendering tricks: the view's **translation is stripped** (sky
+stays infinitely far), depth is **pinned to the far plane** (`gl_Position = clip.xyww`) with a
+**`LESS_OR_EQUAL`** test + depth-write off, and the sky is **drawn last** in `recordScene` so it fills
+only background pixels. A dedicated **CLAMP_TO_EDGE** cubemap sampler avoids face seams; the skybox
+cube mesh is a renderer member explicitly `.reset()` before device teardown. The demo sky is a
+procedural **day sky** from new `tools/gen_skybox.py` (uv + Pillow + numpy): a zenith→horizon gradient,
+a ground tint, and a sun disk aligned to the scene's sun light (`lights[0]`), authored by inverting the
+standard cube-face direction convention so the six faces are seamless. Tuning story: the sky first
+washed out because its brightness crossed the Step 10 **bloom threshold (0.9)** — deepened the palette
+and set `kSkyIntensity = 1.25` so the sky body stays sub-bloom while the sun disk still glows. Runtime
+toggle on key `8`. Deferred (roadmap): the fullscreen-triangle + inverse-VP variant (needs a `Mat4`
+inverse), real HDR/equirectangular skies, and IBL (Step 15). Verified: build clean under strict
+warnings (skybox shaders compile GLSL→SPIR-V→MSL), 54 doctest cases pass, `KOI_MAX_FRAMES` shows no GPU
+validation errors, `KOI_CAPTURE` confirms a seamless sky behind all geometry with the sun blooming. New
+tutorial `documentation/docs/15-skybox-and-cubemaps.html` + nav/index links (529/529 doc links resolve);
+README/ARCHITECTURE/ROADMAP updated.

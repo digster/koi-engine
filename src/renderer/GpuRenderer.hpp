@@ -19,8 +19,10 @@
 
 #include <SDL3/SDL.h>
 
+#include <array>   // std::array — the six cubemap face paths
 #include <memory>  // std::shared_ptr — meshes are shared, owned via shared_ptr
 #include <span>    // std::span — a (pointer, length) view over caller-owned geometry
+#include <string>  // std::string — cubemap face paths
 
 #include "math/Mat4.hpp"
 #include "renderer/PostProcess.hpp"  // PostSettings (passed into renderFrame/captureFrame)
@@ -65,7 +67,8 @@ public:
                shadowPipeline_ != nullptr && shadowMap_ != nullptr && shadowSampler_ != nullptr &&
                postSampler_ != nullptr && brightPipeline_ != nullptr &&
                blurPipeline_ != nullptr && compositePipeline_ != nullptr &&
-               fxaaPipeline_ != nullptr;
+               fxaaPipeline_ != nullptr && skyboxPipeline_ != nullptr &&
+               skyboxSampler_ != nullptr && skyboxMesh_ != nullptr;
     }
 
     // Upload geometry into a new Mesh and return it (shared, so many scene nodes
@@ -84,6 +87,19 @@ public:
     // on failure. Like createMesh, this is the only place textures are born — it
     // holds both the device and the upload helper.
     [[nodiscard]] std::shared_ptr<Texture> loadTexture(const char* path);
+
+    // Load the six BMP faces of an environment CUBEMAP (Step 14) and upload them
+    // into a single cube GPU texture the renderer owns, then draw it as the sky
+    // behind the scene. `facePaths` is in SDL's cube layer order: +X, -X, +Y, -Y,
+    // +Z, -Z. All faces must share one square size. Returns false (after logging)
+    // on failure. Unlike loadTexture (which hands the caller a Texture), the sky is
+    // engine-global infrastructure — like the shadow map — so the renderer holds it.
+    bool loadCubemap(const std::array<std::string, 6>& facePaths);
+
+    // Show/hide the loaded skybox at runtime (the demo binds this to a key). No-op
+    // if no cubemap has been loaded. The sky always draws when enabled AND present.
+    void setSkyboxEnabled(bool enabled) { skyboxEnabled_ = enabled; }
+    [[nodiscard]] bool skyboxEnabled() const { return skyboxEnabled_; }
 
     // Render exactly one frame: acquire a swapchain image, draw every mesh in
     // `sceneRoot` (each through its own world matrix and its node's material) as seen
@@ -154,6 +170,25 @@ private:
     // and a depth-only pipeline (shadow.vert/.frag). Called once from the ctor,
     // after the main pipeline (it reuses the chosen depth format).
     bool createShadowResources();
+
+    // Create the skybox resources (Step 14): the depth-aware skybox pipeline
+    // (skybox.vert/.frag), a CLAMP_TO_EDGE cubemap sampler, and the shared cube mesh
+    // drawn around the camera. Called once from the ctor, after the main pipeline
+    // (it reuses the chosen depth format + kSceneHdrFormat). The cubemap TEXTURE
+    // itself is loaded later via loadCubemap.
+    bool createSkyboxResources();
+
+    // Upload six equal-size RGBA face images into one cube GPU texture (type CUBE,
+    // 6 layers), generating a mip chain. `faces` is in +X,-X,+Y,-Y,+Z,-Z order, each
+    // tightly packed width*height*4 bytes. The cube mirror of uploadToGpuTexture.
+    SDL_GPUTexture* uploadCubemap(const std::array<const void*, 6>& faces,
+                                  Uint32 width, Uint32 height);
+
+    // Draw the skybox into the already-begun main render pass: bind the skybox
+    // pipeline + cubemap, push the translation-stripped view-projection, and draw the
+    // cube. Called at the END of recordScene so the sky fills only background pixels.
+    void recordSkybox(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                      const Mat4& view, const Mat4& projection) const;
 
     // PASS 1 of shadow mapping: render the scene's depth from the light's point of
     // view into the shadow map. Begins its own depth-only render pass, walks the
@@ -277,6 +312,17 @@ private:
     SDL_GPUGraphicsPipeline* shadowPipeline_ = nullptr;  // owned
     SDL_GPUTexture*          shadowMap_      = nullptr;  // owned
     SDL_GPUSampler*          shadowSampler_  = nullptr;  // owned
+
+    // Skybox / environment cubemap (Step 14). The scene is drawn first, then a unit
+    // cube around the camera samples this cubemap by direction, pinned to the far
+    // plane (LEQUAL, no depth write) so the sky fills only background pixels. The
+    // cubemap is the groundwork for Step 15's image-based lighting. skyboxCubemap_ is
+    // populated by loadCubemap; when it's null (no sky loaded) the sky draw is skipped.
+    SDL_GPUGraphicsPipeline* skyboxPipeline_ = nullptr;  // owned
+    SDL_GPUTexture*          skyboxCubemap_  = nullptr;  // owned (6-layer CUBE texture)
+    SDL_GPUSampler*          skyboxSampler_  = nullptr;  // owned (CLAMP_TO_EDGE, no seams)
+    std::shared_ptr<Mesh>    skyboxMesh_;                // the cube drawn around the camera
+    bool                     skyboxEnabled_  = true;     // runtime show/hide toggle
 
     // Post-processing (Step 10). The scene is rendered into an off-screen HDR color
     // target (sceneHdr_) instead of straight to the swapchain; a chain of fullscreen

@@ -238,6 +238,10 @@ koi_add_shader(bright.frag)
 koi_add_shader(blur.frag)
 koi_add_shader(composite.frag)
 koi_add_shader(fxaa.frag)
+# Step 14: the skybox. A cube drawn around the camera samples an environment
+# cubemap by direction (skybox.frag) and is pinned to the far plane (skybox.vert).
+koi_add_shader(skybox.vert)
+koi_add_shader(skybox.frag)
 
 # A target that builds all shader outputs, and a dependency so the app always has
 # up-to-date compiled shaders next to it.
