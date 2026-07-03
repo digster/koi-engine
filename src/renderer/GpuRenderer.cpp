@@ -39,6 +39,17 @@ constexpr int kBloomBlurPasses = 4;
 constexpr float kVignetteStrength = 0.5f;
 // Clear colour for intermediate post targets (only used when a pass needs a defined fill).
 constexpr SDL_FColor kPostClearBlack = {0.0f, 0.0f, 0.0f, 1.0f};
+
+// Image-based lighting (Step 15) bake sizes. These maps can be small: diffuse irradiance
+// is extremely low-frequency, and the specular prefilter's roughness levels live in mips
+// (mip 0 = mirror-sharp, the last mip = fully rough). kPrefilterMipLevels MUST match
+// MAX_REFLECTION_LOD+1 in triangle.frag (roughness maps onto [0 .. mips-1]).
+constexpr Uint32 kIrradianceSize     = 32;   // diffuse irradiance cube face
+constexpr Uint32 kPrefilterSize      = 128;  // specular prefilter cube base face
+constexpr Uint32 kPrefilterMipLevels = 5;    // roughness 0..1 across 5 mips
+constexpr Uint32 kBrdfLutSize        = 512;  // 2D BRDF integration LUT
+// The LUT holds a scale+bias per texel — two channels, floating point for precision.
+constexpr SDL_GPUTextureFormat kBrdfLutFormat = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
 }  // namespace
 
 GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
@@ -143,6 +154,17 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
         return;
     }
 
+    // ------------------------------------------------------------------------
+    //  7b. Create the image-based-lighting resources (Step 15): the three bake
+    //      pipelines, the trilinear cubemap sampler, and the irradiance / prefilter /
+    //      BRDF-LUT targets. The environment-independent BRDF LUT is baked right away;
+    //      the two environment convolutions are baked once a cubemap is loaded
+    //      (loadCubemap → bakeIbl). If this fails, isValid() reports it.
+    // ------------------------------------------------------------------------
+    if (!createIblResources()) {
+        return;
+    }
+
     // Note: no geometry or textures are uploaded here. The renderer is a factory
     // for meshes (createMesh) and textures (loadTexture) — the Engine builds the
     // scene (geometry + materials) after this constructor returns.
@@ -172,9 +194,10 @@ bool GpuRenderer::createTrianglePipeline() {
     // The vertex shader declares one uniform buffer (the MVP matrix); the
     // fragment shader declares none.
     SDL_GPUShader* vertexShader   = loadShader(device_, "triangle.vert", SDL_GPU_SHADERSTAGE_VERTEX, /*numUniformBuffers=*/1);
-    // Step 13: the fragment shader now reads FIVE samplers — the four per-material maps
-    // (albedo, metallic-roughness, normal, AO) plus the shared shadow map.
-    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/2, /*numSamplers=*/5);
+    // Step 15: the fragment shader now reads EIGHT samplers — the four per-material maps
+    // (albedo, metallic-roughness, normal, AO), the shared shadow map, and the three IBL
+    // maps (irradiance cube, prefilter cube, BRDF LUT) added for image-based ambient light.
+    SDL_GPUShader* fragmentShader = loadShader(device_, "triangle.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, /*numUniformBuffers=*/2, /*numSamplers=*/8);
     if (vertexShader == nullptr || fragmentShader == nullptr) {
         // loadShader already logged the cause. Clean up whichever did load.
         if (vertexShader != nullptr)   SDL_ReleaseGPUShader(device_, vertexShader);
@@ -542,6 +565,268 @@ bool GpuRenderer::createSkyboxResources() {
         return false;
     }
     return true;
+}
+
+// The six view matrices used to bake a cubemap: a camera at the origin looking down each
+// of the ±X/±Y/±Z axes, in SDL's cube layer order (+X,-X,+Y,-Y,+Z,-Z). The up-vectors are
+// the standard cube-capture convention (the horizontal faces flip up so the six renders
+// line up seamlessly with how a samplerCube later reads them). Paired with a 90° FOV
+// projection, each render exactly fills one face.
+static std::array<Mat4, 6> cubeCaptureViews() {
+    const Vec3 o{0.0f, 0.0f, 0.0f};
+    return {
+        lookAt(o, Vec3{ 1.0f,  0.0f,  0.0f}, Vec3{0.0f, -1.0f,  0.0f}),  // +X
+        lookAt(o, Vec3{-1.0f,  0.0f,  0.0f}, Vec3{0.0f, -1.0f,  0.0f}),  // -X
+        lookAt(o, Vec3{ 0.0f,  1.0f,  0.0f}, Vec3{0.0f,  0.0f,  1.0f}),  // +Y
+        lookAt(o, Vec3{ 0.0f, -1.0f,  0.0f}, Vec3{0.0f,  0.0f, -1.0f}),  // -Y
+        lookAt(o, Vec3{ 0.0f,  0.0f,  1.0f}, Vec3{0.0f, -1.0f,  0.0f}),  // +Z
+        lookAt(o, Vec3{ 0.0f,  0.0f, -1.0f}, Vec3{0.0f, -1.0f,  0.0f}),  // -Z
+    };
+}
+
+bool GpuRenderer::createIblResources() {
+    // The RG float LUT format must be a usable color target on this device.
+    if (!SDL_GPUTextureSupportsFormat(device_, kBrdfLutFormat, SDL_GPU_TEXTURETYPE_2D,
+                                      SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                                      SDL_GPU_TEXTUREUSAGE_SAMPLER)) {
+        KOI_ERROR("IBL: BRDF-LUT format (R16G16_FLOAT) unsupported as a sampleable target.");
+        return false;
+    }
+
+    // The two cube-bake pipelines share a vertex layout: position only, at the full Vertex
+    // stride (we reuse the skybox cube mesh — the shadow/skybox precedent). They render
+    // into an HDR cube face with NO depth buffer.
+    SDL_GPUVertexBufferDescription vbDesc = {};
+    vbDesc.slot       = 0;
+    vbDesc.pitch      = static_cast<Uint32>(sizeof(Vertex));
+    vbDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    const SDL_GPUVertexAttribute posAttr = {
+        /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+        offsetof(Vertex, position)};
+    SDL_GPUColorTargetDescription hdrTarget = {};
+    hdrTarget.format = kSceneHdrFormat;
+
+    auto buildCubePipeline = [&](const char* frag, Uint32 numFragUniforms) -> SDL_GPUGraphicsPipeline* {
+        SDL_GPUShader* vs = loadShader(device_, "ibl_cube.vert", SDL_GPU_SHADERSTAGE_VERTEX,
+                                       /*numUniformBuffers=*/1);
+        SDL_GPUShader* fs = loadShader(device_, frag, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                                       numFragUniforms, /*numSamplers=*/1);
+        if (vs == nullptr || fs == nullptr) {
+            if (vs != nullptr) SDL_ReleaseGPUShader(device_, vs);
+            if (fs != nullptr) SDL_ReleaseGPUShader(device_, fs);
+            return nullptr;
+        }
+        SDL_GPUGraphicsPipelineCreateInfo info = {};
+        info.vertex_shader   = vs;
+        info.fragment_shader = fs;
+        info.vertex_input_state.vertex_buffer_descriptions = &vbDesc;
+        info.vertex_input_state.num_vertex_buffers         = 1;
+        info.vertex_input_state.vertex_attributes          = &posAttr;
+        info.vertex_input_state.num_vertex_attributes      = 1;
+        info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        // We render the cube from INSIDE, so disable face culling — otherwise the faces we
+        // actually look at (back faces from the origin) would be discarded.
+        info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+        info.target_info.num_color_targets         = 1;
+        info.target_info.color_target_descriptions = &hdrTarget;
+        info.target_info.has_depth_stencil_target  = false;
+        SDL_GPUGraphicsPipeline* pipe = SDL_CreateGPUGraphicsPipeline(device_, &info);
+        SDL_ReleaseGPUShader(device_, vs);
+        SDL_ReleaseGPUShader(device_, fs);
+        return pipe;
+    };
+
+    iblIrradiancePipeline_ = buildCubePipeline("irradiance_convolution.frag", /*numFragUniforms=*/0);
+    iblPrefilterPipeline_  = buildCubePipeline("prefilter_env.frag",          /*numFragUniforms=*/1);
+    if (iblIrradiancePipeline_ == nullptr || iblPrefilterPipeline_ == nullptr) {
+        KOI_ERROR("IBL: failed to create a cube-bake pipeline: %s", SDL_GetError());
+        return false;
+    }
+
+    // The BRDF-LUT pipeline: a fullscreen pass (fullscreen.vert, no vertex input, no depth)
+    // into the RG float target. brdf_lut.frag reads nothing (no uniforms, no samplers).
+    {
+        SDL_GPUShader* vs = loadShader(device_, "fullscreen.vert", SDL_GPU_SHADERSTAGE_VERTEX);
+        SDL_GPUShader* fs = loadShader(device_, "brdf_lut.frag", SDL_GPU_SHADERSTAGE_FRAGMENT,
+                                       /*numUniformBuffers=*/0, /*numSamplers=*/0);
+        if (vs == nullptr || fs == nullptr) {
+            if (vs != nullptr) SDL_ReleaseGPUShader(device_, vs);
+            if (fs != nullptr) SDL_ReleaseGPUShader(device_, fs);
+            return false;
+        }
+        SDL_GPUColorTargetDescription lutTarget = {};
+        lutTarget.format = kBrdfLutFormat;
+        SDL_GPUGraphicsPipelineCreateInfo info = {};
+        info.vertex_shader   = vs;
+        info.fragment_shader = fs;
+        info.vertex_input_state.num_vertex_buffers    = 0;
+        info.vertex_input_state.num_vertex_attributes = 0;
+        info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+        info.target_info.num_color_targets         = 1;
+        info.target_info.color_target_descriptions = &lutTarget;
+        info.target_info.has_depth_stencil_target  = false;
+        iblBrdfPipeline_ = SDL_CreateGPUGraphicsPipeline(device_, &info);
+        SDL_ReleaseGPUShader(device_, vs);
+        SDL_ReleaseGPUShader(device_, fs);
+        if (iblBrdfPipeline_ == nullptr) {
+            KOI_ERROR("IBL: failed to create BRDF-LUT pipeline: %s", SDL_GetError());
+            return false;
+        }
+    }
+
+    // The sampler the IBL maps are read through: LINEAR + trilinear (LINEAR mipmap mode) so
+    // the prefilter's roughness mips blend smoothly under textureLod, and CLAMP_TO_EDGE so
+    // cube faces meet without seams. (postSampler_ uses NEAREST mipmaps, so it can't serve.)
+    SDL_GPUSamplerCreateInfo si = {};
+    si.min_filter     = SDL_GPU_FILTER_LINEAR;
+    si.mag_filter     = SDL_GPU_FILTER_LINEAR;
+    si.mipmap_mode    = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+    si.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    si.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    iblSampler_ = SDL_CreateGPUSampler(device_, &si);
+    if (iblSampler_ == nullptr) {
+        KOI_ERROR("IBL: failed to create sampler: %s", SDL_GetError());
+        return false;
+    }
+
+    // Allocate the target textures (both cubes need COLOR_TARGET so we can render into
+    // their faces/mips, plus SAMPLER so the main pass can read them).
+    auto makeCube = [&](Uint32 size, Uint32 mips) -> SDL_GPUTexture* {
+        SDL_GPUTextureCreateInfo ti = {};
+        ti.type                 = SDL_GPU_TEXTURETYPE_CUBE;
+        ti.format               = kSceneHdrFormat;
+        ti.usage                = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ti.width                = size;
+        ti.height               = size;
+        ti.layer_count_or_depth = 6;
+        ti.num_levels           = mips;
+        return SDL_CreateGPUTexture(device_, &ti);
+    };
+    iblIrradiance_ = makeCube(kIrradianceSize, /*mips=*/1);
+    iblPrefilter_  = makeCube(kPrefilterSize, kPrefilterMipLevels);
+    {
+        SDL_GPUTextureCreateInfo ti = {};
+        ti.type                 = SDL_GPU_TEXTURETYPE_2D;
+        ti.format               = kBrdfLutFormat;
+        ti.usage                = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ti.width                = kBrdfLutSize;
+        ti.height               = kBrdfLutSize;
+        ti.layer_count_or_depth = 1;
+        ti.num_levels           = 1;
+        iblBrdfLut_ = SDL_CreateGPUTexture(device_, &ti);
+    }
+    if (iblIrradiance_ == nullptr || iblPrefilter_ == nullptr || iblBrdfLut_ == nullptr) {
+        KOI_ERROR("IBL: failed to create a target texture: %s", SDL_GetError());
+        return false;
+    }
+
+    // Bake the BRDF LUT now, once: it's a pure function of (N·V, roughness) — independent
+    // of the environment — so it never needs re-baking, unlike the two cube convolutions.
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
+    SDL_GPUColorTargetInfo ci = {};
+    ci.texture     = iblBrdfLut_;
+    ci.clear_color = kPostClearBlack;
+    ci.load_op     = SDL_GPU_LOADOP_CLEAR;
+    ci.store_op    = SDL_GPU_STOREOP_STORE;
+    ci.cycle       = false;
+    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &ci, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(pass, iblBrdfPipeline_);
+    drawFullscreen(pass);
+    SDL_EndGPURenderPass(pass);
+    SDL_SubmitGPUCommandBuffer(cmd);
+    return true;
+}
+
+void GpuRenderer::bakeCubeFace(SDL_GPUCommandBuffer* cmd, SDL_GPUGraphicsPipeline* pipeline,
+                               SDL_GPUTexture* target, Uint32 face, Uint32 mip, Uint32 size,
+                               const Mat4& captureViewProj, const float* prefilterParams) const {
+    // Target exactly ONE face+mip subresource of the cube. layer_or_depth_plane selects the
+    // cube face; mip_level selects the roughness level. No cycle: we write the real texture.
+    SDL_GPUColorTargetInfo ci = {};
+    ci.texture              = target;
+    ci.mip_level            = mip;
+    ci.layer_or_depth_plane = face;
+    ci.clear_color          = kPostClearBlack;
+    ci.load_op              = SDL_GPU_LOADOP_CLEAR;
+    ci.store_op             = SDL_GPU_STOREOP_STORE;
+    ci.cycle                = false;
+    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &ci, 1, nullptr);
+
+    // The viewport must match this mip's dimensions (a prefilter mip is smaller than base).
+    SDL_GPUViewport vp = {0.0f, 0.0f, static_cast<float>(size), static_cast<float>(size),
+                          0.0f, 1.0f};
+    SDL_SetGPUViewport(pass, &vp);
+
+    SDL_BindGPUGraphicsPipeline(pass, pipeline);
+
+    // Source environment: the loaded skybox cubemap at fragment sampler slot 0.
+    SDL_GPUTextureSamplerBinding env = {};
+    env.texture = skyboxCubemap_;
+    env.sampler = skyboxSampler_;
+    SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, &env, /*num_bindings=*/1);
+
+    // Vertex uniform: this face's capture view-projection.
+    SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, captureViewProj.m, sizeof(captureViewProj.m));
+    // Fragment uniform: the prefilter's {roughness, envResolution}; irradiance takes none.
+    if (prefilterParams != nullptr) {
+        SDL_PushGPUFragmentUniformData(cmd, /*slot=*/0, prefilterParams, sizeof(float) * 4);
+    }
+
+    SDL_GPUBufferBinding vb = {};
+    vb.buffer = skyboxMesh_->vertexBuffer();
+    SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vb, /*num_bindings=*/1);
+    SDL_GPUBufferBinding ib = {};
+    ib.buffer = skyboxMesh_->indexBuffer();
+    SDL_BindGPUIndexBuffer(pass, &ib, skyboxMesh_->indexElementSize());
+    SDL_DrawGPUIndexedPrimitives(pass, skyboxMesh_->indexCount(), /*num_instances=*/1,
+                                 /*first_index=*/0, /*vertex_offset=*/0, /*first_instance=*/0);
+    SDL_EndGPURenderPass(pass);
+}
+
+void GpuRenderer::bakeIbl() {
+    // Needs both a loaded environment and the pipelines (created in the ctor).
+    if (skyboxCubemap_ == nullptr || iblIrradiancePipeline_ == nullptr ||
+        iblPrefilterPipeline_ == nullptr) {
+        return;
+    }
+
+    const std::array<Mat4, 6> views = cubeCaptureViews();
+    // 90° FOV so one face fills the render exactly; near/far are arbitrary (directions only).
+    const Mat4 proj = perspective(radians(90.0f), 1.0f, 0.1f, 10.0f);
+
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
+
+    // 1. Diffuse irradiance: one render per face into mip 0. No per-face parameters.
+    for (Uint32 face = 0; face < 6; ++face) {
+        const Mat4 vp = proj * views[face];
+        bakeCubeFace(cmd, iblIrradiancePipeline_, iblIrradiance_, face, /*mip=*/0,
+                     kIrradianceSize, vp, /*prefilterParams=*/nullptr);
+    }
+
+    // 2. Specular prefilter: one render per (face, mip). Mip m stores roughness m/(N-1);
+    //    a smaller mip means a rougher (blurrier) reflection.
+    for (Uint32 mip = 0; mip < kPrefilterMipLevels; ++mip) {
+        const Uint32 mipSize = kPrefilterSize >> mip;
+        const float roughness = (kPrefilterMipLevels <= 1)
+                                    ? 0.0f
+                                    : static_cast<float>(mip) /
+                                          static_cast<float>(kPrefilterMipLevels - 1);
+        // {roughness, source-env face resolution, 0, 0} — the shader uses the resolution to
+        // pick a source mip per sample and suppress fireflies.
+        const float params[4] = {roughness, static_cast<float>(skyboxFaceSize_), 0.0f, 0.0f};
+        for (Uint32 face = 0; face < 6; ++face) {
+            const Mat4 vp = proj * views[face];
+            bakeCubeFace(cmd, iblPrefilterPipeline_, iblPrefilter_, face, mip, mipSize, vp,
+                         params);
+        }
+    }
+
+    SDL_SubmitGPUCommandBuffer(cmd);
+    iblReady_ = true;
+    KOI_INFO("Baked IBL from skybox: irradiance %ux%u, prefilter %ux%u (%u mips).",
+             kIrradianceSize, kIrradianceSize, kPrefilterSize, kPrefilterSize,
+             kPrefilterMipLevels);
 }
 
 void GpuRenderer::renderShadowPass(SDL_GPUCommandBuffer* cmd, const Node& root,
@@ -1170,7 +1455,12 @@ bool GpuRenderer::loadCubemap(const std::array<std::string, 6>& facePaths) {
         SDL_ReleaseGPUTexture(device_, skyboxCubemap_);
     }
     skyboxCubemap_ = cube;
+    skyboxFaceSize_ = width;  // the prefilter bake needs the source face resolution
     KOI_INFO("Loaded skybox cubemap (%ux%u per face).", width, height);
+
+    // Bake image-based lighting from this sky (Step 15): the diffuse irradiance and
+    // specular prefilter cubemaps. Done here so a sky reload automatically re-bakes.
+    bakeIbl();
     return true;
 }
 
@@ -1312,6 +1602,17 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
     shadowBinding.sampler = shadowSampler_;
     SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/4, &shadowBinding, /*num_bindings=*/1);
 
+    // Bind the IBL maps at fragment sampler slots 5–7 (Step 15) — one set for the whole
+    // frame, like the shadow map: the diffuse irradiance cube, the specular prefilter cube,
+    // and the environment BRDF LUT. They always exist (created at init), so the bind is
+    // unconditional; the shader only READS them when the IBL flag in ambient.w is set.
+    const SDL_GPUTextureSamplerBinding iblBindings[3] = {
+        {iblIrradiance_, iblSampler_},
+        {iblPrefilter_,  iblSampler_},
+        {iblBrdfLut_,    iblSampler_},
+    };
+    SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/5, iblBindings, /*num_bindings=*/3);
+
     // Pack the per-frame lighting environment (fragment set=3, binding 0): the ambient
     // fill, the eye (for specular), the sun's shadow matrix, and the ARRAY of active
     // lights. This C++ layout must match LightUBO in triangle.frag BYTE FOR BYTE — every
@@ -1333,6 +1634,10 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
 
     LightUniform light = {};
     light.ambient[0] = 0.15f; light.ambient[1] = 0.15f; light.ambient[2] = 0.18f;  // soft fill
+    // ambient.w is the IBL switch the shader reads (Step 15): 1 → use the baked environment
+    // maps for ambient, 0 → the flat constant fill above (the Step 12 look). On only once a
+    // cubemap has actually been baked AND the runtime toggle is on.
+    light.ambient[3] = (iblEnabled_ && iblReady_) ? 1.0f : 0.0f;
     light.cameraPos[0] = cameraPos.x;
     light.cameraPos[1] = cameraPos.y;
     light.cameraPos[2] = cameraPos.z;
@@ -1526,6 +1831,27 @@ GpuRenderer::~GpuRenderer() {
         if (skyboxPipeline_ != nullptr) {
             SDL_ReleaseGPUGraphicsPipeline(device_, skyboxPipeline_);
             skyboxPipeline_ = nullptr;
+        }
+        // Image-based lighting resources (Step 15). SDL_ReleaseGPU* tolerate null.
+        SDL_ReleaseGPUTexture(device_, iblIrradiance_);
+        SDL_ReleaseGPUTexture(device_, iblPrefilter_);
+        SDL_ReleaseGPUTexture(device_, iblBrdfLut_);
+        iblIrradiance_ = iblPrefilter_ = iblBrdfLut_ = nullptr;
+        if (iblSampler_ != nullptr) {
+            SDL_ReleaseGPUSampler(device_, iblSampler_);
+            iblSampler_ = nullptr;
+        }
+        if (iblIrradiancePipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, iblIrradiancePipeline_);
+            iblIrradiancePipeline_ = nullptr;
+        }
+        if (iblPrefilterPipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, iblPrefilterPipeline_);
+            iblPrefilterPipeline_ = nullptr;
+        }
+        if (iblBrdfPipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, iblBrdfPipeline_);
+            iblBrdfPipeline_ = nullptr;
         }
         // Post-processing resources (Step 10). SDL_ReleaseGPU* tolerate null, so the
         // lazily-created targets are safe to release even if a frame never ran.

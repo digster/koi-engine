@@ -158,11 +158,13 @@ bool Engine::buildScene() {
         return false;
     }
     // The loaded models flank the cubes and headline the two material extremes:
-    //   * sphereMat — a smooth METAL (the checker as its reflected tint): crisp,
-    //                 bright light reflections that sharpen as you orbit it.
+    //   * sphereMat — a smooth METAL (the checker as its reflected tint): the Step 15
+    //                 SHOWCASE. Before IBL a metal was near-black away from the highlight;
+    //                 now it mirrors the sky. Roughness is low (0.08) so that reflection is
+    //                 crisp — toggle IBL with '9' to watch it go dark again.
     //   * torusMat  — a glossy DIELECTRIC: a tight white specular over a matte body.
     auto sphereMat = std::make_shared<Material>(Material{
-        .albedo = checkerTex, .metallic = 1.0f, .roughness = 0.20f});
+        .albedo = checkerTex, .metallic = 1.0f, .roughness = 0.08f});
     auto torusMat  = std::make_shared<Material>(Material{
         .albedo = dotsTex, .metallic = 0.0f, .roughness = 0.25f});
 
@@ -314,7 +316,7 @@ void Engine::run() {
         SDL_SetWindowRelativeMouseMode(window_->handle(), true);
         KOI_INFO("Controls: WASD move, E/Q up/down, mouse look, Esc to quit.");
         KOI_INFO("Post-processing: 1=tone-map 2=bloom 3=FXAA 4=vignette, [ / ] exposure.");
-        KOI_INFO("Lights: 5=point lights 6=spot 7=sun. Environment: 8=skybox.");
+        KOI_INFO("Lights: 5=point lights 6=spot 7=sun. Environment: 8=skybox 9=IBL.");
     }
 
     // Delta-time clock: the time since the previous frame, in seconds. Movement is
@@ -445,6 +447,16 @@ void Engine::processEvents() {
                         const bool on = !renderer_->skyboxEnabled();
                         renderer_->setSkyboxEnabled(on);
                         KOI_INFO("Skybox: %s", on ? "on" : "off");
+                        break;
+                    }
+                    case SDLK_9: {
+                        // Step 15: toggle IMAGE-BASED LIGHTING. With it off, the ambient
+                        // term falls back to the flat constant fill (the Step 12 look), so
+                        // the metal sphere goes dark — a clean A/B for what the environment
+                        // actually contributes.
+                        const bool on = !renderer_->iblEnabled();
+                        renderer_->setIblEnabled(on);
+                        KOI_INFO("Image-based lighting: %s", on ? "on" : "off");
                         break;
                     }
                     default:

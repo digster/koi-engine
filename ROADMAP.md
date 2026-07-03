@@ -24,16 +24,19 @@ Three principles shape the plan:
   number, because [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) is a prerequisites
   page rather than a step. So **Step N → `documentation/docs/(N+1)-*.html`** (e.g. Step 12 →
   [`documentation/docs/13-pbr-materials.html`](documentation/docs/13-pbr-materials.html)).
-- **The next milestone is Step 15** (image-based lighting), which will ship as `documentation/docs/16-*.html`.
-  Step 14 shipped as [`documentation/docs/15-skybox-and-cubemaps.html`](documentation/docs/15-skybox-and-cubemaps.html).
+- **Step 15** (image-based lighting) shipped as
+  [`documentation/docs/16-image-based-lighting.html`](documentation/docs/16-image-based-lighting.html); it
+  closed the core material/lighting arc. With the numbered rendering track caught up, **the highest-leverage
+  next moves are the production items** — engine/app separation, then cross-platform CI + golden images
+  (see *Path to 1.0*) — interleaved with glTF PBR import and quaternions (see the suggested path).
 
 ---
 
-## ✅ Completed — Steps 0–14
+## ✅ Completed — Steps 0–15
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
-post-processed shading of loaded models under many lights, with per-pixel texture + normal maps
-and a cubemap sky.
+post-processed shading of loaded models under many lights, with per-pixel texture + normal maps,
+a cubemap sky, and image-based lighting that lets the environment light the scene.
 Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
 [`documentation/docs/index.html`](documentation/docs/index.html).
@@ -55,6 +58,7 @@ linked per row below (note how the doc number runs one ahead of the step), and a
 | **12** | PBR materials | Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation | [documentation/docs/13](documentation/docs/13-pbr-materials.html) |
 | **13** | Texture & normal maps | per-pixel albedo/metallic-roughness/AO maps, tangent space + TBN matrix (normal mapping), mipmaps + anisotropic filtering | [documentation/docs/14](documentation/docs/14-texture-and-normal-maps.html) |
 | **14** | Skybox & cubemaps | cubemap textures sampled by direction, cube-around-camera skybox, translation-stripped view, far-plane depth trick (LEQUAL + `.xyww`) | [documentation/docs/15](documentation/docs/15-skybox-and-cubemaps.html) |
+| **15** | Image-based lighting | diffuse irradiance convolution, specular split-sum (prefiltered env + BRDF LUT), importance sampling + Hammersley, baking into cubemap faces | [documentation/docs/16](documentation/docs/16-image-based-lighting.html) |
 
 > The prerequisites page [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) (building,
 > running, testing, project layout) is not a numbered step.
@@ -97,18 +101,26 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** the cubemap plumbing is the prerequisite for IBL — and a sky immediately makes every
   scene look better.
 
-### Step 15 — Image-based lighting (IBL)
-- **Goal:** light surfaces from the environment so **metals stop looking dark** away from their
-  highlights — the open problem left by Step 12.
-- **Concepts:** a **diffuse irradiance** map (the environment convolved over the hemisphere); a
-  **prefiltered specular** environment map across roughness levels; the **split-sum approximation**
-  and the **BRDF integration LUT**; how environment reflection completes the PBR picture.
-- **Likely touches:** one-time precompute passes (render or SDL3 GPU **compute**) to bake the
-  irradiance map, prefiltered map, and BRDF LUT; sample them for the ambient term in
-  [`shaders/triangle.frag`](shaders/triangle.frag); extend the CPU mirror in
-  [`src/renderer/Pbr.hpp`](src/renderer/Pbr.hpp) for tests.
-- **Why here:** it depends on Step 14's cubemaps and closes out the core material/lighting arc before
-  the engine fans out into the wider tracks below.
+### ✅ Step 15 — Image-based lighting (IBL) *(done — [tutorial](documentation/docs/16-image-based-lighting.html))*
+- **Shipped:** the environment now **lights** the scene, so **metals reflect their surroundings**
+  instead of looking dark (the open problem from Step 12). Three maps are baked once from the skybox
+  cubemap at load: a **diffuse irradiance** cube (the sky cosine-convolved), a **prefiltered specular**
+  cube (GGX-blurred, roughness across its mips), and the environment-independent **BRDF LUT** — the
+  **split-sum** approximation. The bakes render into cubemap faces via new pipelines +
+  `createIblResources`/`bakeIbl` in [`src/renderer/GpuRenderer.cpp`](src/renderer/GpuRenderer.cpp)
+  (reusing the Step 14 cubemap plumbing, so **no `Mat4` inverse** was needed — each face uses
+  `lookAt`+90° `perspective`). New GLSL: `ibl_cube.vert`, `irradiance_convolution.frag`,
+  `prefilter_env.frag`, `brdf_lut.frag`. [`shaders/triangle.frag`](shaders/triangle.frag) reads the
+  three maps (fragment slots 5–7) for the ambient term, toggled at runtime with `9`. The precompute
+  helpers (Hammersley, GGX importance sampling, the IBL geometry term, `integrateBRDF`,
+  `fresnelSchlickRoughness`) got a CPU mirror in [`src/renderer/Pbr.hpp`](src/renderer/Pbr.hpp),
+  unit-tested in [`tests/test_ibl.cpp`](tests/test_ibl.cpp).
+- **Chosen approach:** **GPU precompute at startup** (render passes, not compute) and **full IBL**
+  (diffuse + specular) in one step.
+- **Deliberately deferred:** SDL3 GPU **compute**-based baking; loading real HDR/equirectangular
+  environments (the demo bakes from the procedural BMP sky); a roughness-showcase row of spheres.
+- **Why here:** it depended on Step 14's cubemaps and **closed out the core material/lighting arc** —
+  from here the engine fans out into the wider tracks below.
 
 ---
 
@@ -303,9 +315,9 @@ Step 13  texture + normal maps (+ mipmaps)          ✅ done
    │
 Step 14  skybox / cubemaps                           ✅ done
    │
-Step 15  image-based lighting (IBL)                  ◀── next
+Step 15  image-based lighting (IBL)                  ✅ done
    │
-engine/app separation ──▶ CI + golden images     ◀── highest production leverage; do early
+engine/app separation ──▶ CI + golden images     ◀── next; highest production leverage, do early
    │
 quaternions ──▶ glTF PBR import ──▶ transparency + blending
    │

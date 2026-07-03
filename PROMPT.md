@@ -312,3 +312,29 @@ warnings (skybox shaders compile GLSL→SPIR-V→MSL), 54 doctest cases pass, `K
 validation errors, `KOI_CAPTURE` confirms a seamless sky behind all geometry with the sun blooming. New
 tutorial `documentation/docs/15-skybox-and-cubemaps.html` + nav/index links (529/529 doc links resolve);
 README/ARCHITECTURE/ROADMAP updated.
+
+**Step 15 — image-based lighting / IBL (2026-07-03):**
+> Pick something from the roadmap to work on next.
+> [scope + technique chosen via clarifying question: FULL IBL (diffuse + specular split-sum) in one
+> step, baked via GPU precompute at startup (render passes, not compute)]
+
+Delivered **Step 15**: the skybox now **lights the scene** — the fix for Step 12's dark metals. At
+load, three maps are baked from the cubemap via the **split-sum approximation**: a **diffuse
+irradiance** cube (32², `irradiance_convolution.frag` — the sky cosine-convolved over the hemisphere),
+a **prefiltered specular** cube (128² with 5 roughness mips, `prefilter_env.frag` — GGX importance
+sampling), and an environment-independent **BRDF LUT** (512² RG16F, `brdf_lut.frag`, baked once in
+`createIblResources`). Bakes render into individual cubemap faces/mips (`SDL_GPUColorTargetInfo`
+`layer_or_depth_plane` + `mip_level`) by drawing the cube with a 90° camera down each axis
+(`ibl_cube.vert`, `cubeCaptureViews`) — so **no `Mat4` inverse** was needed. New renderer members +
+`createIblResources`/`bakeIbl`/`bakeCubeFace` in `GpuRenderer.cpp`; `bakeIbl` is called at the end of
+`loadCubemap` (a sky reload re-bakes automatically). `triangle.frag` reads the three maps at fragment
+slots 5–7 (`numSamplers` 5→8) and replaces the flat ambient with the split-sum ambient, gated by a
+runtime flag in the light UBO's `ambient.w` lane (key **9**). The precompute maths got a CPU twin in
+`renderer/Pbr.hpp` (Hammersley, `importanceSampleGGX`, the IBL geometry term with `k=roughness²/2`,
+`integrateBRDF`, `fresnelSchlickRoughness`), unit-tested in new `tests/test_ibl.cpp`. Demo: the smooth
+metal sphere (roughness 0.08) is the showcase. Verified: clean build (4 new shaders compile
+GLSL→SPIR-V→MSL), **59 doctest cases pass**, `KOI_MAX_FRAMES` shows no GPU validation errors (IBL bakes
+at load), and a `KOI_CAPTURE` A/B (IBL on vs off) confirms the metal sphere goes from dark → reflecting
+the sky. New tutorial `documentation/docs/16-image-based-lighting.html` + nav/index links (586/586 doc
+links resolve); README/ARCHITECTURE/ROADMAP updated. Deferred: SDL3 GPU compute-based baking, real
+HDR/equirectangular environments.

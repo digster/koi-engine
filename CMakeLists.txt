@@ -168,6 +168,7 @@ add_executable(koi-tests
     tests/test_light.cpp
     tests/test_pbr.cpp
     tests/test_tangent.cpp
+    tests/test_ibl.cpp
 )
 target_link_libraries(koi-tests PRIVATE koi_core doctest::doctest koi_warnings)
 add_test(NAME koi-tests COMMAND koi-tests)
@@ -242,6 +243,15 @@ koi_add_shader(fxaa.frag)
 # cubemap by direction (skybox.frag) and is pinned to the far plane (skybox.vert).
 koi_add_shader(skybox.vert)
 koi_add_shader(skybox.frag)
+# Step 15: image-based lighting. Three one-time BAKE passes precompute the environment
+# lighting — a cube vertex shader shared by the two cubemap convolutions (ibl_cube.vert),
+# the diffuse irradiance convolution (irradiance_convolution.frag), the specular prefilter
+# across roughness mips (prefilter_env.frag), and the environment-BRDF LUT which reuses the
+# fullscreen triangle (brdf_lut.frag).
+koi_add_shader(ibl_cube.vert)
+koi_add_shader(irradiance_convolution.frag)
+koi_add_shader(prefilter_env.frag)
+koi_add_shader(brdf_lut.frag)
 
 # A target that builds all shader outputs, and a dependency so the app always has
 # up-to-date compiled shaders next to it.

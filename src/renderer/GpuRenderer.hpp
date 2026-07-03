@@ -68,7 +68,10 @@ public:
                postSampler_ != nullptr && brightPipeline_ != nullptr &&
                blurPipeline_ != nullptr && compositePipeline_ != nullptr &&
                fxaaPipeline_ != nullptr && skyboxPipeline_ != nullptr &&
-               skyboxSampler_ != nullptr && skyboxMesh_ != nullptr;
+               skyboxSampler_ != nullptr && skyboxMesh_ != nullptr &&
+               iblIrradiancePipeline_ != nullptr && iblPrefilterPipeline_ != nullptr &&
+               iblBrdfPipeline_ != nullptr && iblIrradiance_ != nullptr &&
+               iblPrefilter_ != nullptr && iblBrdfLut_ != nullptr && iblSampler_ != nullptr;
     }
 
     // Upload geometry into a new Mesh and return it (shared, so many scene nodes
@@ -100,6 +103,13 @@ public:
     // if no cubemap has been loaded. The sky always draws when enabled AND present.
     void setSkyboxEnabled(bool enabled) { skyboxEnabled_ = enabled; }
     [[nodiscard]] bool skyboxEnabled() const { return skyboxEnabled_; }
+
+    // Enable/disable image-based lighting at runtime (Step 15; the demo binds this to a
+    // key). When off, the ambient term falls back to the flat constant fill (the Step 12
+    // look) — a clean A/B for seeing exactly what the environment contributes. Has no
+    // visible effect until a cubemap has been loaded and baked (loadCubemap → bakeIbl).
+    void setIblEnabled(bool enabled) { iblEnabled_ = enabled; }
+    [[nodiscard]] bool iblEnabled() const { return iblEnabled_; }
 
     // Render exactly one frame: acquire a swapchain image, draw every mesh in
     // `sceneRoot` (each through its own world matrix and its node's material) as seen
@@ -183,6 +193,28 @@ private:
     // tightly packed width*height*4 bytes. The cube mirror of uploadToGpuTexture.
     SDL_GPUTexture* uploadCubemap(const std::array<const void*, 6>& faces,
                                   Uint32 width, Uint32 height);
+
+    // Create the image-based-lighting bake resources (Step 15): the three bake pipelines
+    // (the irradiance + prefilter cube convolutions, sharing ibl_cube.vert, and the
+    // BRDF-LUT fullscreen pass), a trilinear CLAMP sampler to read the maps, and the three
+    // target textures. The BRDF LUT is environment-independent, so it's baked here
+    // immediately; the two cube convolutions are baked later by bakeIbl (they need a loaded
+    // skybox). Called once from the ctor, after the skybox resources.
+    bool createIblResources();
+
+    // Bake the diffuse irradiance + specular prefilter cubemaps FROM skyboxCubemap_, by
+    // rendering the cube into each face — and, for the prefilter, each roughness mip — with
+    // ibl_cube.vert. One-time, called at the end of loadCubemap; sets iblReady_ so the
+    // shader starts using the maps. Re-baking (a sky reload) is automatic.
+    void bakeIbl();
+
+    // Render the cube once into one (face, mip) subresource of `target` using `pipeline`
+    // and the per-face `captureViewProj`. Shared by the irradiance and prefilter bakes.
+    // When `prefilterParams` is non-null it's pushed as the fragment uniform (roughness +
+    // env resolution) the prefilter shader reads; the irradiance shader takes none.
+    void bakeCubeFace(SDL_GPUCommandBuffer* cmd, SDL_GPUGraphicsPipeline* pipeline,
+                      SDL_GPUTexture* target, Uint32 face, Uint32 mip, Uint32 size,
+                      const Mat4& captureViewProj, const float* prefilterParams) const;
 
     // Draw the skybox into the already-begun main render pass: bind the skybox
     // pipeline + cubemap, push the translation-stripped view-projection, and draw the
@@ -323,6 +355,24 @@ private:
     SDL_GPUSampler*          skyboxSampler_  = nullptr;  // owned (CLAMP_TO_EDGE, no seams)
     std::shared_ptr<Mesh>    skyboxMesh_;                // the cube drawn around the camera
     bool                     skyboxEnabled_  = true;     // runtime show/hide toggle
+    Uint32                   skyboxFaceSize_ = 0;        // per-face size (for the IBL prefilter)
+
+    // Image-based lighting (Step 15). Three maps let the environment LIGHT the scene, not
+    // just sit behind it. Baked ONCE from skyboxCubemap_ at load: a diffuse IRRADIANCE cube
+    // (the sky cosine-convolved over the hemisphere), a specular PREFILTER cube (the sky
+    // GGX-blurred, one roughness per mip), and the 2D BRDF LUT (the split-sum's
+    // environment-independent factor — baked in createIblResources since it never changes).
+    // triangle.frag reads all three for the ambient term. iblReady_ gates that until a bake
+    // has actually run (a cubemap must exist); iblEnabled_ is the runtime A/B toggle.
+    SDL_GPUGraphicsPipeline* iblIrradiancePipeline_ = nullptr;  // owned
+    SDL_GPUGraphicsPipeline* iblPrefilterPipeline_  = nullptr;  // owned
+    SDL_GPUGraphicsPipeline* iblBrdfPipeline_       = nullptr;  // owned
+    SDL_GPUTexture*          iblIrradiance_         = nullptr;  // owned (CUBE, HDR, 1 mip)
+    SDL_GPUTexture*          iblPrefilter_          = nullptr;  // owned (CUBE, HDR, roughness mips)
+    SDL_GPUTexture*          iblBrdfLut_            = nullptr;  // owned (2D, RG float)
+    SDL_GPUSampler*          iblSampler_            = nullptr;  // owned (linear, trilinear, CLAMP)
+    bool                     iblReady_              = false;    // true once baked from a cubemap
+    bool                     iblEnabled_            = true;     // runtime IBL on/off toggle
 
     // Post-processing (Step 10). The scene is rendered into an off-screen HDR color
     // target (sceneHdr_) instead of straight to the swapchain; a chain of fullscreen

@@ -12,11 +12,15 @@
 //    * a Lambertian DIFFUSE term = albedo/π, kept only for non-metals and scaled so
 //      the surface never reflects more light than it receives (energy conservation).
 //
-//  Each light's contribution is summed; ambient is added ONCE as a crude fill (real
-//  ambient / metal reflections want image-based lighting — a later step, which is why
-//  metals look dark here away from the highlights). Only the directional sun (light 0)
-//  casts a shadow. The three BRDF terms mirror renderer/Pbr.hpp. See the D/G/F helpers
-//  below and documentation/docs/13-pbr-materials.html.
+//  Each light's contribution is summed; the ambient term is then added ONCE. Only the
+//  directional sun (light 0) casts a shadow. The three BRDF terms mirror renderer/Pbr.hpp.
+//  See the D/G/F helpers below and documentation/docs/13-pbr-materials.html.
+//
+//  Step 15 upgrades that ambient term from a flat constant into IMAGE-BASED LIGHTING: the
+//  surface is lit by the environment (the baked skybox) via a diffuse irradiance map and a
+//  specular prefiltered map + BRDF LUT (the split-sum approximation). This is what finally
+//  makes metals reflect their surroundings instead of looking dark. A runtime flag
+//  (ambient.w) switches between IBL and the old flat fill. See documentation/docs/16-image-based-lighting.html.
 //
 //  Step 13 drives the material PER PIXEL from texture maps instead of scalars: an
 //  albedo map, a packed metallic-roughness map (glTF G=roughness, B=metallic), an AO
@@ -41,11 +45,19 @@ layout(location = 4) in vec3 vWorldTangent;
 //   4 uShadowMap      — the sun's depth map
 // A material that omits a map gets a neutral 1×1 fallback (white, or a flat normal),
 // so the maths below reduces to the scalar-only Step 12 look with no branching.
+//
+// Slots 5–7 are the shared IBL maps (Step 15), bound once per frame like the shadow map:
+//   5 uIrradianceMap  — DIFFUSE environment light (the sky cosine-convolved), by normal
+//   6 uPrefilterMap   — SPECULAR environment (the sky GGX-blurred), roughness in the mips
+//   7 uBrdfLut        — the split-sum's environment-independent scale/bias, by (N·V,rough)
 layout(set = 2, binding = 0) uniform sampler2D uAlbedoMap;
 layout(set = 2, binding = 1) uniform sampler2D uMetalRoughMap;
 layout(set = 2, binding = 2) uniform sampler2D uNormalMap;
 layout(set = 2, binding = 3) uniform sampler2D uAoMap;
 layout(set = 2, binding = 4) uniform sampler2D uShadowMap;
+layout(set = 2, binding = 5) uniform samplerCube uIrradianceMap;
+layout(set = 2, binding = 6) uniform samplerCube uPrefilterMap;
+layout(set = 2, binding = 7) uniform sampler2D   uBrdfLut;
 
 // Must match koi::MAX_LIGHTS (scene/Light.hpp): the uniform array is a FIXED size
 // because the buffer's layout is fixed when the pipeline is built.
@@ -80,6 +92,10 @@ layout(set = 3, binding = 1) uniform MaterialUBO {
 };
 
 const float PI = 3.14159265359;
+
+// The prefilter cube stores roughness across its mip chain; this is the last usable mip
+// index. MUST match kPrefilterMipLevels-1 in GpuRenderer.cpp (5 levels → LOD 4).
+const float MAX_REFLECTION_LOD = 4.0;
 
 layout(location = 0) out vec4 outColor;
 
@@ -154,6 +170,14 @@ float geometrySmith(float nDotV, float nDotL, float roughness) {
 // Runs per RGB channel (F0 is a vec3: 0.04 for dielectrics, the albedo for metals).
 vec3 fresnelSchlick(float cosTheta, vec3 f0) {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Roughness-aware Fresnel for the AMBIENT/IBL term (Step 15). With no single light there's
+// no H·V, so N·V stands in; the grazing reflectance is capped by (1-roughness) so rough
+// surfaces don't gain an unrealistic bright rim from the environment. CPU twin:
+// koi::fresnelSchlickRoughness in renderer/Pbr.hpp.
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
+    return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 void main() {
@@ -238,11 +262,38 @@ void main() {
         Lo += shadow * (kd * albedo / PI + specular) * radiance * nDotL;
     }
 
-    // Ambient fill added ONCE — a crude stand-in for bounced/environment light
-    // (proper ambient + metal reflections need IBL, a later step). The AO map darkens
-    // it in creases the direct lights can't reach; direct light (Lo) is left untouched,
-    // since real occlusion of direct light comes from the shadow map.
-    vec3 color = ambient.rgb * albedo * ao + Lo;
+    // --- Ambient: image-based lighting (Step 15) ------------------------------------
+    // The environment (the baked skybox) supplies the ambient term now. ambient.w chooses
+    // it at runtime: 1 → IBL, 0 → the old flat constant fill (a clean A/B, and the fallback
+    // when no sky is baked). The branch tests a UNIFORM, so it's resolved the same way for
+    // every fragment — safe for the cubemap's implicit-derivative sampling below.
+    vec3 ambientLight;
+    if (ambient.w > 0.5) {
+        // The split-sum approximation, in two lookups:
+        //  DIFFUSE — the irradiance map already integrated the whole hemisphere, so ONE
+        //  sample by the surface normal gives the incoming diffuse light. Scale by albedo
+        //  and kD, the fraction not reflected specularly and not absorbed by metal.
+        //  SPECULAR — sample the roughness-blurred reflection (higher mip = rougher), then
+        //  weight it by the BRDF LUT as F0·scale + bias (the environment-independent factor).
+        vec3 F  = fresnelSchlickRoughness(nDotV, F0, roughness);
+        vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
+
+        vec3 irradiance = texture(uIrradianceMap, N).rgb;
+        vec3 diffuseIBL = irradiance * albedo;
+
+        vec3 R           = reflect(-V, N);
+        vec3 prefiltered = textureLod(uPrefilterMap, R, roughness * MAX_REFLECTION_LOD).rgb;
+        vec2 brdf        = texture(uBrdfLut, vec2(nDotV, roughness)).rg;
+        vec3 specularIBL = prefiltered * (F0 * brdf.x + brdf.y);
+
+        ambientLight = kD * diffuseIBL + specularIBL;
+    } else {
+        ambientLight = ambient.rgb * albedo;
+    }
+
+    // AO darkens the ambient in creases the direct lights can't reach; direct light (Lo) is
+    // left untouched, since real occlusion of direct light comes from the shadow map.
+    vec3 color = ambientLight * ao + Lo;
 
     outColor = vec4(color, 1.0);
 }

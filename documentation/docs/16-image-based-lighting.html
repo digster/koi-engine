@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image-based Lighting · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
+    <a class="navlink" href="16-image-based-lighting.html" aria-current="page">Image-based Lighting</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Image-based Lighting</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 15:</strong> let the <strong>environment light the scene</strong>. Until
+    now everything not hit by one of our handful of lights was filled in by a single flat "ambient"
+    constant. That's why <a href="13-pbr-materials.html">Step 12</a>'s metals looked dark: a metal has
+    no diffuse, so with only direct lights it reflects nothing but tiny highlights. Image-based lighting
+    (IBL) replaces that constant with the <em>actual sky</em> from <a href="15-skybox-and-cubemaps.html">Step
+    14</a>, so surfaces gather light from — and metals mirror — their surroundings.</p>
+    <p>The catch is cost. Doing it honestly means integrating the whole environment over the hemisphere
+    <em>for every pixel</em>. The art of real-time IBL is <strong>pre-computing</strong> those integrals
+    into a few small textures at load time, so the per-pixel shader is just two or three texture reads.</p>
+  </blockquote>
+
+  <h2>1. The gap: what "ambient" was really standing in for</h2>
+
+  <p>Real surfaces are lit from every direction, not just by named light sources. Sunlight bounces off a
+  wall and fills the shadow under a table; the blue sky illuminates everything facing up; a chrome ball
+  shows you the whole room. All of that is <strong>environment light</strong> — light arriving from the
+  surroundings rather than from a specific lamp.</p>
+
+  <p>Our shader modelled it with one line: <code>ambient = constant · albedo</code>. A flat constant is
+  cheap but wrong in two ways. It has <em>no direction</em> (a point facing the bright sky gets the same
+  fill as one facing dark ground), and it has <em>no view dependence</em> (a mirror and a chalkboard get
+  the same ambient). Metals suffer worst: their diffuse reflectance is zero, so their <em>entire</em>
+  appearance away from a highlight should come from reflecting the environment — which the constant can't
+  provide. Hence: dark metals.</p>
+
+  <h2>2. The integral we're approximating</h2>
+
+  <p>Physically, the light leaving a surface toward the eye is the sum, over <em>every</em> incoming
+  direction on the hemisphere, of "light arriving from that direction × how much this material bounces it
+  toward the eye". That "how much it bounces" is the <strong>BRDF</strong> we built in
+  <a href="13-pbr-materials.html">Step 12</a> (the Cook–Torrance terms D, G, F). Written out:</p>
+
+  <pre class="diagram">outgoing(view) =  ∑  incoming(dir) · BRDF(dir, view) · cos θ     over the hemisphere
+                 dir</pre>
+
+  <p>For a <em>direct</em> light there's exactly one <code>dir</code> (toward the lamp), so the sum
+  collapses to one term — that's the per-light loop we already have. For the <strong>environment</strong>
+  the incoming light comes from <em>all</em> directions (the cubemap), so this is a real integral. There's
+  no closed-form answer, so we estimate it. The standard move is to split it into two halves that behave
+  very differently — a <strong>diffuse</strong> part and a <strong>specular</strong> part — and precompute
+  each into its own texture.</p>
+
+  <h2>3. Diffuse IBL: the irradiance map</h2>
+
+  <p>The diffuse (matte) part is easy in one respect: a Lambertian surface scatters light equally in all
+  directions, so its response doesn't depend on the view angle at all. The only thing that matters is the
+  <strong>total</strong> light landing on the surface, weighted by the cosine law (light arriving edge-on
+  counts less). That total, as a function of the surface normal, is called <strong>irradiance</strong>.</p>
+
+  <p>Because it's a cosine-weighted average over a whole hemisphere, irradiance is extremely
+  <em>blurry</em> — neighbouring normals see almost the same hemisphere, so the result changes slowly
+  across directions. We precompute it into a tiny <strong>irradiance cubemap</strong> (32² per face is
+  plenty): for each output direction, walk a grid over the hemisphere around it, sample the sky, and
+  accumulate <code>colour · cos θ · sin θ</code>. That's exactly what
+  <a href="../../shaders/irradiance_convolution.frag">irradiance_convolution.frag</a> does. At runtime the
+  shader reads <em>one</em> texel of this map by the surface normal:</p>
+
+  <pre class="diagram">diffuseIBL = texture(uIrradianceMap, N).rgb · albedo</pre>
+
+  <p>A ground plane now picks up a warm bounce from below and the object tops go slightly sky-blue — the
+  directionality the flat constant never had.</p>
+
+  <h2>4. Specular IBL: why we <em>split the sum</em></h2>
+
+  <p>The specular (shiny) part is the hard one. A mirror reflects a razor-sharp copy of its surroundings;
+  a rough metal reflects a smeared blob; and the exact shape depends on the view direction, the roughness,
+  <em>and</em> the material's base reflectance F0 — all tangled inside the same integral. Doing that per
+  pixel is hopeless.</p>
+
+  <p>The breakthrough (Karis / Epic Games, 2013) is the <strong>split-sum approximation</strong>: split
+  the specular integral into a <em>product</em> of two pieces that can each be baked ahead of time —</p>
+
+  <pre class="diagram">specularIBL  ≈   prefilteredColor(R, roughness)   ×   ( F0 · scale + bias )
+                 └─── depends on the ENV ───┘        └── depends on angle+roughness ──┘
+                        (a cubemap)                        (a 2D lookup table)</pre>
+
+  <p>The first factor folds in the environment and the roughness; the second folds in the view angle,
+  roughness, and Fresnel — and, crucially, is <em>independent of the environment entirely</em>. So we bake
+  the first per-scene and the second once for all time.</p>
+
+  <h2>5. The prefiltered environment map (roughness lives in the mips)</h2>
+
+  <p>The first factor is a <strong>prefiltered cubemap</strong>: the sky, pre-blurred by roughness. A
+  smooth surface should reflect the sharp sky; a rough one should reflect a blurred sky. We bake several
+  roughness levels and — elegantly — store them in the cubemap's <strong>mip chain</strong>: mip 0 is
+  roughness 0 (sharp), and each smaller mip is a rougher, blurrier version
+  (<a href="../../shaders/prefilter_env.frag">prefilter_env.frag</a>, baked at 128² base with 5 levels).
+  At runtime the reflection is one <code>textureLod</code> along the reflection vector
+  <code>R = reflect(-V, N)</code>, with the mip chosen by roughness — and the hardware's trilinear filter
+  blends between the two nearest roughness levels for free:</p>
+
+  <pre class="diagram">R           = reflect(-V, N);
+prefiltered = textureLod(uPrefilterMap, R, roughness · MAX_REFLECTION_LOD).rgb;</pre>
+
+  <h2>6. The BRDF LUT (bake it once, ever)</h2>
+
+  <p>The second factor is a 2D <strong>BRDF integration lookup table</strong>. Its two axes are the view
+  angle (<code>N·V</code>) and roughness; each texel stores a <em>scale</em> and a <em>bias</em>. Because
+  it depends only on the shape of the BRDF — not on any environment — it is the same for every scene, so we
+  bake it a single time in <a href="../../shaders/brdf_lut.frag">brdf_lut.frag</a> at startup. At runtime
+  the material's specular response is reconstructed with one read and a multiply-add:</p>
+
+  <pre class="diagram">brdf        = texture(uBrdfLut, vec2(N·V, roughness)).rg;
+specularIBL = prefiltered · (F0 · brdf.x + brdf.y);</pre>
+
+  <p>If you want a sanity check that this factor really is environment-independent: a perfect mirror
+  viewed head-on integrates to <code>scale = 1, bias = 0</code> — the reflection passes through unchanged,
+  no matter what's around it. That exact property is asserted in
+  <a href="../../tests/test_ibl.cpp">tests/test_ibl.cpp</a>.</p>
+
+  <h2>7. How the bakes actually integrate: Monte Carlo + importance sampling</h2>
+
+  <p>The prefilter and LUT integrals are estimated by <strong>Monte Carlo</strong>: average the integrand
+  over many sample directions. Two tricks make a feasible sample count (we use 1024) converge cleanly:</p>
+
+  <ul>
+    <li><strong>A low-discrepancy sequence (Hammersley).</strong> Instead of random samples that clump and
+    leave gaps, the Hammersley sequence spreads points evenly across the unit square. Its second
+    coordinate is the <em>van der Corput radical inverse</em> — reverse the bits of the index about the
+    binary point (1→0.5, 2→0.25, 3→0.75, …), which fills the interval as uniformly as possible.</li>
+    <li><strong>Importance sampling.</strong> Rather than sampling directions uniformly and mostly missing
+    the specular lobe, we draw half-vectors <em>from the GGX distribution itself</em> — dense where the
+    material actually reflects, sparse elsewhere. That's <code>importanceSampleGGX</code>.</li>
+  </ul>
+
+  <p>These live as pure functions in <a href="../../src/renderer/Pbr.hpp">Pbr.hpp</a> (the CPU twin of the
+  shader maths) so their properties can be unit-tested headlessly — the same way the D/G/F terms have had
+  a CPU mirror since Step 12. One subtlety worth calling out: IBL's geometry term uses a <em>different</em>
+  roughness remap (<code>k = roughness²/2</code>) than direct lighting (<code>(roughness+1)²/8</code>);
+  using the wrong one is a classic, silent IBL bug, so the two are separate functions on purpose.</p>
+
+  <h2>8. Baking by rendering into cube faces</h2>
+
+  <p>How do you "render into" a cubemap? A cubemap is six 2D faces (six texture <em>layers</em>). To fill a
+  face we point a 90°-field-of-view camera down that face's axis and draw a cube around the origin — the
+  same cube the skybox uses. Because the cube sits at the origin with no rotation, a cube corner's
+  <em>position</em> is also the world <em>direction</em> that texel represents
+  (<a href="../../shaders/ibl_cube.vert">ibl_cube.vert</a> just forwards it). Six renders, one per face,
+  fill the whole cubemap; the prefilter repeats that for each roughness mip.</p>
+
+  <p>In the renderer, <code>createIblResources()</code> builds the three bake pipelines, a trilinear
+  clamp sampler, and the target textures — and bakes the environment-independent BRDF LUT immediately.
+  <code>bakeIbl()</code> then bakes the two cubemaps from whatever sky was loaded; it's called at the end
+  of <code>loadCubemap()</code>, so re-loading a sky automatically re-bakes
+  (<a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a>). It's a one-time cost at load — a
+  couple of milliseconds — not a per-frame one.</p>
+
+  <blockquote>
+    <p><strong>The orientation gotcha.</strong> The six capture cameras must line up with the convention a
+    <code>samplerCube</code> uses to read directions, or the baked reflections come out mirrored or rotated
+    and the faces seam. This is the same class of bug the <a href="10-models-and-shadows.html">Step 9</a>
+    sampler swap was — invisible to the compiler, visible only in a rendered frame. The fix is the standard
+    cube-capture view/up vectors (note the flipped up-vectors on the horizontal faces) in
+    <code>cubeCaptureViews()</code>; we confirm it with a capture, not by staring at the code.</p>
+  </blockquote>
+
+  <h2>9. Putting it together in the shader</h2>
+
+  <p>The whole change to <a href="../../shaders/triangle.frag">triangle.frag</a> is that the ambient line
+  becomes the sum of the diffuse and specular IBL terms, darkened by the AO map:</p>
+
+  <pre class="diagram">vec3 F  = fresnelSchlickRoughness(N·V, F0, roughness);   // roughness-aware Fresnel
+vec3 kD = (1 - F) · (1 - metallic);                     // metals have no diffuse
+
+vec3 diffuseIBL  = texture(uIrradianceMap, N).rgb · albedo;
+vec3 prefiltered = textureLod(uPrefilterMap, reflect(-V,N), roughness · MAX_REFLECTION_LOD).rgb;
+vec2 brdf        = texture(uBrdfLut, vec2(N·V, roughness)).rg;
+vec3 specularIBL = prefiltered · (F0 · brdf.x + brdf.y);
+
+ambient = (kD · diffuseIBL + specularIBL) · ao;</pre>
+
+  <p>A runtime flag (packed into the light uniform's spare <code>ambient.w</code> lane) switches between
+  this and the old flat fill, so you can toggle IBL live and see exactly what it contributes. The three
+  new maps are bound once per frame at fragment sampler slots 5–7, right after the shadow map — shared
+  infrastructure, like the shadow map, not per-material.</p>
+
+  <h2>10. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Toggle IBL.</strong> Run the engine and press <strong>9</strong>. The metal sphere on the
+    left snaps between a dark teal ball (off — the old Step 12 look) and one that mirrors the sky (on).
+    That single key is the whole point of the step made visible.</li>
+    <li><strong>Change roughness.</strong> In <a href="../../src/core/Engine.cpp">Engine.cpp</a> bump
+    <code>sphereMat</code>'s roughness from 0.08 toward 1.0, rebuild, and watch the crisp sky reflection
+    dissolve into a soft glow — you're climbing the prefilter mip chain.</li>
+    <li><strong>Swap the sky.</strong> Edit <a href="../../tools/gen_skybox.py">gen_skybox.py</a>,
+    <code>uv run tools/gen_skybox.py</code>, rebuild: the IBL re-bakes on load, so the reflections and
+    ambient recolour to match the new environment automatically.</li>
+    <li><strong>Verify headlessly.</strong> <code>KOI_CAPTURE=out.bmp ./build/koi-engine</code> then
+    <code>sips -s format png out.bmp --out out.png</code> — capture once with IBL on and once off to see
+    the before/after.</li>
+  </ol>
+
+  <h2>11. What's next</h2>
+
+  <p>➡️ IBL closes the core material/lighting arc that <a href="13-pbr-materials.html">Step 12</a> opened:
+  physically-based surfaces now respond to both direct lights <em>and</em> their environment. From here the
+  engine fans out — full glTF PBR material import (to load the Damaged Helmet and Sponza test scenes),
+  transparency and blending, and the first production-hardening moves (engine/app separation, cross-platform
+  CI with golden-image capture tests). See the <a href="../../ROADMAP.md">roadmap</a> for the sequenced
+  plan and its dependencies.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

@@ -3,7 +3,7 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 14 (window & render loop, the first triangle, geometry in GPU
+through Step 15 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
@@ -14,8 +14,10 @@ tone-mapping, and FXAA before it reaches the screen — **multiple lights** of
 different kinds (directional/point/spot) accumulated in the shader, physically-based
 **PBR** shading via a Cook-Torrance metallic-roughness BRDF, and per-pixel material
 **texture maps** — metallic-roughness / AO / **normal maps** applied through a
-per-vertex tangent + **TBN** basis, with **mipmaps** and **anisotropic filtering**, and a
-**skybox** — a **cubemap** environment sampled by direction and drawn behind the scene).
+per-vertex tangent + **TBN** basis, with **mipmaps** and **anisotropic filtering**, a
+**skybox** — a **cubemap** environment sampled by direction and drawn behind the scene — and
+**image-based lighting**, which bakes that cubemap into irradiance / prefiltered / BRDF-LUT maps so
+the environment lights the surfaces themselves and metals reflect their surroundings).
 
 ## Guiding principles
 
@@ -54,7 +56,7 @@ per-vertex tangent + **TBN** basis, with **mipmaps** and **anisotropic filtering
 |-----------|------|----------------|
 | `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera + the scene graph, runs the game loop, computes delta-time, routes input, builds the demo scene (`buildScene`: meshes + textures + materials, assigned to nodes), animates + propagates transforms each frame, controls startup/shutdown order. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines), and the (Step 14) **skybox** resources (a `CUBE` **cubemap** texture, a CLAMP_TO_EDGE cubemap sampler, a skybox pipeline, and the cube mesh drawn around the camera). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload; `loadCubemap` uploads six faces into one cube texture) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`; binds the material's four maps per draw, shadow map at slot 4, then draws the **sky last** via `recordSkybox`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines), the (Step 14) **skybox** resources (a `CUBE` **cubemap** texture, a CLAMP_TO_EDGE cubemap sampler, a skybox pipeline, and the cube mesh drawn around the camera), and the (Step 15) **image-based-lighting** resources (three bake pipelines, a trilinear CLAMP sampler, and the baked **irradiance** cube + **prefiltered** cube + **BRDF LUT** targets). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload; `loadCubemap` uploads six faces into one cube texture, then `bakeIbl` bakes the IBL maps from it) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`; binds the material's four maps per draw, shadow map at slot 4, the three IBL maps at slots 5–7, then draws the **sky last** via `recordSkybox`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
 | `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the Engine drives from input and hands to the renderer, plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
 | `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: an `albedo` texture + **PBR** params `metallic`/`roughness` (Step 12) — now **factors** — plus (Step 13) three optional map handles: `metalRough` (glTF-packed G=roughness, B=metallic), `normalMap` (tangent-space), and `ao`. Any map may be null; the renderer binds a neutral 1×1 fallback so map-less materials render as in Step 12. Shared by `shared_ptr`; a `Node` references one; the renderer binds all four maps per draw. |
 | `Pbr` | [src/renderer/Pbr.hpp](src/renderer/Pbr.hpp) | Header-only, SDL-free (Step 12): pure CPU mirrors of the Cook-Torrance BRDF sub-terms — `distributionGGX` (D), `geometrySmith`/`geometrySchlickGGX` (G), `fresnelSchlick` (F), plus `kPi`. The shader in `triangle.frag` is the runtime truth; these exist so the microfacet math's shape is unit-tested headlessly (`tests/test_pbr.cpp`), the same pattern as `PostProcess.hpp`/`Light.hpp`. |
@@ -90,9 +92,10 @@ renderFrame(view,      → in GpuRenderer (view = camera.viewMatrix()); renderSc
                      3. SHADOW PASS: compute lightViewProj from the SUN's direction
                         (lights[0]); render scene depth into the shadow map (depth-only)
                      4. SCENE PASS: begin render pass into the HDR target (color + depth CLEAR);
-                        recordScene — bind pipeline + shadow map (slot 4), pack the light LIST +
-                        lightViewProj into the light UBO once (Step 11: an array of
-                        directional/point/spot lights, only the sun shadowed), then walk
+                        recordScene — bind pipeline + shadow map (slot 4) + the 3 IBL maps
+                        (slots 5–7, Step 15), pack the light LIST + lightViewProj into the light
+                        UBO once (Step 11: an array of directional/point/spot lights, only the
+                        sun shadowed; ambient.w carries the IBL on/off flag), then walk
                         the tree (per node: bind the material's 4 maps [albedo/metal-rough/
                         normal/AO, slots 0–3] + push material params, bind mesh buffers +
                         push {mvp,model}, draw); then recordSkybox draws the SKY LAST (Step 14:
@@ -447,10 +450,10 @@ Lambertian term by `π` — which is why `setupLights`' intensities are larger t
 Blinn-Phong era (same brightness, honest math). The three D/G/F terms have pure CPU
 twins in `renderer/Pbr.hpp`, unit-tested in `tests/test_pbr.cpp`.
 
-The ambient term is a crude `ambient·albedo` fill: with only direct lights, **metals
-look dark** away from their sharp reflections (a metal has no diffuse and no
-environment to reflect). That is physically correct and is exactly what **image-based
-lighting (IBL)** — a natural future step — would supply.
+At this step the ambient term is still a crude `ambient·albedo` fill: with only direct lights,
+**metals look dark** away from their sharp reflections (a metal has no diffuse and no environment to
+reflect). That is physically correct, and it's exactly the gap **image-based lighting (IBL)** closes
+in [Step 15](#image-based-lighting-step-15) — the environment finally supplies that ambient.
 
 ### Texture & normal maps (Step 13)
 
@@ -533,6 +536,44 @@ one copy region per face layer, a single mip-gen) is the reusable groundwork the
 generated procedurally by `tools/gen_skybox.py` (same `uv`-run, BMP-only pattern as the texture
 maps); loading real HDR/equirectangular skies is a later step.
 
+### Image-based lighting (Step 15)
+
+The skybox stops being a mere backdrop and starts **lighting the scene**. This fixes the flat
+ambient term — the reason Step 12's metals looked dark: with only a constant fill and direct lights, a
+metal (which has no diffuse) reflected almost nothing. IBL replaces the constant with the *actual
+environment*, split into a diffuse and a specular part, each **precomputed once at load** into a small
+texture so the per-pixel shader is just a few reads. The core is the **split-sum approximation**:
+
+```
+   loadCubemap → bakeIbl (one command buffer, at load):
+     irradiance cube (32²)      ← irradiance_convolution.frag   (cosine-convolve the sky)
+     prefilter cube (128², mips)← prefilter_env.frag            (GGX-blur the sky; roughness = mip)
+     BRDF LUT (512², RG16F)     ← brdf_lut.frag  (baked in createIblResources — env-independent)
+
+   triangle.frag ambient term (per pixel):
+     diffuse  = irradiance(N) · albedo · kD
+     specular = prefiltered(R, roughness) · (F0 · brdfLUT(N·V,roughness).x + .y)
+```
+
+The design mirrors the rest of the renderer:
+
+- **Baked by rendering into cube faces.** `bakeIbl` draws the cube mesh six times per target (once
+  per face; the prefilter also once per roughness **mip**) with a 90° camera down each axis — so
+  **no `Mat4` inverse** is needed (the gap that kept Step 14 from the fullscreen-triangle skybox).
+  `SDL_GPUColorTargetInfo`'s `layer_or_depth_plane` + `mip_level` select the subresource;
+  `ibl_cube.vert` forwards the cube-corner position as the world sample direction.
+- **Bake-at-load, not per-frame.** The two environment cubes are baked at the end of `loadCubemap`
+  (so a sky reload re-bakes automatically); the environment-independent BRDF LUT is baked once in
+  `createIblResources`. A `iblReady_` flag gates use until a bake has run; `iblEnabled_` (key `9`)
+  is the runtime A/B toggle, passed to the shader in the light UBO's spare `ambient.w` lane.
+- **CPU mirror + tests.** The precompute maths (Hammersley low-discrepancy sequence, GGX importance
+  sampling, the **IBL** geometry term — `k = roughness²/2`, *not* the direct-lighting remap —
+  `integrateBRDF`, `fresnelSchlickRoughness`) has a pure twin in `renderer/Pbr.hpp`, unit-tested in
+  `tests/test_ibl.cpp`, exactly as the D/G/F terms have since Step 12.
+- **The orientation gotcha.** The six capture views must match the `samplerCube` sampling convention
+  (standard cube-capture up-vectors, `cubeCaptureViews`), or reflections come out mirrored/seamed — a
+  compile-clean-render-wrong bug caught only by a `KOI_CAPTURE` frame, like the Step 9 sampler swap.
+
 ## Lifecycle & ownership
 
 Startup builds bottom-up, shutdown tears down top-down — the standard RAII
@@ -555,6 +596,8 @@ then `window_`.
 > *after* `~GpuRenderer`'s body — by which point the device is already destroyed — the
 > destructor explicitly `.reset()`s `skyboxMesh_` (and releases the cubemap/sampler/pipeline)
 > **while the device is still alive**, preserving the same "meshes die before the device" rule.
+> The Step 15 IBL resources (three bake pipelines, the trilinear sampler, and the irradiance /
+> prefilter / BRDF-LUT textures) are plain owned handles released the same way, alongside the skybox.
 
 > Implementation note: `Engine`'s constructor and destructor are **defined in the
 > `.cpp`**, not the header. Its `unique_ptr` members point to forward-declared
