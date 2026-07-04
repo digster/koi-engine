@@ -36,17 +36,21 @@
 
 #include <SDL3/SDL.h>
 
+#include "math/Geometry.hpp"  // Aabb — the mesh's model-space bounding box (Step 20)
+
 namespace koi {
 
 class Mesh {
 public:
     // Takes ownership of two already-uploaded GPU buffers. `device` is borrowed,
     // not owned — it must outlive this Mesh (see the lifetime rule above).
-    // `indexElementSize` records whether the index buffer is 16- or 32-bit so the
-    // renderer binds it correctly. Normally you don't call this directly: use
-    // GpuRenderer::createMesh.
+    // `localBounds` is the mesh's model-space AABB (Step 20), computed from the
+    // vertices at upload time so the renderer can frustum-cull without keeping the
+    // vertices around. `indexElementSize` records whether the index buffer is 16-
+    // or 32-bit so the renderer binds it correctly. Normally you don't call this
+    // directly: use GpuRenderer::createMesh.
     Mesh(SDL_GPUDevice* device, SDL_GPUBuffer* vertexBuffer,
-         SDL_GPUBuffer* indexBuffer, Uint32 indexCount,
+         SDL_GPUBuffer* indexBuffer, Uint32 indexCount, const Aabb& localBounds,
          SDL_GPUIndexElementSize indexElementSize = SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
     // Releases the two GPU buffers via the (borrowed) device.
@@ -64,11 +68,16 @@ public:
     [[nodiscard]] Uint32         indexCount()   const { return indexCount_; }
     [[nodiscard]] SDL_GPUIndexElementSize indexElementSize() const { return indexElementSize_; }
 
+    // The mesh's model-space AABB (Step 20). Transform it by a node's world matrix
+    // (Aabb::transformed) to get world-space bounds for frustum culling.
+    [[nodiscard]] const Aabb& localBounds() const { return localBounds_; }
+
 private:
     SDL_GPUDevice* device_       = nullptr;  // borrowed — owned by GpuRenderer
     SDL_GPUBuffer* vertexBuffer_ = nullptr;  // owned
     SDL_GPUBuffer* indexBuffer_  = nullptr;  // owned
     Uint32         indexCount_   = 0;
+    Aabb           localBounds_  = Aabb::empty();  // model-space bounds (for culling)
     SDL_GPUIndexElementSize indexElementSize_ = SDL_GPU_INDEXELEMENTSIZE_16BIT;
 };
 

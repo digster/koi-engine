@@ -836,7 +836,8 @@ void GpuRenderer::bakeIbl() {
              kPrefilterMipLevels);
 }
 
-void GpuRenderer::renderShadowPass(SDL_GPUCommandBuffer* cmd, const Node& root,
+void GpuRenderer::renderShadowPass(SDL_GPUCommandBuffer* cmd,
+                                   const std::vector<RenderItem>& queue,
                                    const Mat4& lightViewProj) const {
     // PASS 1: render the scene's depth into the shadow map, from the light's view.
     // A render pass with a depth target but NO color target. STORE the result — the
@@ -853,30 +854,26 @@ void GpuRenderer::renderShadowPass(SDL_GPUCommandBuffer* cmd, const Node& root,
     SDL_GPURenderPass* pass =
         SDL_BeginGPURenderPass(cmd, /*color_targets=*/nullptr, /*num_color=*/0, &depthTarget);
     SDL_BindGPUGraphicsPipeline(pass, shadowPipeline_);
-    recordShadowNode(cmd, pass, root, lightViewProj);
-    SDL_EndGPURenderPass(pass);
-}
 
-void GpuRenderer::recordShadowNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                                   const Node& node, const Mat4& lightViewProj) const {
-    // Draw whatever has geometry (material/texture irrelevant — we only write depth).
-    if (const Mesh* mesh = node.mesh()) {
+    // Draw EVERY item's depth (material/texture irrelevant here — depth only). This
+    // loop is deliberately NOT frustum-culled to the camera: geometry the camera
+    // can't see may still cast a shadow onto geometry it can. Culling here would
+    // make shadows blink as their casters cross the camera frustum edge.
+    for (const RenderItem& item : queue) {
         SDL_GPUBufferBinding vertexBinding = {};
-        vertexBinding.buffer = mesh->vertexBuffer();
+        vertexBinding.buffer = item.mesh->vertexBuffer();
         SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vertexBinding, /*num_bindings=*/1);
         SDL_GPUBufferBinding indexBinding = {};
-        indexBinding.buffer = mesh->indexBuffer();
-        SDL_BindGPUIndexBuffer(pass, &indexBinding, mesh->indexElementSize());
+        indexBinding.buffer = item.mesh->indexBuffer();
+        SDL_BindGPUIndexBuffer(pass, &indexBinding, item.mesh->indexElementSize());
 
-        const Mat4 lightMvp = lightViewProj * node.worldMatrix();
+        const Mat4 lightMvp = lightViewProj * item.world;
         SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &lightMvp, sizeof(lightMvp));
-        SDL_DrawGPUIndexedPrimitives(pass, mesh->indexCount(), /*num_instances=*/1,
+        SDL_DrawGPUIndexedPrimitives(pass, item.mesh->indexCount(), /*num_instances=*/1,
                                      /*first_index=*/0, /*vertex_offset=*/0,
                                      /*first_instance=*/0);
     }
-    for (const std::unique_ptr<Node>& child : node.children()) {
-        recordShadowNode(cmd, pass, *child, lightViewProj);
-    }
+    SDL_EndGPURenderPass(pass);
 }
 
 // ----------------------------------------------------------------------------
@@ -1138,6 +1135,13 @@ void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* 
         return;  // ensureSceneTargets logged; skip this frame rather than crash
     }
 
+    // TRAVERSE → LIST (Step 20). Flatten the scene graph into a flat draw list ONCE,
+    // up front, so both passes below iterate the list instead of re-walking the tree.
+    // `renderQueue_` is a reused member, so this reuses last frame's capacity. World
+    // matrices were cached by the app's updateWorldTransforms() before we were called.
+    renderQueue_.clear();
+    buildRenderQueue(sceneRoot, renderQueue_);
+
     // The shadow map follows the SUN — the directional light at index 0 (by
     // convention). Its direction drives both passes so the shadows line up with the
     // shading, even as the sun is reconfigured. (Only this one light casts a shadow.)
@@ -1145,9 +1149,10 @@ void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* 
                             ? lights[0].direction
                             : kFallbackSunDir;
 
-    // PASS 1 — shadow depth from the sun's view.
+    // PASS 1 — shadow depth from the sun's view. Draws the WHOLE queue (no camera
+    // culling: an off-screen caster can still shadow something in view).
     const Mat4 lightViewProj = computeLightViewProj(sunDir);
-    renderShadowPass(cmd, sceneRoot, lightViewProj);
+    renderShadowPass(cmd, renderQueue_, lightViewProj);
 
     // PASS 2 — the scene, into the off-screen HDR target (NOT the swapchain).
     SDL_GPUColorTargetInfo colorTarget = {};
@@ -1169,7 +1174,7 @@ void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* 
     SDL_GPURenderPass* pass =
         SDL_BeginGPURenderPass(cmd, &colorTarget, /*num_color_targets=*/1, &depthTarget);
     const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-    recordScene(cmd, pass, sceneRoot, view, aspect, cameraPos, lights, lightViewProj);
+    recordScene(cmd, pass, renderQueue_, view, aspect, cameraPos, lights, lightViewProj);
     SDL_EndGPURenderPass(pass);
 
     // PASSES 3+ — the fullscreen post-processing chain, ending in `finalColor`.
@@ -1479,6 +1484,12 @@ std::shared_ptr<Mesh> GpuRenderer::createMeshImpl(std::span<const Vertex> vertic
                                                   const void* indexData, Uint32 indexBytes,
                                                   Uint32 indexCount,
                                                   SDL_GPUIndexElementSize elemSize) {
+    // Compute the mesh's model-space bounding box from the CPU-side vertices NOW,
+    // before they're gone (the vertices only exist here — the Mesh keeps just the
+    // GPU buffers). This is the box frustum culling later transforms + tests
+    // (Step 20). Pure CPU work, so it's a no-op on the GPU path.
+    const Aabb localBounds = computeLocalBounds(vertices);
+
     // Upload both halves of the geometry through the same staging path the cube
     // used in earlier steps. size_bytes() is the element count times sizeof, i.e.
     // exactly the number of bytes to copy into each GPU buffer.
@@ -1498,7 +1509,7 @@ std::shared_ptr<Mesh> GpuRenderer::createMeshImpl(std::span<const Vertex> vertic
     // Hand the two buffers to a Mesh, which now owns them and will free them (via
     // the same device) when the last shared_ptr to it drops. The element size lets
     // the renderer bind the index buffer correctly (16- vs 32-bit).
-    return std::make_shared<Mesh>(device_, vbo, ibo, indexCount, elemSize);
+    return std::make_shared<Mesh>(device_, vbo, ibo, indexCount, localBounds, elemSize);
 }
 
 std::shared_ptr<Mesh> GpuRenderer::createMesh(std::span<const Vertex> vertices,
@@ -1620,8 +1631,9 @@ bool GpuRenderer::ensureDepthTexture(Uint32 width, Uint32 height) {
 }
 
 void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                              const Node& root, const Mat4& view, float aspect,
-                              const Vec3& cameraPos, std::span<const Light> lights,
+                              const std::vector<RenderItem>& queue, const Mat4& view,
+                              float aspect, const Vec3& cameraPos,
+                              std::span<const Light> lights,
                               const Mat4& lightViewProj) const {
     // Bind the one pipeline every mesh shares. Per-mesh vertex/index buffers AND
     // per-material textures are now bound inside recordNode, just before each node's
@@ -1711,14 +1723,38 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
     SDL_PushGPUFragmentUniformData(cmd, /*slot=*/0, &light, sizeof(light));
 
     // The projection depends only on the viewport, and the view only on the
-    // camera, so combine them ONCE here. Each node then only adds one multiply by
+    // camera, so combine them ONCE here. Each item then only adds one multiply by
     // its own world matrix: mvp = (proj * view) * world.
     const Mat4 projection = perspective(radians(60.0f), aspect, 0.1f, 100.0f);
     const Mat4 projView   = projection * view;
 
-    // Walk the scene tree, drawing as we go. The nodes' world matrices were
-    // computed by Node::updateWorldTransforms() before this render pass began.
-    recordNode(cmd, pass, root, projView);
+    // CULL → SUBMIT (Step 20). Extract the six camera-frustum planes from the SAME
+    // projView the shader uses (so what we cull matches what's on screen), then keep
+    // only the items whose world bounds intersect it. With culling off, every item
+    // is drawn (the pre-Step-20 behaviour). visibleItems_ is a reused scratch vector.
+    const Frustum cameraFrustum = Frustum::fromViewProjection(projView);
+    visibleItems_.clear();
+    for (const RenderItem& item : queue) {
+        if (!frustumCullingEnabled_ || cameraFrustum.intersectsAabb(item.worldBounds)) {
+            visibleItems_.push_back(&item);
+        }
+    }
+
+    // Log what culling bought this frame (throttled to avoid spamming the console).
+    // Off-screen objects never reach a draw call — CPU submit + GPU work both saved.
+    if (frustumCullingEnabled_ && !queue.empty()) {
+        static Uint64 tick = 0;
+        if ((tick++ % 120) == 0) {
+            KOI_DEBUG("Frustum culling: drew %zu / %zu (culled %zu)",
+                      visibleItems_.size(), queue.size(),
+                      queue.size() - visibleItems_.size());
+        }
+    }
+
+    // Submit the survivors, in the queue's original (depth-first) order.
+    for (const RenderItem* item : visibleItems_) {
+        submitItem(cmd, pass, *item, projView);
+    }
 
     // Draw the sky LAST (Step 14): with the depth buffer now holding the scene's
     // depths, the skybox's LEQUAL test + far-plane depth make it fill ONLY the
@@ -1761,14 +1797,14 @@ void GpuRenderer::recordSkybox(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pas
                                  /*first_index=*/0, /*vertex_offset=*/0, /*first_instance=*/0);
 }
 
-void GpuRenderer::recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                             const Node& node, const Mat4& projView) const {
-    const Mesh*     mesh     = node.mesh();
-    const Material* material = node.material();
-    // A node is drawn only if it has BOTH a shape (mesh) and an appearance
-    // (material). Pure group/pivot nodes have neither and just pass their transform
-    // down to their children.
-    if (mesh != nullptr && material != nullptr) {
+void GpuRenderer::submitItem(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                             const RenderItem& item, const Mat4& projView) const {
+    // buildRenderQueue only ever enqueues drawables, so both are guaranteed non-null
+    // here — the mesh/material presence check that recordNode used to do now lives in
+    // the traversal (RenderQueue.cpp), leaving this "submit" half to just bind + draw.
+    const Mesh*     mesh     = item.mesh;
+    const Material* material = item.material;
+    {
         // Bind THIS material's four maps (+ the shared sampler) at fragment slots 0–3
         // for the upcoming draw: albedo, metallic-roughness, normal, AO. Each node can
         // use different maps, so they're (re)bound per draw — the same per-node rhythm
@@ -1811,26 +1847,20 @@ void GpuRenderer::recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
         // Push the three matrices the vertex shader needs: the full MVP (proj·view·
         // world, to clip space), the model/world matrix on its own (so the fragment
         // shader can light in world space), and the NORMAL MATRIX. `model` is the
-        // node's world matrix, already computed by updateWorldTransforms — world
-        // already folds in every ancestor's transform, so parented objects move as a
-        // group for free.
+        // item's world matrix, cached by updateWorldTransforms — world already folds
+        // in every ancestor's transform, so parented objects move as a group for free.
         //
         // normalMatrix = transpose(inverse(model)) is the transform that keeps
         // surface normals perpendicular under a non-uniform scale (Step 19). The
         // shader takes its mat3() — for an affine matrix the translation part lands
         // outside that 3x3 block, so this is exactly the classic 3x3 normal matrix.
         struct VertexUniform { Mat4 mvp; Mat4 model; Mat4 normalMatrix; };
-        const Mat4 model = node.worldMatrix();
+        const Mat4 model = item.world;
         const VertexUniform u = { projView * model, model, transpose(inverse(model)) };
         SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &u, sizeof(u));
         SDL_DrawGPUIndexedPrimitives(pass, mesh->indexCount(), /*num_instances=*/1,
                                      /*first_index=*/0, /*vertex_offset=*/0,
                                      /*first_instance=*/0);
-    }
-
-    // Recurse into the rest of the subtree.
-    for (const std::unique_ptr<Node>& child : node.children()) {
-        recordNode(cmd, pass, *child, projView);
     }
 }
 

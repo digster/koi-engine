@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Render Queue &amp; Frustum Culling · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
+    <a class="navlink" href="16-image-based-lighting.html">Image-based Lighting</a>
+    <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
+    <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
+    <a class="navlink" href="19-quaternions.html">Quaternions</a>
+    <a class="navlink" href="20-geometry-utilities.html">Geometry Utilities</a>
+    <a class="navlink" href="21-render-queue-and-frustum-culling.html" aria-current="page">Render Queue &amp; Culling</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Render Queue &amp; Frustum Culling</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 20:</strong> stop <em>drawing while we walk the scene</em>. Until now the renderer
+    recursed the node tree and issued a GPU draw at every node inline. This step splits that into two phases —
+    <strong>traverse → flat list → submit</strong> — introducing a <strong>render queue</strong>. On top of it we
+    add the first thing a queue makes possible: <strong>frustum culling</strong>, which drops objects the camera
+    can't see before they cost a single draw call.</p>
+    <p>This is an <em>architecture pivot</em>, not just a feature. A flat draw list is the shared prerequisite for
+    culling, <strong>sorting</strong> by material, <strong>instancing</strong>, <strong>transparency</strong>
+    ordering, and <strong>deferred</strong> shading — none of which are expressible while drawing is tangled up
+    with traversal. It also spends the <a href="20-geometry-utilities.html">Step 19</a> geometry layer
+    (<code>Aabb</code> + <code>Frustum</code>) on its first real job.</p>
+  </blockquote>
+
+  <h2>1. The problem: draw-while-you-walk</h2>
+
+  <p>Through Step 19 the main pass looked like this: a function <code>recordNode</code> received a node, and if
+  that node had a mesh and a material it bound them and drew — then it called <em>itself</em> on each child. One
+  recursive function did two completely different jobs at once: <em>deciding what to draw</em> (a tree walk) and
+  <em>submitting GPU commands</em> (bind, push uniforms, draw). Fused together, they leave no seam to insert the
+  questions every real renderer asks between "I found an object" and "I drew it":</p>
+
+  <pre class="diagram">recordNode(node):                        ← traversal AND submission, welded together
+   if node has mesh+material: bind, draw
+   for each child: recordNode(child)
+
+   … but where do you put:
+     "is it even on screen?"   (culling)
+     "group draws by material" (sorting)
+     "draw these 500 at once"  (instancing)
+     "far-to-near for glass"   (transparency)
+   ?  Nowhere — there is no list to reorder or filter.</pre>
+
+  <h2>2. The pivot: traverse → list → submit</h2>
+
+  <p>The fix is to walk the tree <strong>once</strong> and flatten it into a plain array — the <strong>render
+  queue</strong> — <em>before</em> drawing anything. Each entry is a <code>RenderItem</code>: a mesh, its
+  material, the world matrix that places it, and (for this step) its world-space bounding box. Only after the
+  list exists do we loop it and submit draws. Now the interesting operations all become passes <em>over the
+  list</em>:</p>
+
+  <pre class="diagram">PHASE 1  traverse:  walk node tree → vector&lt;RenderItem&gt;   (buildRenderQueue)
+PHASE 2  operate:   filter / sort / batch the list        (culling — this step)
+PHASE 3  submit:    loop the survivors → bind + draw       (submitItem)</pre>
+
+  <p>Separating the phases is the whole point: culling is a <em>filter</em> on the list, material sorting is a
+  <em>reorder</em> of the list, instancing is a <em>merge</em> of adjacent list entries. This is why the
+  roadmap calls the render queue the structural first move of the entire scaling track — every later performance
+  feature operates here.</p>
+
+  <h2>3. Giving every mesh a bounding box</h2>
+
+  <p>To cull an object we need a cheap stand-in for its shape: its <strong>axis-aligned bounding box</strong>
+  (<a href="20-geometry-utilities.html">Step 19</a>). We compute each mesh's <em>local</em> (model-space) box
+  once, at upload time, by folding every vertex position into an initially-empty box — and store it on the
+  <code>Mesh</code>. (The mesh otherwise keeps only its GPU buffers; the CPU-side vertices vanish after upload,
+  so this is the one moment they're still in hand.)</p>
+
+  <pre class="diagram">computeLocalBounds(vertices):  box = Aabb::empty();  for v: box.expand(v.position)</pre>
+
+  <p>That's the box in the mesh's own frame. To test it against the camera we need it in <em>world</em> space, so
+  as we build each queue entry we run the Step 19 <code>Aabb::transformed(world)</code> — which re-fits a fresh
+  axis-aligned box around the eight transformed corners. Because a shared mesh (one cube, many nodes) has one
+  local box but many world placements, the world box has to live on the <em>item</em>, not the mesh:</p>
+
+  <pre class="diagram">RenderItem {
+  const Mesh*     mesh;         const Material* material;
+  Mat4            world;        // where this instance sits
+  Aabb            worldBounds;  // mesh.localBounds().transformed(world) — cached for culling
+}</pre>
+
+  <h2>4. Culling to the frustum</h2>
+
+  <p>A perspective camera sees only a <strong>frustum</strong> — the six-plane pyramid from Step 19. We extract
+  those planes from the exact same <code>projection · view</code> the vertex shader uses (so "what we cull" and
+  "what ends up on screen" can never disagree), then keep only the items whose world box intersects it. The test
+  itself is Step 19's conservative <code>Frustum::intersectsAabb</code>; culling is just applying it to the
+  list:</p>
+
+  <pre class="diagram">frustum = Frustum::fromViewProjection(proj · view)
+visible = [ item for item in queue if frustum.intersectsAabb(item.worldBounds) ]
+for item in visible: submitItem(item)      ← off-screen items never reach a draw call</pre>
+
+  <p>An object entirely outside the frustum is dropped on the <em>CPU</em> — we skip the bind/push/draw calls
+  entirely — which in turn saves all the <em>GPU</em> work those draws would have triggered (vertex shading,
+  rasterisation, fragment shading). On the demo's handful of objects that's a rounding error; on a scene of
+  thousands it's the difference between a slideshow and a game. The renderer logs a <em>drawn / total</em> count
+  each second so you can watch the saving, and a runtime toggle (<kbd>0</kbd>) turns culling off for an A/B.</p>
+
+  <h2>5. The shadow-pass trap</h2>
+
+  <p>Here's the subtle bug this design is careful to avoid. We now render the scene <em>twice</em>: once from the
+  <strong>light</strong> (the shadow depth map, <a href="10-models-and-shadows.html">Step 9</a>) and once from
+  the <strong>camera</strong>. It is tempting to cull <em>both</em> passes to the camera frustum. Don't.</p>
+
+  <pre class="diagram">camera can't see the tree behind it …           … but the tree's shadow falls INTO view
+        ✗ cull it from the shadow pass  →  its shadow pops out of existence
+        ✓ keep the shadow pass unculled  →  shadow stays correct</pre>
+
+  <p>An object <em>behind the camera</em> can still cast a shadow onto something the camera <em>can</em> see.
+  Cull its caster out of the shadow map and the shadow blinks in and out as you turn — a classic, maddening
+  artifact. So the shadow pass draws the <strong>whole</strong> queue; only the camera pass is frustum-culled.
+  (A future step can cull the shadow pass to the <em>light's</em> frustum instead — a different volume — but never
+  to the camera's.) The render queue makes this easy to state precisely: same list, two different filters.</p>
+
+  <h2>6. In the engine</h2>
+
+  <ul>
+    <li><a href="../../src/renderer/RenderQueue.hpp">src/renderer/RenderQueue.hpp</a> /
+    <a href="../../src/renderer/RenderQueue.cpp">.cpp</a> — the new layer: the <code>RenderItem</code> struct,
+    <code>computeLocalBounds</code>, <code>buildRenderQueue</code> (the tree walk), and <code>cullToFrustum</code>
+    (the filter). The two pure helpers are unit-testable with no GPU.</li>
+    <li><a href="../../src/renderer/Mesh.hpp">src/renderer/Mesh.hpp</a> — each <code>Mesh</code> now carries its
+    model-space <code>Aabb</code>, computed in <code>GpuRenderer::createMesh</code>.</li>
+    <li><a href="../../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a> —
+    <code>renderSceneAndPost</code> builds the queue once; the shadow pass loops it whole; <code>recordScene</code>
+    culls then loops the survivors through the new <code>submitItem</code> (the old recursive <code>recordNode</code>
+    / <code>recordShadowNode</code> are gone). <code>setFrustumCullingEnabled</code> is the runtime toggle.</li>
+    <li><a href="../../tests/test_render_queue.cpp">tests/test_render_queue.cpp</a> — pins down the bounds
+    computation and the cull filter (in view kept, behind/beside culled, straddling kept, order preserved).</li>
+  </ul>
+
+  <p>Because this is a pure restructuring of <em>how</em> we walk and submit — not a change to any math — the
+  demo's captured frame is <strong>byte-for-byte identical</strong> to Step 19's. That exact-match is the proof
+  the refactor is behaviour-preserving (the depth-first flatten keeps the original draw order, so even
+  order-dependent blending would be unchanged). With every object on screen, culling removes nothing; turn the
+  camera around and the log reads <code>drew 0 / 9 (culled 9)</code>.</p>
+
+  <h2>7. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Run the tests.</strong> <code>cmake --build build</code> then <code>./build/koi-tests</code> — the
+    render-queue suite proves the bounds and the cull filter.</li>
+    <li><strong>Watch the counts.</strong> Run <code>./build/koi-demo</code> and read the console: with the
+    default view it logs <code>drew 9 / 9 (culled 0)</code>. Fly (<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
+    + mouse) so objects leave the view and watch the drawn count fall.</li>
+    <li><strong>A/B the culler.</strong> Press <kbd>0</kbd> to toggle culling off, then on — what remains on
+    screen is identical; only the drawn count (and, on a huge scene, the frame-rate) changes.</li>
+    <li><strong>Confirm nothing moved.</strong> <code>KOI_CAPTURE=out.bmp ./build/koi-demo</code> renders the same
+    frame as Step 19, down to the byte.</li>
+  </ol>
+
+  <h2>8. What's next</h2>
+
+  <p>➡️ With a flat list in hand, the scaling track opens up. The natural follow-ups all operate on the queue:
+  <strong>sort</strong> it by pipeline / material to kill the per-draw rebinding cost (a known tax since
+  <a href="09-materials.html">Step 8</a>); <strong>instance</strong> identical items into one draw call; and add
+  <strong>transparency</strong> — which <em>needs</em> the queue, because blended objects must be drawn
+  back-to-front, a sort you can only do once the draws are a reorderable list. The same
+  <a href="20-geometry-utilities.html">Step 19</a> primitives also feed <strong>ray-cast picking</strong> and the
+  physics broadphase. See the <a href="../../ROADMAP.md">roadmap</a> for the sequenced plan.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

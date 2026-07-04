@@ -33,6 +33,7 @@
     <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
     <a class="navlink" href="19-quaternions.html">Quaternions</a>
     <a class="navlink" href="20-geometry-utilities.html">Geometry Utilities</a>
+    <a class="navlink" href="21-render-queue-and-frustum-culling.html">Render Queue &amp; Culling</a>
   </div>
 </nav>
 
@@ -164,6 +165,13 @@
       bounding box, a ray with the slab test, a plane's signed distance, and the camera frustum extracted from
       the view-projection matrix (with the z∈[0,1] near-plane caveat) — then spending the new inverse on a real
       fix, the <strong>normal matrix</strong> for correct lighting under non-uniform scale.</p>
+    </a>
+    <a class="card" href="21-render-queue-and-frustum-culling.html">
+      <h3>Render Queue &amp; Culling →</h3>
+      <p>The architecture pivot from <em>draw-while-you-walk</em> to <strong>traverse → flat list → submit</strong>:
+      a render queue, per-mesh bounding boxes, and <strong>frustum culling</strong> that skips off-screen objects
+      before they cost a draw — spending the Step 19 <code>Aabb</code>/<code>Frustum</code>, with the shadow-pass
+      culling trap explained.</p>
     </a>
   </div>
 

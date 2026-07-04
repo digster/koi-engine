@@ -9,21 +9,22 @@ in [`documentation/docs/`](documentation/docs/index.html) that explains the unde
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`documentation/docs/index.html`](documentation/docs/index.html) in a browser.
 
-> **Current status — Step 19:** **geometry utilities + the normal matrix**. A new pure, header-only
-> [`src/math/Geometry.hpp`](src/math/Geometry.hpp) adds the spatial primitives an engine reuses everywhere —
-> **`Ray`**, an axis-aligned **`Aabb`**, a **`Plane`**, and the camera **`Frustum`** (extracted from the
-> view-projection matrix, with the z∈[0,1] near-plane caveat) — plus a ray-box and frustum-box test, backed by
-> the long-missing `Mat4` **`inverse`**/**`transpose`**. The step spends that inverse on a real fix: the vertex
-> shader now carries normals by the **normal matrix** `transpose(inverse(model))`, so surfaces are lit
-> correctly under **non-uniform scale**. It's pure math (fully unit-tested), the shared prerequisite for frustum
-> culling, ray-cast picking, and physics; the demo scene is uniform-scale, so its frame is visually unchanged
-> (only last-bit FP noise on a handful of edge pixels).
-> *(Step 18 replaced Euler rotation in `Transform` with a hand-rolled unit **`Quat`** — no gimbal lock,
-> `slerp`-able.)*
+> **Current status — Step 20:** **render queue + frustum culling**. The renderer no longer *draws while it
+> walks* the scene graph: [`src/renderer/RenderQueue.hpp`](src/renderer/RenderQueue.hpp) flattens the tree into a
+> flat **`RenderItem`** list (**traverse → list → submit**) — the architecture pivot that unblocks culling,
+> material sorting, instancing, and transparency. Its first payoff is **frustum culling**: each `Mesh` now carries
+> a model-space **`Aabb`**, and the main pass skips items whose world bounds fall outside the camera
+> **`Frustum`** (spending the [Step 19](documentation/docs/20-geometry-utilities.html) geometry layer). The shadow
+> pass deliberately stays *unculled* (off-screen casters still cast in-view shadows). Toggle culling with `0`; the
+> renderer logs a drawn/total count. Pure restructuring — no math changed — so the capture is **byte-for-byte
+> identical** to Step 19.
+> *(Step 19 added the geometry layer — `Ray`/`Aabb`/`Plane`/`Frustum` + the `Mat4` inverse — and the
+> inverse-transpose **normal matrix** for correct lighting under non-uniform scale.)*
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
 > Lights: `5` point lights, `6` spot, `7` sun. Environment: `8` skybox, `9` image-based lighting.
+> Rendering: `0` frustum culling.
 
 ## Quick start
 
@@ -116,12 +117,16 @@ Full instructions, controls, and tests: [documentation/docs/00-getting-started.h
   test, a plane's signed distance, and the camera frustum extracted from the view-projection matrix (with the
   z∈[0,1] near-plane caveat) — then spending the inverse on the **normal matrix** for correct lighting under
   non-uniform scale, mapped to the Step 19 code.
+- [documentation/docs/21-render-queue-and-frustum-culling.html](documentation/docs/21-render-queue-and-frustum-culling.html) —
+  the architecture pivot from *draw-while-you-walk* to **traverse → flat list → submit**: what a render queue is
+  and why it unblocks culling/sorting/instancing, per-mesh bounding boxes, **frustum culling**, and the shadow-pass
+  culling trap, mapped to the Step 20 code.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
 
 The engine grows one runnable milestone at a time. See **[ROADMAP.md](ROADMAP.md)** for the full
-picture — every completed step (0–18) and the phased plan beyond: numbered next steps, then themed
+picture — every completed step (0–20) and the phased plan beyond: numbered next steps, then themed
 tracks across rendering, animation, physics, audio, tooling, and gameplay.
 
 ## Requirements

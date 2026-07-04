@@ -22,9 +22,11 @@ material import** — reading a model's base-colour / metallic-roughness / norma
 straight from the file (PNG/JPG decoded by **stb_image**, colour textures handled as **sRGB**), proven by
 loading the Khronos **Damaged Helmet**, an **engine/app separation** that lifts the demo out of
 the engine into a `samples/` app behind a public `koi::Application` interface, **quaternion** rotations that
-replace Euler angles in `Transform` (no gimbal lock, `slerp`-able), and a **geometry-utility layer** — AABB /
+replace Euler angles in `Transform` (no gimbal lock, `slerp`-able), a **geometry-utility layer** — AABB /
 ray / plane / frustum plus the `Mat4` **inverse** — whose first payoff is an inverse-transpose **normal
-matrix** for correct lighting under non-uniform scale).
+matrix** for correct lighting under non-uniform scale, and a **render-queue** extraction that flattens the
+scene-graph walk into a flat draw list — the architecture pivot behind **frustum culling** (skip off-screen
+draws) and, later, sorting / instancing / transparency).
 
 ## Guiding principles
 
@@ -76,13 +78,14 @@ bundle. See the *Engine / app separation (Step 17)* section below.
 | `Application` | [src/core/Application.hpp](src/core/Application.hpp) | Header-only abstract interface (Step 17) — the engine/app boundary. Hooks: `onStart` (build content), `onUpdate(dt)` (animate + input), `onEvent` (per-event input; default no-op), `frameView()` (return a `FrameView` to draw), `onShutdown` (release GPU resources while the device is still alive). An app subclasses it and holds its own scene/camera/lights. |
 | `FrameView` | [src/renderer/FrameView.hpp](src/renderer/FrameView.hpp) | Header-only value (Step 17): the per-frame render bundle — clear colour, `view` matrix, scene `root` (non-owning), `cameraPos`, `lights` span, `PostSettings`. Produced by `Application::frameView()`, consumed by both `renderFrame` and `captureFrame`, so the live and headless paths can't drift. Owns nothing. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
-| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines), the (Step 14) **skybox** resources (a `CUBE` **cubemap** texture, a CLAMP_TO_EDGE cubemap sampler, a skybox pipeline, and the cube mesh drawn around the camera), and the (Step 15) **image-based-lighting** resources (three bake pipelines, a trilinear CLAMP sampler, and the baked **irradiance** cube + **prefiltered** cube + **BRDF LUT** targets). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload and choosing an **sRGB** format for colour maps — Step 16; `createTextureFromRGBA` for already-decoded bytes; `loadCubemap` uploads six faces into one cube texture, then `bakeIbl` bakes the IBL maps from it) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`; binds the material's four maps per draw + the **emissive** map at slot 8 (Step 16), shadow map at slot 4, the three IBL maps at slots 5–7, then draws the **sky last** via `recordSkybox`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
+| `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines), the (Step 14) **skybox** resources (a `CUBE` **cubemap** texture, a CLAMP_TO_EDGE cubemap sampler, a skybox pipeline, and the cube mesh drawn around the camera), and the (Step 15) **image-based-lighting** resources (three bake pipelines, a trilinear CLAMP sampler, and the baked **irradiance** cube + **prefiltered** cube + **BRDF LUT** targets). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload and choosing an **sRGB** format for colour maps — Step 16; `createTextureFromRGBA` for already-decoded bytes; `loadCubemap` uploads six faces into one cube texture, then `bakeIbl` bakes the IBL maps from it) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) **flattens the scene graph into a render queue once** (`buildRenderQueue`, Step 20), then runs: **shadow pass** (loops the *whole* queue, depth only) → **scene pass** into the HDR target (`recordScene`; **frustum-culls** the queue to the camera then submits each survivor via `submitItem` — binding the material's four maps per draw + the **emissive** map at slot 8 (Step 16), shadow map at slot 4, the three IBL maps at slots 5–7 — then draws the **sky last** via `recordSkybox`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data; holds a reused `renderQueue_` + a `frustumCullingEnabled_` toggle. |
 | `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the **app** drives from input and hands to the renderer (via `FrameView`), plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
 | `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: an `albedo` texture + **PBR** params `metallic`/`roughness` (Step 12) — now **factors** — plus (Step 13) three optional map handles: `metalRough` (glTF-packed G=roughness, B=metallic), `normalMap` (tangent-space), and `ao`; and (Step 16) an optional `emissive` map + `emissiveFactor` (default 0 ⇒ no glow, so existing materials are unchanged). Any map may be null; the renderer binds a neutral 1×1 fallback so map-less materials render as in Step 12. Shared by `shared_ptr`; a `Node` references one; the renderer binds all five maps per draw. |
 | `Pbr` | [src/renderer/Pbr.hpp](src/renderer/Pbr.hpp) | Header-only, SDL-free (Step 12): pure CPU mirrors of the Cook-Torrance BRDF sub-terms — `distributionGGX` (D), `geometrySmith`/`geometrySchlickGGX` (G), `fresnelSchlick` (F), plus `kPi`. The shader in `triangle.frag` is the runtime truth; these exist so the microfacet math's shape is unit-tested headlessly (`tests/test_pbr.cpp`), the same pattern as `PostProcess.hpp`/`Light.hpp`. |
 | `Light` | [src/scene/Light.hpp](src/scene/Light.hpp) | Header-only, SDL-free (Step 11): a `Light` struct (type = directional/point/spot, position, direction, colour, intensity, range, spot-cone cosines, an `enabled` flag) plus pure helpers (`attenuation`, `spotFactor`, `activeLightCount`) that mirror the shader math for headless tests (`tests/test_light.cpp`). The **app** (`DemoApp`) owns a `std::vector<Light>` and hands it to the renderer each frame via `FrameView`, exactly like the camera + `PostSettings`. `MAX_LIGHTS` matches the shader's fixed array size. |
 | `ModelLoader` | [src/renderer/ModelLoader.*](src/renderer/) | `loadModel(path)` reads a model file into a **`LoadedModel`** (a `Mesh` **+** an optional `Material`): `.obj` via **tinyobjloader** (de-duplicating its separate v/vt/vn indices; geometry only — material null), `.glb/.gltf` via **cgltf**, which since **Step 16** also imports the file's PBR **material** (base-colour / metallic-roughness / normal / occlusion / **emissive** maps + factors). Its images (PNG/JPG) are decoded by **stb_image** — embedded `.glb` `buffer_view`s straight from memory, external URIs via `loadTexture` — with colour maps flagged **sRGB**. The single TU that pulls in those three third-party headers (defines their `*_IMPLEMENTATION`) — compiled warning-free (`-w`). |
-| `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count + element size: 16-bit for primitives, 32-bit for big loaded models). Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must die before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
+| `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count + element size: 16-bit for primitives, 32-bit for big loaded models). Also caches a **model-space `Aabb`** (Step 20), computed from the vertices in `createMesh` — the box frustum culling transforms + tests. Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must die before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
+| `RenderQueue` | [src/renderer/RenderQueue.*](src/renderer/) | The Step 20 flat draw list. `RenderItem { mesh, material, world, worldBounds }`; `computeLocalBounds` (a mesh's model-space box), `buildRenderQueue` (walk the node tree once → flat list), and `cullToFrustum` (keep items whose world bounds hit the camera `Frustum`). The two pure helpers are unit-tested with no GPU (`tests/test_render_queue.cpp`); the *traverse → list → submit* split is the pivot behind culling/sorting/instancing/transparency. |
 | `Texture` | [src/renderer/Texture.*](src/renderer/) | RAII owner of one `SDL_GPUTexture` (sampled image). Same non-owning-device lifetime rule as `Mesh`. Created via `GpuRenderer::loadTexture` (BMP → SDL; PNG/JPG → **stb_image**; decode → upload) or `createTextureFromRGBA` (already-decoded bytes, e.g. embedded glTF images), with an **sRGB** option for colour maps (Step 16); held by `shared_ptr`. A *sampler* (how to read it) is separate, reusable device state owned by the renderer. |
 | `Primitives` | [src/renderer/Primitives.*](src/renderer/) | Free functions (`makeCubeMesh`, `makePlaneMesh`) that define a shape's vertex/index data and upload it via `createMesh`, keeping the renderer geometry-agnostic. |
 | `Transform` | [src/scene/Transform.hpp](src/scene/Transform.hpp) | Header-only, SDL-free: position / rotation (a unit **`Quat`** since Step 18 — no gimbal lock, `slerp`-able) / scale, plus `localMatrix()` returning `T·R·S` (scale → rotate → translate). Unit-tested in `tests/test_transform.cpp`. |
@@ -241,8 +244,10 @@ an optional shared `Mesh`.
 Two passes per frame keep concerns separate: **(1)** `Node::updateWorldTransforms`
 walks the tree top-down computing each node's world matrix as
 `world = parentWorld · local` (so a parent's motion propagates to all descendants —
-the whole point), then **(2)** `GpuRenderer::recordScene` walks it again and, for each
-node that has a mesh, binds that mesh and draws at `proj·view·world`. Meshes are
+the whole point), then **(2)** the renderer draws each node at `proj·view·world`.
+*(As of Step 20 that second pass no longer recurses the tree inline: `buildRenderQueue`
+flattens it into a **render queue** first, which the passes then iterate — see the
+Step 20 section. Same result, but now filterable/sortable.)* Meshes are
 `shared_ptr` (many nodes reuse one cube); children are `unique_ptr` (a node owns its
 subtree). Layering note: `Node` (in `scene/`) references `Mesh` (in `renderer/`) — a
 deliberate dependency, since a node that draws must name *what* geometry to draw;
@@ -656,6 +661,42 @@ production milestone.
   "meshes die before the device" rule across the new ownership split (see *Lifecycle & ownership*).
 - **Behaviour-preserving.** Pure structural refactor: the `KOI_CAPTURE` frame is **byte-identical** to
   Step 16. The executable is now `koi-demo` (built from `samples/demo/`).
+
+### Render queue & frustum culling (Step 20)
+
+Through Step 19 the renderer **drew while it walked**: a recursive `recordNode` traversed the scene graph and
+issued a GPU draw inline at every node, welding two jobs — *deciding what to draw* and *submitting it* —
+together. That leaves no seam for the questions a scaling renderer must ask between "found an object" and "drew
+it": is it on screen? can these draws be grouped by material? batched into one instanced call? sorted
+back-to-front for blending? None are expressible on a recursion; all are natural on a **list**.
+
+So Step 20 splits the frame into **traverse → list → submit**:
+
+```
+buildRenderQueue(root)  ──▶  vector<RenderItem>{ mesh, material, world, worldBounds }   (once per frame)
+                                │
+        ┌───────────────────────┴───────────────────────┐
+   shadow pass: loop the WHOLE queue        scene pass: cull to camera Frustum, then submitItem each survivor
+   (depth only — never camera-culled)       (skips off-screen draws entirely)
+```
+
+Design points worth recording:
+
+- **`RenderItem`** is a flat, non-owning record (`RenderQueue.hpp`). Its `worldBounds` is the mesh's cached
+  model-space `Aabb` run through `Aabb::transformed(world)` at build time, so per-frame culling is a plane test
+  with no box rebuild. Because a shared mesh has one local box but many placements, the world box lives on the
+  *item*, not the mesh.
+- **Culling is a filter on the list**, using the Step 19 `Frustum::fromViewProjection(proj·view)` +
+  `intersectsAabb`. It runs only for the **camera** pass. The **shadow** pass loops the whole queue —
+  camera-culling a shadow *caster* would make its shadow blink in and out as it crosses the frustum edge (a
+  caster the camera can't see may still shadow one it can). This asymmetry is the subtle correctness point the
+  whole design protects; a later step can cull the shadow pass to the *light's* frustum instead.
+- **The queue is a reused member** (`renderQueue_` / `visibleItems_` scratch) so no per-frame allocation; a
+  `frustumCullingEnabled_` toggle (demo key `0`) + a logged drawn/total count make the win observable.
+- **Behaviour-preserving.** The depth-first flatten preserves the original draw order and no math changed, so
+  the `KOI_CAPTURE` frame is **byte-for-byte identical** to Step 19 — the proof the pivot changed no output.
+- **Why it's a pivot, not just a feature:** sorting (by pipeline/material), instancing, transparency ordering,
+  and deferred shading all operate on this list. It's the structural first move of the whole scaling track.
 
 ## Lifecycle & ownership
 

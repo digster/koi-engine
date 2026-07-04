@@ -33,6 +33,7 @@
     <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
     <a class="navlink" href="19-quaternions.html">Quaternions</a>
     <a class="navlink" href="20-geometry-utilities.html" aria-current="page">Geometry Utilities</a>
+    <a class="navlink" href="21-render-queue-and-frustum-culling.html">Render Queue &amp; Culling</a>
   </div>
 </nav>
 
@@ -254,10 +255,11 @@ transpose(inverse(model))·N  stays ⟂ to model·T     (under non-uniform scale
 
   <h2>9. What's next</h2>
 
-  <p>➡️ This layer is the shared foundation for three tracks. The immediate next move is a
-  <strong>render-queue</strong> extraction — turning the inline draw loop into a flat list — so we can build each
-  node's world <code>Aabb</code>, test it against the camera <code>Frustum</code>, and actually
-  <em>skip</em> the culled draws (<strong>frustum culling</strong>). The same primitives then power
+  <p>➡️ This layer is the shared foundation for three tracks. The immediate next move — now built in
+  <a href="21-render-queue-and-frustum-culling.html">Step 20</a> — is a <strong>render-queue</strong> extraction,
+  turning the inline draw loop into a flat list, so we can build each node's world <code>Aabb</code>, test it
+  against the camera <code>Frustum</code>, and actually <em>skip</em> the culled draws
+  (<strong>frustum culling</strong>). The same primitives then power
   <strong>ray-cast picking</strong> (unproject the cursor with <code>inverse(proj·view)</code>, then
   <code>intersect</code> against node boxes) and, later, the <strong>physics broadphase</strong>. See the
   <a href="../../ROADMAP.md">roadmap</a> for the sequenced plan.</p>

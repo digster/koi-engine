@@ -34,22 +34,32 @@ Three principles shape the plan:
   **`koi::Application`** interface, so `koi_core` is now genuinely reusable.
 - **Step 18** (quaternions) shipped as
   [`documentation/docs/19-quaternions.html`](documentation/docs/19-quaternions.html); `Transform` now stores a
-  unit **`Quat`** instead of Euler angles — no gimbal lock, and rotations can be `slerp`-ed, which is the
-  prerequisite for skeletal animation. With the material/lighting arc closed and proven on real content, the
-  engine/app boundary drawn, *and* rotation put on animation-ready footing, **the highest-leverage next move is
-  cross-platform CI + golden images** (see *Path to 1.0*) — interleaved with transparency (see the suggested
-  path).
+  unit **`Quat`** instead of Euler angles — no gimbal lock, and rotations can be `slerp`-ed, the prerequisite for
+  skeletal animation.
+- **Step 19** (geometry utilities) shipped as
+  [`documentation/docs/20-geometry-utilities.html`](documentation/docs/20-geometry-utilities.html); a pure
+  `Ray`/`Aabb`/`Plane`/`Frustum` layer (plus the `Mat4` **inverse**) and the inverse-transpose **normal matrix**.
+- **Step 20** (render queue + frustum culling) shipped as
+  [`documentation/docs/21-render-queue-and-frustum-culling.html`](documentation/docs/21-render-queue-and-frustum-culling.html);
+  the renderer stopped drawing inline while it walked the scene graph — it now flattens the tree into a flat
+  **`RenderItem`** list (*traverse → list → submit*), the **architecture pivot** that unblocks sorting,
+  instancing, and transparency, and spends the Step 19 `Aabb`/`Frustum` on its first payoff, **frustum culling**.
+  With the material/lighting arc closed, the engine/app boundary drawn, rotation on animation-ready footing, and
+  the render-queue pivot now made, the **learning tracks lead** from here — transparency, then sorting/instancing
+  atop the new queue, then skeletal animation. **Cross-platform CI + golden images is now deliberately deferred**
+  (still a 1.0 requirement — see *Path to 1.0* — but taken up *after* the other tracks, not early).
 
 ---
 
-## ✅ Completed — Steps 0–18
+## ✅ Completed — Steps 0–20
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
 post-processed shading of loaded models under many lights, with per-pixel texture + normal maps,
 a cubemap sky, and image-based lighting that lets the environment light the scene — now proven by
 importing a real glTF PBR asset (the Damaged Helmet) with emissive surfaces and correct sRGB colour,
-then made reusable by separating the engine from the app (Step 17), and put on animation-ready footing
-by replacing Euler rotations with quaternions (Step 18).
+then made reusable by separating the engine from the app (Step 17), put on animation-ready footing
+by replacing Euler rotations with quaternions (Step 18), given a geometry layer (Step 19), and
+restructured around a **render queue** with **frustum culling** (Step 20 — the scaling-track pivot).
 Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
 [`documentation/docs/index.html`](documentation/docs/index.html).
@@ -202,9 +212,26 @@ provides, and both build toward "metals that reflect their surroundings."
   scene is uniform-scale, so its `KOI_CAPTURE` frame is **visually unchanged** — not byte-identical, but only
   ~240 edge/highlight bytes differ in their last FP bits (max ≈ 23/255), the same rebuild noise as Step 18.
 - **Deliberately deferred:** the **render-queue** extraction and *actually* skipping culled draws (frustum
-  culling); ray-cast **picking** UI (unprojecting the cursor); ray–plane / ray–sphere tests.
+  culling) — *done next, in Step 20*; ray-cast **picking** UI (unprojecting the cursor); ray–plane / ray–sphere tests.
 - **Why here:** one small, pure, fully testable layer that is the shared prerequisite of **frustum culling**,
   **ray-cast picking**, and the **physics broadphase** — build the math before the systems that consume it.
+
+### ✅ Step 20 — Render queue + frustum culling *(done — [tutorial](documentation/docs/21-render-queue-and-frustum-culling.html))*
+- **Shipped:** the **render-queue extraction** (the architecture pivot) + its first payoff, **frustum culling**.
+  A new [`src/renderer/RenderQueue.hpp`](src/renderer/RenderQueue.hpp)/`.cpp` introduces a flat **`RenderItem`**
+  list and three functions: `computeLocalBounds` (a mesh's model-space `Aabb`, folded from its vertices),
+  `buildRenderQueue` (walk the tree once → flat list) and `cullToFrustum` (the visibility filter reusing Step 19's
+  `Frustum::intersectsAabb`). [`Mesh`](src/renderer/Mesh.hpp) now stores its local `Aabb` (computed in
+  `createMesh`). [`GpuRenderer`](src/renderer/GpuRenderer.cpp) builds the queue once per frame in
+  `renderSceneAndPost`; the recursive `recordNode`/`recordShadowNode` became a per-item `submitItem` + shadow
+  loop. The **camera pass** is frustum-culled (a runtime toggle, key **`0`**, + a logged drawn/total count); the
+  **shadow pass stays unculled** (an off-screen caster can still cast an in-view shadow — the culling trap).
+  Unit-tested in [`tests/test_render_queue.cpp`](tests/test_render_queue.cpp). Pure restructuring (no math
+  changed), so the `KOI_CAPTURE` frame is **byte-for-byte identical** to Step 19.
+- **Deliberately deferred:** **sorting** the queue by pipeline/material; **instancing**; culling the *shadow* pass
+  to the light frustum; ray-cast **picking**. Transparency (which needs the queue to sort) is the next track.
+- **Why here:** the render queue is *the* structural first move of the whole scaling track — culling, sorting,
+  instancing, transparency and deferred all operate on the flat list, none expressible while draw ≡ traverse.
 
 ---
 
@@ -215,11 +242,11 @@ else changes shape. A few are **pivots** — structural decisions whose retrofit
 every feature built on the old assumption. None needs to be *built* soon, but every new system
 should be designed knowing they're coming:
 
-- **Render-queue extraction.** Today [`GpuRenderer::recordScene`](src/renderer/GpuRenderer.cpp)
-  walks the scene graph and draws inline. Splitting that into *traverse → flat draw list → submit*
-  is the shared prerequisite of frustum culling, instancing, material sorting (a known cost since
-  Step 8), transparency sorting, and deferred shading. It's the structural first move of the whole
-  Scaling track.
+- ✅ **Render-queue extraction** *(done — Step 20)*. `GpuRenderer` no longer walks the scene graph and
+  draws inline; it flattens the tree into a flat `RenderItem` list (*traverse → draw list → submit*,
+  [`src/renderer/RenderQueue.hpp`](src/renderer/RenderQueue.hpp)) — the structural first move of the whole
+  Scaling track, now made. Still to build **on** the list: material/pipeline sorting (a known cost since
+  Step 8), instancing, transparency sorting, and deferred shading.
 - **Multithreading / job system.** Everything is single-threaded today. Asset loading, command
   recording, and simulation all eventually parallelize — and every system written before the job
   system bakes in single-threaded assumptions. Design new subsystems (asset manager, physics)
@@ -252,11 +279,11 @@ tracks are first-class peers of the rendering ones.
 - Spot-light shadows (a single perspective shadow map).
 - Softer shadows (PCSS, larger PCF kernels).
 
-**Scaling & performance** — today every node is drawn and every light is forward-accumulated.
-- **Render-queue extraction** (traverse → draw list → submit; *the* architecture pivot this whole
-  track builds on — see the pivots section).
-- Bounding volumes + **frustum culling** (skip what the camera can't see; needs the geometry
-  utility layer from the Math track).
+**Scaling & performance** — every light is still forward-accumulated; culling now skips off-screen draws.
+- ✅ **Render-queue extraction** (traverse → draw list → submit; *the* architecture pivot this whole
+  track builds on — see the pivots section) — *done, Step 20* ([`RenderQueue.hpp`](src/renderer/RenderQueue.hpp)).
+- ✅ Bounding volumes + **frustum culling** (skip what the camera can't see) — *done, Step 20*: each `Mesh`
+  carries an `Aabb`, the camera pass tests it against the `Frustum` (consuming the Step 19 geometry layer).
 - **Instanced rendering** (one draw call for many copies).
 - Sort the draw list by **pipeline / material** (kill the per-draw rebinding cost known since Step 8).
 - **Deferred / clustered / tiled** shading (decouple lighting cost from geometry; scale to many
@@ -306,6 +333,7 @@ state, so glass, smoke, and foliage are all impossible.
   **frustum** types with intersection tests (plus the `Mat4` inverse) — *done, Step 19*
   ([`src/math/Geometry.hpp`](src/math/Geometry.hpp)). The shared prerequisite of frustum culling, ray-cast
   picking, *and* the physics broadphase — one small, fully unit-testable module unblocks three tracks.
+  Its first consumer, **frustum culling**, landed in *Step 20*.
 - ✅ **Inverse-transpose normal matrix** (correct normals under non-uniform scale) — *done, Step 19*, wired
   through [`shaders/triangle.vert`](shaders/triangle.vert).
 
@@ -356,8 +384,10 @@ state, so glass, smoke, and foliage are all impossible.
 ### Path to 1.0 — production hardening
 
 The track that turns "my learning engine" into "an engine apps can ship on". It absorbs the old
-*Platform & build* track and is deliberately **not** last-in-line — its first two items are the
-highest-leverage things the project can do after Step 15.
+*Platform & build* track. Its first item — engine/app separation — shipped early (Step 17). The rest is
+**deliberately deferred**: the owner has chosen to push the **learning tracks** (rendering, animation,
+physics, tooling) further along first, and take up cross-platform CI + the remaining hardening items *after*
+them. These stay hard requirements for 1.0 (see *Definition of 1.0*) — just not the near-term priority.
 
 - ✅ **Engine / app separation** *(done — Step 17,
   [tutorial](documentation/docs/18-engine-app-separation.html))* — *the defining milestone for "production
@@ -366,12 +396,12 @@ highest-leverage things the project can do after Step 15.
   plus a [`FrameView`](src/renderer/FrameView.hpp) render bundle; nothing in `src/` hardcodes demo content
   anymore. Still to do: semantic versioning, deprecation policy, and **API reference docs** (the tutorials
   teach concepts; consumers need reference).
-- **Cross-platform CI + golden-image regression** — only macOS/Metal has ever executed; the Step 9
-  `spirv-cross` sampler-swap bug is proof that backend-specific breakage is real and invisible to
-  the compiler. A Linux/**Vulkan** CI build (lavapipe, the software driver) running the tests plus
-  `KOI_CAPTURE` **golden-image comparisons** turns the existing capture tool into an automated net
-  for exactly the "compiles clean, renders wrong" class of bug unit tests can't catch. Validate
-  **D3D12**/Windows the same way when hardware allows.
+- **Cross-platform CI + golden-image regression** *(deferred — after the learning tracks)* — only
+  macOS/Metal has ever executed; the Step 9 `spirv-cross` sampler-swap bug is proof that backend-specific
+  breakage is real and invisible to the compiler. A Linux/**Vulkan** CI build (lavapipe, the software driver)
+  running the tests plus `KOI_CAPTURE` **golden-image comparisons** turns the existing capture tool into an
+  automated net for exactly the "compiles clean, renders wrong" class of bug unit tests can't catch. Validate
+  **D3D12**/Windows the same way when hardware allows. (Still required for 1.0 — just not taken up early.)
 - **Offline asset pipeline** — an *import → process → pack* cooking step (engine-native binary
   formats, so shipping apps never parse OBJ/glTF at runtime). Step 9's procedural model generation
   and the KTX2 plans above are seeds.
@@ -411,15 +441,17 @@ Step 18  quaternions (Transform rotation, slerp)     ✅ done
    │
 Step 19  geometry utils (AABB/ray/frustum) + normal matrix   ✅ done
    │
-CI + golden images                               ◀── next; highest production leverage, do early
+Step 20  render queue ──▶ frustum culling (consumes Step 19 geometry)   ✅ done
    │
-transparency + blending ──▶ glTF node hierarchy / Sponza
+transparency + blending ──▶ glTF node hierarchy / Sponza          ◀── next (learning thread leads)
    │
-render queue ──▶ frustum culling (consumes Step 19 geometry) ──▶ cascaded shadows
+sort queue by material / instancing ──▶ cascaded shadows
    │
 skeletal animation ──▶ debug draw / HUD / text ──▶ particles
    │
 deferred / clustered ──▶ fixed timestep ──▶ physics + audio ──▶ editor + gameplay
+   │
+CI + golden images ──▶ offline asset pipeline ──▶ packaging   ◀── production hardening, deferred to here
 ```
 
 Hard dependencies worth remembering: **tangents (Step 13) → normal mapping**, **skybox → IBL**,

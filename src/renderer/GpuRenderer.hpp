@@ -23,10 +23,12 @@
 #include <memory>  // std::shared_ptr — meshes are shared, owned via shared_ptr
 #include <span>    // std::span — a (pointer, length) view over caller-owned geometry
 #include <string>  // std::string — cubemap face paths
+#include <vector>  // std::vector — the render queue (Step 20)
 
 #include "math/Mat4.hpp"
 #include "renderer/FrameView.hpp"    // FrameView — the one bundle renderFrame/captureFrame consume
 #include "renderer/PostProcess.hpp"  // PostSettings (a FrameView field)
+#include "renderer/RenderQueue.hpp"  // RenderItem — the flat draw list we build + cull (Step 20)
 #include "renderer/Vertex.hpp"  // createMesh takes a std::span<const Vertex>
 #include "scene/Light.hpp"  // Light — a FrameView field (SDL-free)
 
@@ -128,6 +130,14 @@ public:
     // visible effect until a cubemap has been loaded and baked (loadCubemap → bakeIbl).
     void setIblEnabled(bool enabled) { iblEnabled_ = enabled; }
     [[nodiscard]] bool iblEnabled() const { return iblEnabled_; }
+
+    // Enable/disable view-frustum culling at runtime (Step 20; the demo binds this to a
+    // key). When on, the main pass skips draw items whose world bounds fall entirely
+    // outside the camera frustum — invisible work the GPU would otherwise do. On by
+    // default; a clean A/B for the drawn/culled counts the renderer logs. The SHADOW
+    // pass is never camera-culled (off-screen casters still cast in-view shadows).
+    void setFrustumCullingEnabled(bool enabled) { frustumCullingEnabled_ = enabled; }
+    [[nodiscard]] bool frustumCullingEnabled() const { return frustumCullingEnabled_; }
 
     // Render exactly one frame from a FrameView `fv`: acquire a swapchain image,
     // draw every mesh in `fv.root` (each through its own world matrix and its node's
@@ -240,32 +250,31 @@ private:
                       const Mat4& view, const Mat4& projection) const;
 
     // PASS 1 of shadow mapping: render the scene's depth from the light's point of
-    // view into the shadow map. Begins its own depth-only render pass, walks the
-    // tree pushing lightViewProj·world per node, ends. Done before the main pass.
-    void renderShadowPass(SDL_GPUCommandBuffer* cmd, const Node& root,
+    // view into the shadow map. Begins its own depth-only render pass and draws
+    // EVERY item in `queue` (pushing lightViewProj·world per item), ends. The full
+    // queue is used — never camera-culled — because a caster outside the camera
+    // frustum can still drop a shadow into view. Done before the main pass.
+    void renderShadowPass(SDL_GPUCommandBuffer* cmd,
+                          const std::vector<RenderItem>& queue,
                           const Mat4& lightViewProj) const;
 
-    // Recursive worker for the shadow pass: draw `node`'s mesh (depth only) under
-    // `lightViewProj`, then recurse. (No material/texture needed — only depth.)
-    void recordShadowNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                          const Node& node, const Mat4& lightViewProj) const;
-
-    // Record the whole scene into an already-begun (main) render pass: bind the
-    // pipeline, bind the shadow map, pack `lights` + `cameraPos` + `lightViewProj`
-    // into the per-frame light uniform, build the projection from `aspect`, then walk
-    // `root` drawing each node — binding its material's texture + pushing its
-    // {mvp, model} and material uniforms. Shared by the live (renderFrame) and
-    // off-screen (captureFrame) paths so they can't drift.
+    // Record the whole scene into an already-begun (main) render pass from the flat
+    // `queue` (Step 20): bind the pipeline + shadow/IBL maps, pack `lights` +
+    // `cameraPos` + `lightViewProj` into the per-frame light uniform, build the
+    // projection from `aspect`, frustum-cull the queue (when enabled), then submit
+    // each surviving item. Shared by the live (renderFrame) and off-screen
+    // (captureFrame) paths so they can't drift.
     void recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                     const Node& root, const Mat4& view, float aspect,
-                     const Vec3& cameraPos, std::span<const Light> lights,
+                     const std::vector<RenderItem>& queue, const Mat4& view,
+                     float aspect, const Vec3& cameraPos, std::span<const Light> lights,
                      const Mat4& lightViewProj) const;
 
-    // Recursive worker for recordScene: draw `node`'s mesh (if any) using the
-    // already-combined `projView` matrix, then recurse into its children. Reads
-    // the node's cached world matrix (filled by Node::updateWorldTransforms).
-    void recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                    const Node& node, const Mat4& projView) const;
+    // Submit ONE draw item into the already-begun main render pass, using the
+    // already-combined `projView`: bind the item's material maps + mesh buffers and
+    // push its {mvp, model, normalMatrix} + material uniforms. The per-item worker
+    // recordScene loops over — the "submit" half of traverse → list → submit.
+    void submitItem(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                    const RenderItem& item, const Mat4& projView) const;
 
     // Ensure the depth texture exists and matches (w, h), recreating it on resize.
     // Returns false (after logging) if creation fails. Called each frame before
@@ -390,6 +399,18 @@ private:
     SDL_GPUSampler*          iblSampler_            = nullptr;  // owned (linear, trilinear, CLAMP)
     bool                     iblReady_              = false;    // true once baked from a cubemap
     bool                     iblEnabled_            = true;     // runtime IBL on/off toggle
+
+    // Render queue + frustum culling (Step 20). Each frame renderSceneAndPost
+    // flattens the scene graph into `renderQueue_` (traverse → list), then the
+    // shadow pass draws it all while the main pass draws only the items whose world
+    // bounds survive the camera frustum, collected into `visibleItems_`. Both
+    // vectors are members (not locals) so their capacity is REUSED frame to frame —
+    // no per-frame allocation. frustumCullingEnabled_ is the runtime A/B toggle.
+    std::vector<RenderItem>        renderQueue_;                // flat draw list, rebuilt per frame
+    // `mutable`: recordScene is const (it issues GPU work but owns no state), yet it
+    // fills this reused scratch buffer while culling — the classic const-method cache.
+    mutable std::vector<const RenderItem*> visibleItems_;      // scratch: items that passed culling
+    bool                          frustumCullingEnabled_ = true;
 
     // Post-processing (Step 10). The scene is rendered into an off-screen HDR color
     // target (sceneHdr_) instead of straight to the swapchain; a chain of fullscreen

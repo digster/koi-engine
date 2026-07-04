@@ -442,3 +442,27 @@ measured vs a stashed pre-change capture: not byte-identical but only 240/3.69M 
 `documentation/docs/20-geometry-utilities.html` + nav/index links;
 README/ARCHITECTURE/ROADMAP updated (geometry utils ✅, normal matrix ✅, `Mat4` inverse ✅). Deferred:
 render-queue extraction + actual draw-culling, ray-cast picking UI, ray-plane/ray-sphere tests.
+
+> Pick up something from the roadmap to work on next.
+> [In plan mode: the roadmap flagged CI + golden images as the highest-leverage next move; presented it,
+>  but the user twice asked for **non-CI options**, then chose **render queue + frustum culling**. Also
+>  directed: update ROADMAP to **deprioritize** cross-platform + CI (do it *after* the other tracks).]
+
+Delivered **Step 20**: render queue extraction + frustum culling. New `src/renderer/RenderQueue.hpp`/`.cpp`
+introduces a flat `RenderItem { mesh, material, world, worldBounds }` list and three functions:
+`computeLocalBounds` (a mesh's model-space `Aabb` folded from its vertices), `buildRenderQueue` (walk the
+node tree once → flat list) and `cullToFrustum` (visibility filter reusing Step 19's `Frustum::intersectsAabb`).
+`Mesh` now stores its local `Aabb` (computed in `createMesh` before the vertices are gone). `GpuRenderer`
+builds the queue once per frame in `renderSceneAndPost`; the recursive `recordNode`/`recordShadowNode` became a
+per-item `submitItem` + a shadow loop. The **camera pass is frustum-culled** (runtime toggle key `0`, logged
+drawn/total count); the **shadow pass stays unculled** (an off-screen caster can still cast an in-view shadow —
+the culling trap, called out in code + doc). Pure restructuring (no math changed), so the `KOI_CAPTURE` frame
+is **byte-for-byte identical** (same MD5) to Step 19 — the proof it's behaviour-preserving; culling verified to
+fire by temporarily yawing the camera 180° (`drew 0 / 9 (culled 9)`). Verified: warning-clean build, **all 96
+doctests pass** (new `tests/test_render_queue.cpp`: bounds computation + cull filter — in-view kept,
+behind/beside culled, straddling kept, order preserved, output cleared). New tutorial
+`documentation/docs/21-render-queue-and-frustum-culling.html` + nav/index-card links;
+README/ARCHITECTURE/ROADMAP updated (render-queue pivot ✅, frustum culling ✅). Also **deprioritized
+cross-platform CI + golden images** across ROADMAP (still a 1.0 requirement, but deferred to after the learning
+tracks). Deferred: sorting the queue by material/pipeline, instancing, culling the shadow pass to the light
+frustum, ray-cast picking.

@@ -151,6 +151,7 @@ add_library(koi_core STATIC
     src/renderer/Mesh.cpp
     src/renderer/ModelLoader.cpp
     src/renderer/Primitives.cpp
+    src/renderer/RenderQueue.cpp
     src/renderer/Shader.cpp
     src/renderer/Texture.cpp
     src/scene/Camera.cpp
@@ -203,6 +204,7 @@ add_executable(koi-tests
     tests/test_math.cpp
     tests/test_quat.cpp
     tests/test_geometry.cpp
+    tests/test_render_queue.cpp
     tests/test_camera.cpp
     tests/test_transform.cpp
     tests/test_node.cpp

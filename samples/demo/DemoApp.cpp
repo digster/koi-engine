@@ -381,6 +381,17 @@ void DemoApp::onEvent(Engine& engine, const SDL_Event& event) {
                     KOI_INFO("Image-based lighting: %s", on ? "on" : "off");
                     break;
                 }
+                case SDLK_0: {
+                    // Step 20: toggle FRUSTUM CULLING. It's on by default and invisible
+                    // in a scene where everything is on-screen — but the renderer logs
+                    // the drawn/culled counts, so turning it off (then flying so objects
+                    // leave the view) shows the count it was saving. Purely a perf switch:
+                    // what remains on screen is identical either way.
+                    const bool on = !engine.renderer().frustumCullingEnabled();
+                    engine.renderer().setFrustumCullingEnabled(on);
+                    KOI_INFO("Frustum culling: %s", on ? "on" : "off");
+                    break;
+                }
                 default:
                     break;
             }

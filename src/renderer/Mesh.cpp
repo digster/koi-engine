@@ -3,12 +3,13 @@
 namespace koi {
 
 Mesh::Mesh(SDL_GPUDevice* device, SDL_GPUBuffer* vertexBuffer,
-           SDL_GPUBuffer* indexBuffer, Uint32 indexCount,
+           SDL_GPUBuffer* indexBuffer, Uint32 indexCount, const Aabb& localBounds,
            SDL_GPUIndexElementSize indexElementSize)
     : device_(device),
       vertexBuffer_(vertexBuffer),
       indexBuffer_(indexBuffer),
       indexCount_(indexCount),
+      localBounds_(localBounds),
       indexElementSize_(indexElementSize) {}
 
 Mesh::~Mesh() {
