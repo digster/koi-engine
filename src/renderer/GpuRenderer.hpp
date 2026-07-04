@@ -25,9 +25,10 @@
 #include <string>  // std::string — cubemap face paths
 
 #include "math/Mat4.hpp"
-#include "renderer/PostProcess.hpp"  // PostSettings (passed into renderFrame/captureFrame)
+#include "renderer/FrameView.hpp"    // FrameView — the one bundle renderFrame/captureFrame consume
+#include "renderer/PostProcess.hpp"  // PostSettings (a FrameView field)
 #include "renderer/Vertex.hpp"  // createMesh takes a std::span<const Vertex>
-#include "scene/Light.hpp"  // std::span<const Light> passed into renderFrame/captureFrame (SDL-free)
+#include "scene/Light.hpp"  // Light — a FrameView field (SDL-free)
 
 namespace koi {
 
@@ -128,25 +129,20 @@ public:
     void setIblEnabled(bool enabled) { iblEnabled_ = enabled; }
     [[nodiscard]] bool iblEnabled() const { return iblEnabled_; }
 
-    // Render exactly one frame: acquire a swapchain image, draw every mesh in
-    // `sceneRoot` (each through its own world matrix and its node's material) as seen
-    // through the camera `view` into an off-screen HDR target, run the post-processing
-    // chain (`post` selects which effects), and present the result. `cameraPos` (the
-    // eye in world space) feeds the lighting's specular highlight. `lights` is the
-    // scene's active light list (Step 11); light 0 is the shadow-casting sun.
-    void renderFrame(const SDL_FColor& clearColor, const Mat4& view,
-                     const Node& sceneRoot, const Vec3& cameraPos,
-                     std::span<const Light> lights, const PostSettings& post);
+    // Render exactly one frame from a FrameView `fv`: acquire a swapchain image,
+    // draw every mesh in `fv.root` (each through its own world matrix and its node's
+    // material) as seen through the camera `fv.view` into an off-screen HDR target,
+    // run the post-processing chain (`fv.post` selects which effects), and present the
+    // result. `fv.cameraPos` (the eye in world space) feeds the specular highlight;
+    // `fv.lights` is the active light list (Step 11), light 0 the shadow-casting sun.
+    void renderFrame(const FrameView& fv);
 
     // Render one frame into an OFF-SCREEN texture (not the window), download the
     // pixels back to the CPU, and save them to `path` as a BMP. Our headless
     // visual-debugging tool: it captures exactly what the engine draws (the same
-    // `sceneRoot` + `texture` through `view`) without a visible window. Returns
-    // false (after logging) on failure. See docs / CLAUDE.md.
-    [[nodiscard]] bool captureFrame(const char* path, const SDL_FColor& clearColor,
-                                    const Mat4& view, const Node& sceneRoot,
-                                    const Vec3& cameraPos, std::span<const Light> lights,
-                                    const PostSettings& post);
+    // `fv` the live path would) without a visible window. Returns false (after
+    // logging) on failure. See docs / CLAUDE.md.
+    [[nodiscard]] bool captureFrame(const char* path, const FrameView& fv);
 
 private:
     // Build the graphics pipeline (loads + compiles shaders, and describes the

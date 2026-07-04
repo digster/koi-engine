@@ -3,7 +3,7 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 16 (window & render loop, the first triangle, geometry in GPU
+through Step 17 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
@@ -20,7 +20,8 @@ per-vertex tangent + **TBN** basis, with **mipmaps** and **anisotropic filtering
 the environment lights the surfaces themselves and metals reflect their surroundings, and **glTF PBR
 material import** — reading a model's base-colour / metallic-roughness / normal / AO / **emissive** maps
 straight from the file (PNG/JPG decoded by **stb_image**, colour textures handled as **sRGB**), proven by
-loading the Khronos **Damaged Helmet**).
+loading the Khronos **Damaged Helmet**, and finally an **engine/app separation** that lifts the demo out of
+the engine into a `samples/` app behind a public `koi::Application` interface).
 
 ## Guiding principles
 
@@ -38,32 +39,45 @@ loading the Khronos **Damaged Helmet**).
 ## Subsystem map
 
 ```
-                 ┌──────────────┐
-   main.cpp ───► │   Engine     │  owns lifecycle + main loop
-                 └──────┬───────┘
-            creates ┌───┴────┐ creates
-                    ▼        ▼
-            ┌────────────┐  ┌──────────────┐
-            │  Window    │  │ GpuRenderer  │
-            │ (SDL_Window│  │ (SDL_GPUDevice
-            │  RAII)     │  │  + swapchain)│
-            └────────────┘  └──────────────┘
-                    ▲              │
-                    └── claims ────┘  (renderer attaches its
-                                       swapchain to the window)
+   samples/demo/main.cpp
+         │ creates + runs
+         ▼
+   ┌──────────────┐   drives (onStart/onUpdate/    ┌───────────────────────┐
+   │   Engine     │ ──── onEvent/frameView) ─────►  │  Application (DemoApp) │
+   │ lifecycle +  │ ◄─── services (renderer(),      │  owns scene / camera / │
+   │  main loop   │        requestQuit()) ────────  │  lights / post; hooks  │
+   └──────┬───────┘        + FrameView (what to draw)└───────────────────────┘
+     creates ┌───┴────┐ creates
+             ▼        ▼
+     ┌────────────┐  ┌──────────────┐
+     │  Window    │  │ GpuRenderer  │
+     │ (SDL_Window│  │ (SDL_GPUDevice
+     │  RAII)     │  │  + swapchain)│
+     └────────────┘  └──────────────┘
+             ▲              │
+             └── claims ────┘  (renderer attaches its
+                                swapchain to the window)
 
    Log.hpp  ── cross-cutting: leveled logging used by everyone
 ```
 
+Step 17 drew the **engine/app boundary**: `koi_core` (everything under `src/`) is the reusable
+engine and knows nothing about any particular scene; the demo lives under `samples/demo/` as a
+`koi::Application` that the engine *drives* by inversion of control. The two talk through a tiny
+interface ([`Application`](src/core/Application.hpp)) plus a per-frame [`FrameView`](src/renderer/FrameView.hpp)
+bundle. See the *Engine / app separation (Step 17)* section below.
+
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| `Engine` | [src/core/Engine.*](src/core/) | Owns subsystems + the camera + the scene graph, runs the game loop, computes delta-time, routes input, builds the demo scene (`buildScene`: meshes + textures + materials, assigned to nodes), animates + propagates transforms each frame, controls startup/shutdown order. |
+| `Engine` | [src/core/Engine.*](src/core/) | Owns the **reusable machinery only**: SDL, the `Window`, the `GpuRenderer`, and the main loop (delta-time, event pump, OS-quit, the headless `KOI_CAPTURE`/`KOI_MAX_FRAMES` paths), plus startup/shutdown order. Owns **no** scene/camera/lights. `run(Application&)` drives an app by inversion of control (`onStart`/`onUpdate`/`onEvent`/`frameView`/`onShutdown`) and exposes services to it (`renderer()`, `requestQuit()`). Step 17. |
+| `Application` | [src/core/Application.hpp](src/core/Application.hpp) | Header-only abstract interface (Step 17) — the engine/app boundary. Hooks: `onStart` (build content), `onUpdate(dt)` (animate + input), `onEvent` (per-event input; default no-op), `frameView()` (return a `FrameView` to draw), `onShutdown` (release GPU resources while the device is still alive). An app subclasses it and holds its own scene/camera/lights. |
+| `FrameView` | [src/renderer/FrameView.hpp](src/renderer/FrameView.hpp) | Header-only value (Step 17): the per-frame render bundle — clear colour, `view` matrix, scene `root` (non-owning), `cameraPos`, `lights` span, `PostSettings`. Produced by `Application::frameView()`, consumed by both `renderFrame` and `captureFrame`, so the live and headless paths can't drift. Owns nothing. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
 | `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines), the (Step 14) **skybox** resources (a `CUBE` **cubemap** texture, a CLAMP_TO_EDGE cubemap sampler, a skybox pipeline, and the cube mesh drawn around the camera), and the (Step 15) **image-based-lighting** resources (three bake pipelines, a trilinear CLAMP sampler, and the baked **irradiance** cube + **prefiltered** cube + **BRDF LUT** targets). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload and choosing an **sRGB** format for colour maps — Step 16; `createTextureFromRGBA` for already-decoded bytes; `loadCubemap` uploads six faces into one cube texture, then `bakeIbl` bakes the IBL maps from it) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) runs: **shadow pass** → **scene pass** into the HDR target (`recordScene`; binds the material's four maps per draw + the **emissive** map at slot 8 (Step 16), shadow map at slot 4, the three IBL maps at slots 5–7, then draws the **sky last** via `recordSkybox`) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data. |
-| `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the Engine drives from input and hands to the renderer, plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
+| `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the **app** drives from input and hands to the renderer (via `FrameView`), plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
 | `Material` | [src/scene/Material.hpp](src/scene/Material.hpp) | A header-only appearance bundle: an `albedo` texture + **PBR** params `metallic`/`roughness` (Step 12) — now **factors** — plus (Step 13) three optional map handles: `metalRough` (glTF-packed G=roughness, B=metallic), `normalMap` (tangent-space), and `ao`; and (Step 16) an optional `emissive` map + `emissiveFactor` (default 0 ⇒ no glow, so existing materials are unchanged). Any map may be null; the renderer binds a neutral 1×1 fallback so map-less materials render as in Step 12. Shared by `shared_ptr`; a `Node` references one; the renderer binds all five maps per draw. |
 | `Pbr` | [src/renderer/Pbr.hpp](src/renderer/Pbr.hpp) | Header-only, SDL-free (Step 12): pure CPU mirrors of the Cook-Torrance BRDF sub-terms — `distributionGGX` (D), `geometrySmith`/`geometrySchlickGGX` (G), `fresnelSchlick` (F), plus `kPi`. The shader in `triangle.frag` is the runtime truth; these exist so the microfacet math's shape is unit-tested headlessly (`tests/test_pbr.cpp`), the same pattern as `PostProcess.hpp`/`Light.hpp`. |
-| `Light` | [src/scene/Light.hpp](src/scene/Light.hpp) | Header-only, SDL-free (Step 11): a `Light` struct (type = directional/point/spot, position, direction, colour, intensity, range, spot-cone cosines, an `enabled` flag) plus pure helpers (`attenuation`, `spotFactor`, `activeLightCount`) that mirror the shader math for headless tests (`tests/test_light.cpp`). The `Engine` owns a `std::vector<Light>` and hands it to the renderer each frame, exactly like the camera + `PostSettings`. `MAX_LIGHTS` matches the shader's fixed array size. |
+| `Light` | [src/scene/Light.hpp](src/scene/Light.hpp) | Header-only, SDL-free (Step 11): a `Light` struct (type = directional/point/spot, position, direction, colour, intensity, range, spot-cone cosines, an `enabled` flag) plus pure helpers (`attenuation`, `spotFactor`, `activeLightCount`) that mirror the shader math for headless tests (`tests/test_light.cpp`). The **app** (`DemoApp`) owns a `std::vector<Light>` and hands it to the renderer each frame via `FrameView`, exactly like the camera + `PostSettings`. `MAX_LIGHTS` matches the shader's fixed array size. |
 | `ModelLoader` | [src/renderer/ModelLoader.*](src/renderer/) | `loadModel(path)` reads a model file into a **`LoadedModel`** (a `Mesh` **+** an optional `Material`): `.obj` via **tinyobjloader** (de-duplicating its separate v/vt/vn indices; geometry only — material null), `.glb/.gltf` via **cgltf**, which since **Step 16** also imports the file's PBR **material** (base-colour / metallic-roughness / normal / occlusion / **emissive** maps + factors). Its images (PNG/JPG) are decoded by **stb_image** — embedded `.glb` `buffer_view`s straight from memory, external URIs via `loadTexture` — with colour maps flagged **sRGB**. The single TU that pulls in those three third-party headers (defines their `*_IMPLEMENTATION`) — compiled warning-free (`-w`). |
 | `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count + element size: 16-bit for primitives, 32-bit for big loaded models). Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must die before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
 | `Texture` | [src/renderer/Texture.*](src/renderer/) | RAII owner of one `SDL_GPUTexture` (sampled image). Same non-owning-device lifetime rule as `Mesh`. Created via `GpuRenderer::loadTexture` (BMP → SDL; PNG/JPG → **stb_image**; decode → upload) or `createTextureFromRGBA` (already-decoded bytes, e.g. embedded glTF images), with an **sRGB** option for colour maps (Step 16); held by `shared_ptr`. A *sampler* (how to read it) is separate, reusable device state owned by the renderer. |
@@ -79,19 +93,24 @@ loading the Khronos **Damaged Helmet**).
 
 ## Data flow: one frame
 
-The render loop (in `Engine::run`) repeats:
+The render loop lives in `Engine::run(app)`; each iteration the engine calls back into the app
+(Step 17 — the engine owns the loop, the app owns the content):
 
 ```
-processEvents()  → SDL_PollEvent: Esc/close → stop; mouse motion → camera.addMouseLook
+Engine: processEvents(app) → SDL_PollEvent: OS-quit → stop; every event → app.onEvent(engine, ev)
+       │                       (DemoApp.onEvent: Esc → engine.requestQuit(); keys 1–9 toggles;
+       │                        mouse motion → camera.addMouseLook)
+dt               → dt = ΔSDL_GetTicksNS (clamped)
        │
-dt + input       → dt = ΔSDL_GetTicksNS (clamped); camera.processKeyboard(polled keys, dt)
+app.onUpdate(engine, dt) → camera.processKeyboard(polled keys, dt); spin a couple of nodes
+                   (rotationEuler += rate·dt); sceneRoot.updateWorldTransforms() caches world matrices
        │
-animate + update → spin a couple of nodes (rotationEuler += rate·dt);
-                   sceneRoot.updateWorldTransforms() caches every node's world matrix
+fv = app.frameView()   → bundle {clearColor, view = camera.viewMatrix(), root = sceneRoot,
+       │                          cameraPos, lights, post}
        │
-renderFrame(view,      → in GpuRenderer (view = camera.viewMatrix()); renderSceneAndPost:
-  sceneRoot, cameraPos,   1. acquire command buffer + swapchain image (+ its size)
-  lights, post)          2. ensureSceneTargets: depth + HDR scene + half-res bloom + LDR match size
+renderFrame(fv)        → in GpuRenderer; renderSceneAndPost:
+                     1. acquire command buffer + swapchain image (+ its size)
+                     2. ensureSceneTargets: depth + HDR scene + half-res bloom + LDR match size
                      3. SHADOW PASS: compute lightViewProj from the SUN's direction
                         (lights[0]); render scene depth into the shadow map (depth-only)
                      4. SCENE PASS: begin render pass into the HDR target (color + depth CLEAR);
@@ -606,22 +625,52 @@ this step feeds it a real asset — the Khronos **Damaged Helmet** — by import
   base64 data-URI images, and colour management beyond colour textures. The helmet `.glb` is downloaded at
   configure time (soft-fail) and gitignored.
 
+### Engine / app separation (Step 17)
+
+The demo stopped living *inside* the engine. Through Step 16, `Engine` built the scene, placed the
+lights, spun the hub and read the keyboard — so `koi_core` couldn't be reused without editing the demo
+out of it. Step 17 draws the **public API boundary** the *Path to 1.0* track calls the defining
+production milestone.
+
+- **Inversion of control.** The frame loop stays in the engine (only it can acquire a swapchain image,
+  pace to the display and submit), but its *contents* are the app's. So `Engine::run(Application&)` calls
+  *back* into the app's hooks — `onStart` / `onUpdate(dt)` / `onEvent` / `frameView` / `onShutdown` — on an
+  object it knows nothing concrete about. `Engine` now holds no `Node`, `Camera`, `Light` or `PostSettings`
+  at all; it exposes **services** (`renderer()`, `requestQuit()`) the hooks reach back for.
+- **`Application`** ([src/core/Application.hpp](src/core/Application.hpp)) is the interface; **`DemoApp`**
+  ([samples/demo/DemoApp.cpp](samples/demo/DemoApp.cpp)) is the demo, now a `koi::Application` under
+  `samples/` that owns the scene/camera/lights/post and holds the old `buildScene`/`setupLights`/animation/
+  input code. `samples/demo/main.cpp` wires an `Engine` to a `DemoApp` in five lines — the whole contract a
+  real client sees.
+- **`FrameView`** ([src/renderer/FrameView.hpp](src/renderer/FrameView.hpp)) is the one value that crosses
+  the boundary each frame: `{clearColor, view, root, cameraPos, lights, post}`. `frameView()` produces it;
+  both `renderFrame(fv)` and `captureFrame(path, fv)` consume it, so the live and headless paths share a
+  single "what to draw" definition (they previously took the same six args separately).
+- **Lifetime.** Because the app now owns the GPU-backed scene but the engine owns the device, the app frees
+  its scene in `onShutdown()` — which `run()` calls **while the renderer is still alive** — preserving the
+  "meshes die before the device" rule across the new ownership split (see *Lifecycle & ownership*).
+- **Behaviour-preserving.** Pure structural refactor: the `KOI_CAPTURE` frame is **byte-identical** to
+  Step 16. The executable is now `koi-demo` (built from `samples/demo/`).
+
 ## Lifecycle & ownership
 
 Startup builds bottom-up, shutdown tears down top-down — the standard RAII
 ordering that keeps resources valid for exactly as long as something uses them:
 
 ```
-init:      SDL_Init → Window → GpuRenderer (claims Window) → buildScene + loadTexture (upload meshes + image)
-shutdown:  Scene + Texture (free GPU resources) → GpuRenderer (releases Window) → Window → SDL_Quit
+init:       SDL_Init → Window → GpuRenderer (claims Window)
+run(app):   app.onStart (build scene + loadTexture: upload meshes + images) → loop → app.onShutdown (free scene)
+shutdown:   GpuRenderer (releases Window) → Window → SDL_Quit
 ```
 
-Two ordering constraints, both enforced by `Engine` via smart-pointer resets:
-`GpuRenderer` must be destroyed before `Window` (it holds the window's swapchain);
-and the **scene and the texture** must be destroyed before `GpuRenderer` (each `Mesh`
-and `Texture` frees its GPU resource through the renderer's device — see the lifetime
-rule above). So `shutdown()` resets `sceneRoot_` and `texture_`, then `renderer_`,
-then `window_`.
+Two ordering constraints (Step 17 splits *where* each is enforced):
+`GpuRenderer` must be destroyed before `Window` (it holds the window's swapchain) —
+enforced by `Engine::shutdown()`, which resets `renderer_` then `window_`. And the
+**app's scene + textures** must be destroyed before `GpuRenderer` (each `Mesh` and
+`Texture` frees its GPU resource through the renderer's device — see the lifetime rule
+above); since the app now *owns* the scene, it frees it in **`onShutdown()`**, which
+`Engine::run` calls **while `renderer_` is still alive**. `DemoApp::onShutdown` resets
+its `sceneRoot_`; the engine then tears the device down safely.
 
 > One in-renderer exception (Step 14): the skybox **cube mesh** is a `shared_ptr<Mesh>`
 > *member* of `GpuRenderer`, not part of the scene. Since member destructors run only
@@ -641,12 +690,15 @@ then `window_`.
 
 CMake (≥ 3.28) with `CMakePresets.json` for one-command builds.
 
-- `koi_core` — static library with all engine code. Building the engine as a
-  library (rather than inlining it into `main.cpp`) lets the test runner link the
-  **same** code the app runs.
-- `koi-engine` — the application executable (`main.cpp` + `koi_core`), depends on
-  `koi_shaders` so compiled shaders are always present.
-- `koi-tests` — doctest runner (`koi_core` + the doctest header).
+- `koi_core` — static library with all **engine** code under `src/` (no demo since
+  Step 17). Building the engine as a library lets both the sample app and the test
+  runner link the **same** code, and makes the engine/app boundary a real link boundary.
+- `koi-demo` — the **sample** application executable (`samples/demo/main.cpp` +
+  `samples/demo/DemoApp.cpp`, linking `koi_core`), depends on `koi_shaders` + `koi_assets`
+  so compiled shaders and assets sit next to it. Step 17 renamed this from `koi-engine`
+  and moved its sources out of `src/`.
+- `koi-tests` — doctest runner (`koi_core` + the doctest header); Step 17 added
+  `tests/test_application.cpp` (the `Application`/`FrameView` boundary).
 - `koi_warnings` — an INTERFACE target carrying strict warning flags, applied to
   our code only (not to SDL3 / doctest).
 - `koi_shaders` — a custom target that compiles `shaders/*` to `build/shaders/`
@@ -740,8 +792,15 @@ Future milestones slot into this structure without reshaping it:
   AO map handles (with neutral 1×1 fallbacks so map-less materials are unchanged), the fragment shader
   reads five samplers and perturbs the normal via the TBN basis, and textures gained **mipmaps** +
   **anisotropic filtering**. No BRDF change — only the inputs became per-pixel.
-- **Step 14+:** the next features — a **skybox** / environment cubemap, then **image-based lighting**
-  for ambient + metal reflections, more shadow casters (sun cascades, point-light cube maps), and
-  eventually deferred/clustered shading — slot into this same layering without reshaping it. See
-  [`ROADMAP.md`](ROADMAP.md) for the sequenced plan and the wider engine-systems tracks (animation,
-  physics, audio, tooling, gameplay) that grow alongside the renderer.
+- **Steps 14–16 (done):** a **skybox** / environment cubemap, **image-based lighting** (irradiance +
+  prefilter + BRDF-LUT bakes so the environment lights surfaces and metals reflect it), and **glTF PBR
+  material import** (the Damaged Helmet) — each detailed in its own section above; all slotted into this
+  layering without reshaping it.
+- **Step 17 (done):** **engine/app separation** — the first *structural* rather than rendering step. The
+  demo lifted out of `koi_core` into a `samples/demo/` **`koi::Application`**, with the engine driving it by
+  inversion of control through the `Application` hooks + a `FrameView` bundle (see the section above). The
+  layering was unchanged; the demo simply moved to the other side of a public API boundary.
+- **Next:** cross-platform **CI + golden-image** tests, then the learning thread (**quaternions**,
+  **transparency**), more shadow casters (sun cascades, point-light cube maps), and eventually
+  deferred/clustered shading — all slot into this same layering. See [`ROADMAP.md`](ROADMAP.md) for the
+  sequenced plan and the wider engine-systems tracks (animation, physics, audio, tooling, gameplay).

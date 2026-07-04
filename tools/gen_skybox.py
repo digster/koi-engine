@@ -60,7 +60,7 @@ def _normalize(v: np.ndarray) -> np.ndarray:
 
 
 # The sun's DIRECTION IN THE SKY = opposite of the sun light's travel direction
-# (Engine::setupLights uses sun.direction = (-0.4, -1.0, -0.3)).
+# (DemoApp::setupLights uses sun.direction = (-0.4, -1.0, -0.3)).
 SUN_DIR = _normalize(np.array([0.4, 1.0, 0.3], dtype=np.float64))
 
 # Palette (linear-ish RGB in [0,1]). Tuned against the Step 10 post chain: the

@@ -9,14 +9,15 @@ in [`documentation/docs/`](documentation/docs/index.html) that explains the unde
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`documentation/docs/index.html`](documentation/docs/index.html) in a browser.
 
-> **Current status — Step 16:** adds **glTF PBR material import**. Materials are now loaded **from a
-> file** instead of hand-authored: `loadModel` returns a mesh *and* a material, and the glTF loader reads
-> base-colour, metallic-roughness, normal, occlusion and **emissive** maps (+ factors) straight out of the
-> file. A new single-header dependency, **stb_image**, decodes the PNG/JPG images (embedded `.glb` textures
-> decode from memory). Two upgrades ride along: **sRGB** colour textures (so imported albedo is correct)
-> and an **emissive** term that also feeds the Step 10 bloom. The showcase is the Khronos **Damaged
-> Helmet** — a real production asset that now renders with correct base colour, sky reflections (IBL on its
-> imported metallic-roughness map), normal-mapped relief, AO, and glowing emissive vents.
+> **Current status — Step 17:** **engine/app separation**. The demo scene that used to live *inside* the
+> engine is now a standalone **sample app** that consumes the engine like any client would. `koi_core` keeps
+> the reusable machinery — window, renderer, and the main loop (plus the headless `KOI_CAPTURE` path) — and
+> drives a small public **`koi::Application`** interface (`onStart` / `onUpdate` / `onEvent` / `frameView`).
+> All the content and behaviour — the scene, camera, lights, animation and input — moved out to
+> [`samples/demo/`](samples/demo) as a `koi::Application`, so **nothing in `src/` hardcodes the demo**. A
+> single **`FrameView`** bundle carries "what to draw" across the boundary (shared by the live and capture
+> paths). The refactor is behaviour-preserving: the demo renders a **pixel-identical** frame, now built as
+> `./build/koi-demo`.
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
@@ -28,7 +29,7 @@ first principles, for readers new to graphics programming. The docs are plain HT
 brew install sdl3 cmake shaderc spirv-cross   # prerequisites (macOS)
 cmake --preset debug                          # configure
 cmake --build build                           # compile (also compiles shaders)
-./build/koi-engine                            # run — Esc or close to quit
+./build/koi-demo                              # run the sample app — Esc or close to quit
 ```
 
 Full instructions, controls, and tests: [documentation/docs/00-getting-started.html](documentation/docs/00-getting-started.html).
@@ -100,12 +101,16 @@ Full instructions, controls, and tests: [documentation/docs/00-getting-started.h
   from a file: what glTF is, image vs. texture vs. sampler, decoding embedded PNGs with stb_image, the
   sRGB-vs-linear gamma trap, and an emissive term that feeds bloom, mapped to the Step 16 code that
   imports the Damaged Helmet's full PBR material from its `.glb`.
+- [documentation/docs/18-engine-app-separation.html](documentation/docs/18-engine-app-separation.html) — separating the
+  reusable engine from the specific app: inversion of control and the `Application` hooks, one `FrameView`
+  bundle of "what to draw", and the shutdown ordering that frees GPU resources safely, mapped to the Step 17
+  code that lifts the demo out of the engine into a `samples/` app.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
 
 The engine grows one runnable milestone at a time. See **[ROADMAP.md](ROADMAP.md)** for the full
-picture — every completed step (0–16) and the phased plan beyond: numbered next steps, then themed
+picture — every completed step (0–17) and the phased plan beyond: numbered next steps, then themed
 tracks across rendering, animation, physics, audio, tooling, and gameplay.
 
 ## Requirements

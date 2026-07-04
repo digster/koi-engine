@@ -61,9 +61,11 @@ project-specific preferences stated by the project owner; global preferences in
 
 - To verify what the engine actually renders **without** screen-recording access
   or a visible window, use the built-in capture: `KOI_CAPTURE=<path.bmp>
-  ./build/koi-engine` renders a single frame into an off-screen texture, downloads
+  ./build/koi-demo` renders a single frame into an off-screen texture, downloads
   the pixels, and saves them as a BMP (implemented in `GpuRenderer::captureFrame`,
-  triggered from `Engine::run`). Prefer this over taking screen screenshots.
+  triggered from `Engine::run` for the app's `frameView()`). Prefer this over taking
+  screen screenshots. (Step 17 renamed the executable from `koi-engine` to `koi-demo`
+  when the demo moved to `samples/demo/`.)
 - View it / convert to PNG with macOS `sips`: `sips -s format png out.bmp --out out.png`.
 - As the renderer gains features, capturing a frame is the quickest way to confirm
   output (and produces a shareable image for the user).

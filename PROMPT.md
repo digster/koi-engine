@@ -364,3 +364,29 @@ reflections (IBL on its imported MR map), normal-mapped relief, AO, and glowing 
 tutorial `documentation/docs/17-gltf-pbr-import.html` + nav/index links (641/641 doc links resolve);
 README/ARCHITECTURE/ROADMAP updated. Deferred: OBJ `.mtl`, multi-primitive/multi-material meshes, glTF
 node hierarchy, data-URI images, per-texture samplers, Sponza.
+
+---
+
+**Step 17 — Engine / app separation (2026-07-03):**
+> Pick something from the roadmap to work on next.
+> [chose engine/app separation; via clarifying questions: Application base-class API
+> shape, and demo → samples/demo/ producing a koi-demo executable]
+
+Delivered **Step 17**: the demo scene that used to live *inside* the engine is now a standalone **sample
+app**, so `koi_core` is genuinely reusable. `Engine` lost `buildScene`/`setupLights`/the demo animation
+and input and now owns only the reusable machinery (window, renderer, main loop, delta-time, the
+`KOI_CAPTURE`/`KOI_MAX_FRAMES` paths); `run()` became `bool run(Application&)`, driving a new public
+**`koi::Application`** interface (`onStart`/`onUpdate`/`onEvent`/`frameView`/`onShutdown`) by inversion of
+control, and exposes services (`renderer()`, `requestQuit()`). A new **`FrameView`** bundle
+(`{clearColor, view, root, cameraPos, lights, post}`) is the one value crossing the boundary each frame;
+`renderFrame`/`captureFrame` were collapsed to take a single `const FrameView&` (the two paths previously
+took the same six args separately). All content/behaviour moved to `samples/demo/` as
+`DemoApp : koi::Application` (+ a five-line `main.cpp`); `src/main.cpp` was deleted. CMake replaced the
+`koi-engine` target with `koi-demo` (built from `samples/demo/`) and retargeted the shader/asset deps.
+Lifetime hazard handled via `onShutdown` (the app frees its GPU-backed scene while the renderer is still
+alive). Verified: clean strict-warning build, **all doctests pass** (added `tests/test_application.cpp`
+for the boundary), a `KOI_MAX_FRAMES=3` run exits cleanly with zero GPU validation errors, and — the key
+proof — a `KOI_CAPTURE` frame is **byte-identical (same MD5)** to Step 16, so the refactor is provably
+behaviour-preserving. New tutorial `documentation/docs/18-engine-app-separation.html` + nav/index links;
+README/ARCHITECTURE/ROADMAP/CLAUDE.md updated (capture cmd → `./build/koi-demo`). Deferred: semantic
+versioning, a dedicated API-reference doc, multiple sample apps, CI + golden images (the next move).

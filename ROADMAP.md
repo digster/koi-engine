@@ -27,19 +27,24 @@ Three principles shape the plan:
 - **Step 16** (glTF PBR material import) shipped as
   [`documentation/docs/17-gltf-pbr-import.html`](documentation/docs/17-gltf-pbr-import.html); it loads a real
   production asset (the Khronos **Damaged Helmet**) with its material imported straight from the file — and
-  brought **emissive** surfaces and **sRGB colour textures** along with it. With the material/lighting arc
-  closed *and* now proven on real content, **the highest-leverage next moves are the production items** —
-  engine/app separation, then cross-platform CI + golden images (see *Path to 1.0*) — interleaved with
-  quaternions and transparency (see the suggested path).
+  brought **emissive** surfaces and **sRGB colour textures** along with it.
+- **Step 17** (engine/app separation) shipped as
+  [`documentation/docs/18-engine-app-separation.html`](documentation/docs/18-engine-app-separation.html); it
+  lifted the demo out of the engine into a [`samples/demo/`](samples/demo) app behind a public
+  **`koi::Application`** interface, so `koi_core` is now genuinely reusable. With the material/lighting arc
+  closed, proven on real content, *and* the engine/app boundary drawn, **the highest-leverage next move is
+  cross-platform CI + golden images** (see *Path to 1.0*) — interleaved with quaternions and transparency
+  (see the suggested path).
 
 ---
 
-## ✅ Completed — Steps 0–16
+## ✅ Completed — Steps 0–17
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
 post-processed shading of loaded models under many lights, with per-pixel texture + normal maps,
 a cubemap sky, and image-based lighting that lets the environment light the scene — now proven by
-importing a real glTF PBR asset (the Damaged Helmet) with emissive surfaces and correct sRGB colour.
+importing a real glTF PBR asset (the Damaged Helmet) with emissive surfaces and correct sRGB colour,
+and then made reusable by separating the engine from the app (Step 17).
 Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
 [`documentation/docs/index.html`](documentation/docs/index.html).
@@ -63,6 +68,7 @@ linked per row below (note how the doc number runs one ahead of the step), and a
 | **14** | Skybox & cubemaps | cubemap textures sampled by direction, cube-around-camera skybox, translation-stripped view, far-plane depth trick (LEQUAL + `.xyww`) | [documentation/docs/15](documentation/docs/15-skybox-and-cubemaps.html) |
 | **15** | Image-based lighting | diffuse irradiance convolution, specular split-sum (prefiltered env + BRDF LUT), importance sampling + Hammersley, baking into cubemap faces | [documentation/docs/16](documentation/docs/16-image-based-lighting.html) |
 | **16** | glTF PBR import | glTF material/texture import (base-colour/MR/normal/AO/**emissive**), PNG/JPG decode via stb_image, **sRGB** colour textures, emissive term feeding bloom, the Damaged Helmet | [documentation/docs/17](documentation/docs/17-gltf-pbr-import.html) |
+| **17** | Engine/app separation | public **`koi::Application`** interface (onStart/onUpdate/onEvent/frameView), **`FrameView`** render bundle, inversion of control, demo lifted from `src/` to `samples/demo/` (pixel-identical) | [documentation/docs/18](documentation/docs/18-engine-app-separation.html) |
 
 > The prerequisites page [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) (building,
 > running, testing, project layout) is not a numbered step.
@@ -142,6 +148,24 @@ provides, and both build toward "metals that reflect their surroundings."
   helmet upright itself); engine-wide colour management beyond colour textures; **Sponza**.
 - **Why here:** it pays off the Step 13 IOU (that step built the per-pixel map machinery but fed it
   generated BMPs), and it puts every Step 12–15 subsystem to work on a single real asset.
+
+### ✅ Step 17 — Engine / app separation *(done — [tutorial](documentation/docs/18-engine-app-separation.html))*
+- **Shipped:** the demo scene that used to live *inside* the engine is now a standalone **sample app**.
+  `koi_core` keeps the reusable machinery — window, [`GpuRenderer`](src/renderer/GpuRenderer.cpp), and the
+  main loop (plus the headless `KOI_CAPTURE`/`KOI_MAX_FRAMES` paths) — and drives a small public
+  **`koi::Application`** interface ([`src/core/Application.hpp`](src/core/Application.hpp):
+  `onStart`/`onUpdate`/`onEvent`/`frameView`/`onShutdown`) by **inversion of control**. All content and
+  behaviour (scene, camera, lights, animation, input) moved to [`samples/demo/`](samples/demo) as
+  `DemoApp : koi::Application`, so **nothing in `src/` hardcodes demo content**. A single
+  **[`FrameView`](src/renderer/FrameView.hpp)** bundle carries "what to draw" across the boundary and unifies
+  the live (`renderFrame`) and capture (`captureFrame`) paths. The executable is now `koi-demo` (built from
+  `samples/demo/`). Verified behaviour-preserving: the capture is **byte-identical** to Step 16.
+- **Deliberately deferred:** semantic versioning + a deprecation policy; a two-tier **API reference** doc
+  (the tutorials teach concepts, consumers still need reference); multiple sample apps; a formal
+  services/facade beyond `Engine::renderer()`.
+- **Why here:** it's the *defining* production milestone (see *Path to 1.0*) — until the demo lifts out
+  cleanly, the engine can't be built on. Doing it now, before more systems land, stops each new subsystem
+  from baking more demo into the engine.
 
 ---
 
@@ -296,11 +320,12 @@ The track that turns "my learning engine" into "an engine apps can ship on". It 
 *Platform & build* track and is deliberately **not** last-in-line — its first two items are the
 highest-leverage things the project can do after Step 15.
 
-- **Engine / app separation** — *the defining milestone for "production apps".* Today
-  [`Engine::buildScene`](src/core/Engine.cpp) hardcodes the demo scene and `main.cpp` *is* the app.
-  Move the demo into a `samples/` (or sandbox) app that consumes `koi_core` like any client would,
-  and decide the **public API boundary**. Every step taken before this bakes more demo into the
-  engine. Later: semantic versioning, deprecation policy, **API reference docs** (the tutorials
+- ✅ **Engine / app separation** *(done — Step 17,
+  [tutorial](documentation/docs/18-engine-app-separation.html))* — *the defining milestone for "production
+  apps".* The demo moved out of the engine into a [`samples/demo/`](samples/demo) app that consumes
+  `koi_core` through the public **`koi::Application`** interface (`onStart`/`onUpdate`/`onEvent`/`frameView`)
+  plus a [`FrameView`](src/renderer/FrameView.hpp) render bundle; nothing in `src/` hardcodes demo content
+  anymore. Still to do: semantic versioning, deprecation policy, and **API reference docs** (the tutorials
   teach concepts; consumers need reference).
 - **Cross-platform CI + golden-image regression** — only macOS/Metal has ever executed; the Step 9
   `spirv-cross` sampler-swap bug is proof that backend-specific breakage is real and invisible to
@@ -341,7 +366,9 @@ Step 15  image-based lighting (IBL)                  ✅ done
    │
 Step 16  glTF PBR material import (Damaged Helmet)   ✅ done
    │
-engine/app separation ──▶ CI + golden images     ◀── next; highest production leverage, do early
+Step 17  engine/app separation                       ✅ done
+   │
+CI + golden images                               ◀── next; highest production leverage, do early
    │
 quaternions ──▶ transparency + blending ──▶ glTF node hierarchy / Sponza
    │
@@ -365,8 +392,9 @@ cheap to respect and expensive to ignore.
 Feature lists don't define "production-ready" — **quality gates** do. Koi is 1.0 when all of
 these hold, regardless of how many tracks above are finished:
 
-- [ ] **Engine and app are separate**: real samples build against a documented public API, and
-      nothing in `src/` hardcodes demo content.
+- [x] **Engine and app are separate** *(Step 17)*: the demo builds against the public
+      `koi::Application` API, and nothing in `src/` hardcodes demo content. (A dedicated API
+      *reference* doc — beyond the concept tutorial + header comments — is still to come.)
 - [ ] **CI is green on at least two backends** (Metal + Vulkan; D3D12 when hardware allows):
       every commit builds, passes the doctest suite, and runs headless with **zero GPU
       validation errors**.
@@ -398,7 +426,7 @@ the ones before it:
 - **New shaders go through the toolchain.** Author once in GLSL under [`shaders/`](shaders/); the
   build compiles GLSL → SPIR-V (`glslc`) → MSL (`spirv-cross`). Remember the MSL entry point is
   `main0`, not `main`.
-- **Verify visually without a window.** `KOI_CAPTURE=<path.bmp> ./build/koi-engine` renders one frame
+- **Verify visually without a window.** `KOI_CAPTURE=<path.bmp> ./build/koi-demo` renders one frame
   to a BMP (convert with `sips -s format png out.bmp --out out.png`) — the quickest way to confirm
   output. Once golden-image CI exists (Path to 1.0 track), a step that changes rendering also adds
   or refreshes its golden capture.

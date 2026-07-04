@@ -78,13 +78,15 @@ cmake --build build       # compile everything</code></pre>
   <p>This produces two executables in <code>build/</code>:</p>
 
   <ul>
-    <li><code>koi-engine</code> — the application (opens the window).</li>
+    <li><code>koi-demo</code> — the sample application (opens the window). Since
+    <a href="18-engine-app-separation.html">Step 17</a> the demo is a client of the engine, built from
+    <code>samples/demo/</code>; the reusable engine itself is the <code>koi_core</code> library.</li>
     <li><code>koi-tests</code>  — the test runner.</li>
   </ul>
 
   <h2>Run</h2>
 
-  <pre><code>./build/koi-engine</code></pre>
+  <pre><code>./build/koi-demo</code></pre>
 
   <p>A 1280×720 window opens, cleared to a calm dark teal every frame.</p>
 
@@ -100,7 +102,7 @@ cmake --build build       # compile everything</code></pre>
   render a fixed number of frames and then exit cleanly — handy for smoke tests or CI
   where nobody is there to press a key:</p>
 
-  <pre><code>KOI_MAX_FRAMES=120 ./build/koi-engine</code></pre>
+  <pre><code>KOI_MAX_FRAMES=120 ./build/koi-demo</code></pre>
 
   <p><strong>Capture a frame to an image.</strong> To see exactly what the engine
   renders — without screen-recording or even a visible window — set
@@ -108,7 +110,7 @@ cmake --build build       # compile everything</code></pre>
   off-screen texture, saves it as a BMP, and exits. Great for visual debugging and
   for sharing a result:</p>
 
-  <pre><code>KOI_CAPTURE=/tmp/frame.bmp ./build/koi-engine
+  <pre><code>KOI_CAPTURE=/tmp/frame.bmp ./build/koi-demo
 sips -s format png /tmp/frame.bmp --out /tmp/frame.png   # optional: BMP -> PNG (macOS)</code></pre>
 
   <h2>Test</h2>
@@ -126,15 +128,17 @@ sips -s format png /tmp/frame.bmp --out /tmp/frame.png   # optional: BMP -> PNG 
   <pre class="diagram">koi-engine/
 ├── CMakeLists.txt        # build description (targets, dependencies, warnings)
 ├── CMakePresets.json     # named build configs (debug/release)
-├── docs/                 # these tutorials — read them alongside the code
-├── src/
-│   ├── main.cpp          # entry point — builds config, runs the Engine
+├── documentation/docs/   # these tutorials — read them alongside the code
+├── src/                  # koi_core: the reusable ENGINE (no demo content)
 │   ├── core/
+│   │   ├── Application.* # the engine/app boundary the engine drives (Step 17)
 │   │   ├── Log.hpp       # leveled logging (KOI_INFO/WARN/ERROR/DEBUG)
-│   │   ├── Engine.*      # owns subsystems + the main loop
+│   │   ├── Engine.*      # owns the window, renderer + the main loop
 │   │   └── Window.*      # RAII wrapper around the OS window
 │   └── renderer/
 │       └── GpuRenderer.* # the GPU device + per-frame rendering
+├── samples/
+│   └── demo/             # the koi-demo APP: main.cpp + DemoApp (a koi::Application)
 └── tests/
     └── test_core.cpp     # doctest-based tests</pre>
 

@@ -176,10 +176,18 @@ target_link_libraries(koi_core
     PRIVATE koi_warnings)
 
 # ----------------------------------------------------------------------------
-#  koi-engine — the actual application executable.
+#  koi-demo — a SAMPLE application that consumes koi_core like any client would.
+#  Step 17 moved the demo OUT of the engine: the scene, camera, lights and input
+#  now live under samples/ as a koi::Application (DemoApp), so nothing in src/
+#  hardcodes demo content. main.cpp just wires an Engine to the app and runs it.
 # ----------------------------------------------------------------------------
-add_executable(koi-engine src/main.cpp)
-target_link_libraries(koi-engine PRIVATE koi_core koi_warnings)
+add_executable(koi-demo
+    samples/demo/main.cpp
+    samples/demo/DemoApp.cpp)
+# The sample includes its own headers by bare name ("DemoApp.hpp"); koi_core's
+# headers come via its PUBLIC src/ include dir (inherited through the link below).
+target_include_directories(koi-demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/samples/demo)
+target_link_libraries(koi-demo PRIVATE koi_core koi_warnings)
 
 # ----------------------------------------------------------------------------
 #  koi-tests — the doctest-based test runner.
@@ -201,6 +209,7 @@ add_executable(koi-tests
     tests/test_pbr.cpp
     tests/test_tangent.cpp
     tests/test_ibl.cpp
+    tests/test_application.cpp
 )
 target_link_libraries(koi-tests PRIVATE koi_core doctest::doctest koi_warnings)
 add_test(NAME koi-tests COMMAND koi-tests)
@@ -288,7 +297,7 @@ koi_add_shader(brdf_lut.frag)
 # A target that builds all shader outputs, and a dependency so the app always has
 # up-to-date compiled shaders next to it.
 add_custom_target(koi_shaders ALL DEPENDS ${KOI_SHADER_OUTPUTS})
-add_dependencies(koi-engine koi_shaders)
+add_dependencies(koi-demo koi_shaders)
 
 # ----------------------------------------------------------------------------
 #  Assets — copied (not compiled) next to the executable.
@@ -317,4 +326,4 @@ foreach(asset ${ASSET_FILES})
 endforeach()
 
 add_custom_target(koi_assets ALL DEPENDS ${KOI_ASSET_OUTPUTS})
-add_dependencies(koi-engine koi_assets)
+add_dependencies(koi-demo koi_assets)

@@ -1939,9 +1939,16 @@ GpuRenderer::~GpuRenderer() {
     }
 }
 
-void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
-                              const Node& sceneRoot, const Vec3& cameraPos,
-                              std::span<const Light> lights, const PostSettings& post) {
+void GpuRenderer::renderFrame(const FrameView& fv) {
+    // Unpack the frame bundle into the locals the body below already speaks in.
+    // (`fv.root` is guaranteed non-null by the caller — the engine's loop.)
+    const SDL_FColor& clearColor         = fv.clearColor;
+    const Mat4& view                     = fv.view;
+    const Node& sceneRoot                = *fv.root;
+    const Vec3& cameraPos                = fv.cameraPos;
+    const std::span<const Light> lights  = fv.lights;
+    const PostSettings& post             = fv.post;
+
     // ------------------------------------------------------------------------
     //  1. Acquire a command buffer.
     //     We don't command the GPU directly; we *record* commands into a buffer
@@ -1994,10 +2001,16 @@ void GpuRenderer::renderFrame(const SDL_FColor& clearColor, const Mat4& view,
     SDL_SubmitGPUCommandBuffer(cmd);
 }
 
-bool GpuRenderer::captureFrame(const char* path, const SDL_FColor& clearColor,
-                               const Mat4& view, const Node& sceneRoot,
-                               const Vec3& cameraPos, std::span<const Light> lights,
-                               const PostSettings& post) {
+bool GpuRenderer::captureFrame(const char* path, const FrameView& fv) {
+    // Unpack the frame bundle into the locals the body below already speaks in
+    // (mirrors renderFrame). `fv.root` is guaranteed non-null by the caller.
+    const SDL_FColor& clearColor         = fv.clearColor;
+    const Mat4& view                     = fv.view;
+    const Node& sceneRoot                = *fv.root;
+    const Vec3& cameraPos                = fv.cameraPos;
+    const std::span<const Light> lights  = fv.lights;
+    const PostSettings& post             = fv.post;
+
     // Fixed capture resolution: keeps the output deterministic and small. The
     // aspect ratio (1280/720) feeds the projection so the cube isn't distorted.
     constexpr Uint32 kWidth  = 1280;

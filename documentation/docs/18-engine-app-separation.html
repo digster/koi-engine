@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Engine / App Separation · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
+    <a class="navlink" href="16-image-based-lighting.html">Image-based Lighting</a>
+    <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
+    <a class="navlink" href="18-engine-app-separation.html" aria-current="page">Engine / App Separation</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Engine / App Separation</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 17:</strong> stop letting the engine <em>be</em> the app. For sixteen steps the
+    demo scene has lived <strong>inside</strong> the engine — <code>Engine</code> itself built the cubes,
+    placed the lights, spun the hub, and read the keyboard. That was fine while there was only ever one thing
+    to run, but it means the engine can't be reused: every scene would have to be edited into the engine's own
+    source. This step draws a <strong>public API boundary</strong>. The engine keeps the machinery every app
+    needs (window, renderer, the main loop); a new <strong>sample app</strong> under <code>samples/</code>
+    supplies all the content and behaviour, talking to the engine through a small interface — exactly the way
+    a real game would.</p>
+    <p>No pixels change. This is a <em>structural</em> step: the same frame renders, but now nothing in
+    <code>src/</code> knows anything about the demo.</p>
+  </blockquote>
+
+  <h2>1. Two different jobs: engine vs. application</h2>
+
+  <p>Up to now we've said "the engine" loosely, but there are really two jobs hiding in one word, and a
+  reusable engine has to keep them apart:</p>
+
+  <ul>
+    <li>the <strong>engine</strong> is the reusable <em>machinery</em> — the stuff every 3D program needs and
+    no one wants to re-write: create a window, talk to the GPU, run a frame loop, measure time, route input.
+    It should know <em>nothing</em> about your particular game.</li>
+    <li>the <strong>application</strong> is the specific <em>content and behaviour</em> — <em>this</em> scene,
+    <em>these</em> lights, <em>this</em> camera, and how they react to time and keys. It's different for every
+    program built on the engine.</li>
+  </ul>
+
+  <p>The difference between a <em>library</em> and a <em>program</em> is exactly whether those two are
+  separable. A program can tangle them; a library must not, because its whole point is that other programs
+  supply the second half. That's why the project's <a href="../../ROADMAP.md">roadmap</a> calls this "the
+  defining milestone for production apps": until the demo can be lifted out cleanly, the engine isn't
+  something anyone else could build on.</p>
+
+  <h2>2. The symptom: the engine hardcoded the demo</h2>
+
+  <p>Before this step, <a href="../../src/core/Engine.cpp">Engine.cpp</a> was full of the demo. It had a
+  <code>buildScene()</code> that created the cubes and loaded the helmet, a <code>setupLights()</code> that
+  placed the sun and the coloured lamps, a loop that spun the hub and orbited a light, and an event handler
+  where keys <code>1</code>–<code>9</code> toggled bloom, IBL, the skybox and so on. And <code>main.cpp</code>
+  <em>was</em> the app — it lived in <code>src/</code>, right beside the engine. Every one of those is
+  demo-specific: a flight simulator built on Koi wants none of it. The engine had absorbed the app.</p>
+
+  <h2>3. Inversion of control: "don't call us, we'll call you"</h2>
+
+  <p>The fix is a classic idea with an intimidating name. Normally you think of <em>your</em> code calling
+  <em>library</em> code: you call <code>renderFrame()</code>, you call <code>loadTexture()</code>. A frame
+  loop turns that around. The loop has to live in the engine (only the engine knows how to acquire a
+  swapchain image, pace to the display, and submit), but the <em>contents</em> of each iteration are the
+  app's. So the engine must reach <em>up</em> into the app once per frame. That reversal — framework code
+  calling into your code, rather than the other way round — is <strong>inversion of control</strong>,
+  sometimes phrased as the <em>Hollywood principle</em>: "don't call us, we'll call you."</p>
+
+  <pre class="diagram">BEFORE  Engine::run()  ── calls ──▶  hardcoded buildScene / animate / toggles   (one fixed program)
+AFTER   Engine::run(app)  ── calls back ──▶  app.onStart / onUpdate / onEvent    (any Application)</pre>
+
+  <p>Concretely, the engine no longer holds a scene at all. Its loop asks the app what to do at each stage,
+  through a handful of <em>hooks</em> the app implements. The engine is now genuinely content-free.</p>
+
+  <h2>4. The Application interface</h2>
+
+  <p>The boundary is one small abstract class, <a href="../../src/core/Application.hpp">Application</a>. An
+  app subclasses it, holds its scene / camera / lights as members, and fills in the hooks; the engine's
+  <code>run()</code> drives them:</p>
+
+  <pre class="diagram">Engine::run(app)
+  │
+  ├─ app.onStart(engine)          once — build the scene, load assets, place lights
+  │
+  └─ every frame, until quit:
+        app.onEvent(engine, ev)   for each OS/input event (keys, mouse, close)
+        app.onUpdate(engine, dt)  advance animation, read held keys (dt = seconds elapsed)
+        app.frameView()           the engine asks "what do I draw?" → hands it to the renderer
+  │
+  └─ app.onShutdown()             once — release GPU resources (see §7)</pre>
+
+  <p>The <strong>hook</strong> pattern is what keeps the loop plumbing — delta-time, event pumping, the
+  headless <code>KOI_CAPTURE</code> path — inside the engine, written once, while the per-app parts vary. Two
+  hooks have defaults (<code>onEvent</code> and <code>onShutdown</code> do nothing) so a trivial app only has
+  to implement three. Notice each hook receives <code>Engine&amp;</code>: that's how the app reaches back for
+  a <em>service</em> it needs — most importantly <code>engine.renderer()</code>, which it uses in
+  <code>onStart</code> to build meshes and textures, and <code>engine.requestQuit()</code>, which it calls to
+  stop the loop (our demo does this on <kbd>Esc</kbd>).</p>
+
+  <h2>5. FrameView: one bundle of "what to draw"</h2>
+
+  <p>How does the app tell the engine what to render? Look at what the renderer actually needs for a frame:
+  the camera's <strong>view</strong> matrix, the <strong>scene</strong> to walk, the <strong>eye</strong>
+  position (for specular highlights), the <strong>lights</strong>, the <strong>clear colour</strong>, and the
+  <strong>post-processing</strong> settings. Rather than pass those as six separate arguments — and pass them
+  <em>twice</em>, because both the live path and the headless capture path need them — we bundle them into one
+  value, <a href="../../src/renderer/FrameView.hpp">FrameView</a>:</p>
+
+  <pre class="diagram">struct FrameView {
+    SDL_FColor             clearColor;   // background for uncovered pixels
+    Mat4                   view;         // camera: world → view
+    const Node*            root;         // the scene graph to draw (app-owned)
+    Vec3                   cameraPos;    // eye in world space → specular
+    std::span&lt;const Light&gt; lights;       // active lights (index 0 = the sun)
+    PostSettings           post;         // tone-map / bloom / FXAA / vignette
+};</pre>
+
+  <p>The app returns one from <code>frameView()</code>; the engine hands it straight to
+  <code>renderFrame(fv)</code> (live) or <code>captureFrame(path, fv)</code> (the BMP debug tool). Bundling
+  matters for more than tidiness: because both paths consume the <em>same</em> struct, they can't drift apart,
+  and a future field (a second camera, a time value) is added in one place instead of threaded through every
+  call site. A <code>FrameView</code> <strong>owns nothing</strong> — its <code>root</code> points at the
+  app's scene and <code>lights</code> spans the app's vector — so it's only ever used within the frame that
+  produced it.</p>
+
+  <h2>6. Who owns what now</h2>
+
+  <p>The whole refactor is really one table — a clean split of responsibilities:</p>
+
+  <pre class="diagram">ENGINE  (koi_core, src/)          APPLICATION  (samples/demo/, a koi::Application)
+  window + GPU renderer             the scene graph (Node tree)
+  the main loop + delta-time        the fly camera
+  event pump + OS-quit handling     the lights
+  KOI_CAPTURE / KOI_MAX_FRAMES      the post-processing settings
+  services: renderer(), quit()      animation + input reactions (the hooks)</pre>
+
+  <p>The demo now lives in <a href="../../samples/demo/DemoApp.cpp">samples/demo/DemoApp.cpp</a> as
+  <code>DemoApp&nbsp;:&nbsp;koi::Application</code>. Its <code>onStart</code> holds the old
+  <code>buildScene</code>/<code>setupLights</code> code (now calling <code>engine.renderer()</code> instead of
+  a private member); its <code>onUpdate</code> spins the hub and orbits the light; its <code>onEvent</code>
+  handles the number-key toggles. It sits under <code>samples/</code>, <em>not</em> <code>src/</code> — that
+  directory boundary is the point: <code>koi_core</code> compiles without ever seeing this file, and a real
+  game would drop in beside it as a second <code>Application</code>.</p>
+
+  <h2>7. A lifetime gotcha: free GPU resources in order</h2>
+
+  <p>Splitting ownership introduces a subtle hazard worth understanding, because it's the kind of bug that
+  only bites at shutdown. The app's meshes and material textures are <strong>GPU resources</strong> — they
+  were allocated through the renderer's GPU <em>device</em>, and they must be freed through it too. But the
+  device is owned by the engine. So if the app's scene is destroyed <em>after</em> the engine tears the device
+  down, those frees dangle: a use-after-free on the way out.</p>
+
+  <p>That's exactly what <code>onShutdown()</code> is for. The engine promises to call it from
+  <code>run()</code> <strong>while the renderer is still alive</strong>, and the app uses it to release its
+  scene then and there:</p>
+
+  <pre class="diagram">Engine::run(app) {
+    ... loop ...
+    app.onShutdown();      // app frees its scene here — device STILL alive  ✔
+}                          // control returns to main…
+Engine::shutdown();        // …only now is the GPU device destroyed</pre>
+
+  <p><code>DemoApp::onShutdown</code> simply resets its scene-graph root, which cascades into freeing every
+  mesh buffer and texture — safely, because the device outlives the call. This is the same
+  "children die before the resource they borrow" discipline the engine has always used for teardown ordering;
+  splitting the app out just made <em>where</em> that happens explicit.</p>
+
+  <h2>8. The proof: identical pixels</h2>
+
+  <p>A pure refactor should change <em>structure</em>, not <em>output</em>. We can hold ourselves to that
+  literally. Our <code>KOI_CAPTURE</code> tool renders a single deterministic frame (the scene at time zero)
+  to a BMP, so a capture from the new <code>koi-demo</code> can be compared byte-for-byte against one from the
+  old build:</p>
+
+  <pre class="diagram">KOI_CAPTURE=after.bmp ./build/koi-demo
+cmp before.bmp after.bmp   → identical  ✔   (same MD5)</pre>
+
+  <p>An identical hash is the strongest evidence a refactor is behaviour-preserving: the demo does exactly
+  what it did before — only its <em>ownership</em> moved. (This is also a preview of the next production step:
+  once such captures are checked in as approved "golden images", a CI run can flag the day a change alters the
+  render <em>unintentionally</em>.)</p>
+
+  <h2>9. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Run the sample.</strong> The build now produces <code>koi-demo</code> instead of
+    <code>koi-engine</code>: <code>cmake --build build</code>, then <code>./build/koi-demo</code>. Everything
+    behaves as before — WASD to fly, the number keys to toggle effects and lights.</li>
+    <li><strong>See the boundary.</strong> Open <a href="../../src/core/Engine.cpp">Engine.cpp</a> — it no
+    longer mentions a single cube, light, or key. All of that moved to
+    <a href="../../samples/demo/DemoApp.cpp">DemoApp.cpp</a>. The engine got <em>smaller</em>.</li>
+    <li><strong>Write your own app.</strong> Subclass <code>koi::Application</code>, build a one-cube scene in
+    <code>onStart</code> (via <code>engine.renderer()</code>), return a <code>FrameView</code> from
+    <code>frameView()</code>, and run it from a five-line <code>main()</code> like
+    <a href="../../samples/demo/main.cpp">samples/demo/main.cpp</a>. You never touch <code>src/</code> — which
+    is the whole idea.</li>
+    <li><strong>Verify nothing changed.</strong> Capture a frame with
+    <code>KOI_CAPTURE=out.bmp ./build/koi-demo</code> and diff it against a capture from before the step; the
+    pixels are identical.</li>
+  </ol>
+
+  <h2>10. What's next</h2>
+
+  <p>➡️ With the app lifted out, the highest-leverage follow-up is <strong>cross-platform CI with
+  golden-image tests</strong> — running the suite plus <code>KOI_CAPTURE</code> comparisons on another backend
+  (Linux/Vulkan) so "compiles clean, renders wrong" bugs can't hide. From there the learning thread resumes:
+  <strong>quaternions</strong> (smooth rotations, the gateway to skeletal animation) and
+  <strong>transparency</strong> (the first blended draws). See the <a href="../../ROADMAP.md">roadmap</a> for
+  the sequenced plan and its dependencies.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>
