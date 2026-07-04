@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quaternions · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
+    <a class="navlink" href="16-image-based-lighting.html">Image-based Lighting</a>
+    <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
+    <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
+    <a class="navlink" href="19-quaternions.html" aria-current="page">Quaternions</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Quaternions</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 18:</strong> replace the way we store <em>rotation</em>. For every step so far a
+    <a href="../../src/scene/Transform.hpp">Transform</a> has turned an object with three <strong>Euler
+    angles</strong> — an X angle, a Y angle, and a Z angle, baked in a fixed order. That's easy to picture but
+    has two well-known failures: it can <strong>gimbal-lock</strong> (silently lose an axis of freedom), and
+    two orientations can't be <strong>blended smoothly</strong> — which is a wall the moment we want animation.
+    This step introduces a hand-rolled <code>Quat</code> and switches <code>Transform</code> to store a single
+    <strong>unit quaternion</strong> instead.</p>
+    <p>Nothing on screen changes — the demo renders the same frame. This is a <em>representation</em> step: the
+    same rotations, stored in a form that doesn't lock up and <em>can</em> be interpolated. That second
+    property is the real prize; it's the gateway to <strong>skeletal animation</strong> a few steps out.</p>
+  </blockquote>
+
+  <h2>1. Why Euler angles aren't enough</h2>
+
+  <p>An Euler-angle rotation is three separate turns applied one after another. Our <code>Transform</code>
+  composed them <code>rotationZ · rotationY · rotationX</code> — spin about X, then about Y, then about Z.
+  Applied to a vertex, the matrices act right-to-left:</p>
+
+  <pre class="diagram">rotate = Rz(θz) · Ry(θy) · Rx(θx)          // three fixed-order turns
+                       ▲
+              the MIDDLE rotation decides where the OTHER two axes end up</pre>
+
+  <p>Here's the trap. The three axes aren't independent — the middle turn (Y, here) physically <em>moves</em>
+  the axis that the last turn is supposed to use. When the middle angle reaches 90°, it swings the X axis
+  <em>directly on top of</em> the Z axis. Now your first and last knobs both rotate about the same physical
+  direction: you've lost a whole degree of freedom, and no combination of the three angles can produce certain
+  orientations near that pose. This collapse is <strong>gimbal lock</strong> — named after the physical rings
+  ("gimbals") of a gyroscope that line up and jam in exactly the same way.</p>
+
+  <p>You've already seen us dodge it. The <a href="../../src/scene/Camera.cpp">fly camera</a>
+  <strong>clamps pitch</strong> to just under ±90° precisely so its "up" axis never aligns with the world-up
+  axis and flips. That clamp is a workaround, and it only works because a camera never <em>needs</em> to look
+  straight up. An arbitrary object (a tumbling asteroid, an animated joint) has no such luxury.</p>
+
+  <p>The second problem is subtler but just as fatal for animation: you can't <em>interpolate</em> Euler
+  angles cleanly. To animate an object from orientation A to orientation B you want to slide smoothly between
+  them. Blending the angle triples component-by-component — <code>lerp(Ax,Bx)</code>, <code>lerp(Ay,By)</code>,
+  <code>lerp(Az,Bz)</code> — does <em>not</em> trace a smooth turn: the object wobbles, speeds up and slows
+  down, and can swing the long way around. We need a representation where "half-way between two orientations"
+  is a meaningful, well-behaved thing. Quaternions are that representation.</p>
+
+  <h2>2. Warm-up: rotating the 2D plane with a complex number</h2>
+
+  <p>Quaternions look alien, so let's build intuition from something tamer that most people have met: complex
+  numbers. A complex number <code>a + bi</code> is a point in the 2D plane. The magic fact is that
+  <em>multiplying</em> by a unit complex number <strong>rotates</strong> the plane:</p>
+
+  <pre class="diagram">e^{iθ} = cos θ + i·sin θ          // a unit complex number = "rotate by θ"
+(e^{iθ}) · (point)  →  that point, rotated by θ about the origin
+(e^{iα}) · (e^{iβ}) = e^{i(α+β)}  // multiplying them ADDS the angles = composes rotations</pre>
+
+  <p>So in 2D, rotations <em>are</em> unit-length complex numbers, and composing rotations is just
+  multiplication. Quaternions are the 3D generalisation of exactly this idea — with one twist we'll meet in a
+  moment. Hold onto the pattern: <em>unit-length number ≙ rotation, multiplication ≙ composition.</em></p>
+
+  <h2>3. What a quaternion is</h2>
+
+  <p>A quaternion has one real part and <em>three</em> imaginary parts (Hamilton needed three to cover 3D):</p>
+
+  <pre class="diagram">q = w + x·i + y·j + z·k          // one real (w), three imaginary (x, y, z)</pre>
+
+  <p>We only ever use <strong>unit quaternions</strong> — those with length 1 (<code>x²+y²+z²+w²=1</code>).
+  The reason they matter is a beautiful correspondence: a unit quaternion encodes a rotation directly as an
+  <strong>axis and an angle</strong>. To rotate by angle θ about a unit axis <code>â = (âx, ây, âz)</code>:</p>
+
+  <pre class="diagram">      ┌ x ┐   ┌ sin(θ/2) · âx ┐
+q  =  │ y │ = │ sin(θ/2) · ây │        w = cos(θ/2)
+      │ z │   │ sin(θ/2) · âz │
+      └ w ┘   └   cos(θ/2)    ┘        (we store x,y,z,w — vector part first, like glTF)</pre>
+
+  <p>Why the <strong>half</strong>-angle? It looks arbitrary until you see how a quaternion rotates a vector.
+  It doesn't multiply the vector once; it "sandwiches" it between the quaternion and its inverse, so the
+  rotation gets applied <em>twice</em> — and each application contributes θ/2, which sum to the θ you wanted.
+  That's the twist versus the 2D complex-number story.</p>
+
+  <h2>4. Rotating a vector: the sandwich product</h2>
+
+  <p>To rotate a 3D vector <strong>v</strong> by a unit quaternion <code>q</code>, treat <strong>v</strong> as
+  a quaternion with zero real part, <code>(0, v)</code>, and compute:</p>
+
+  <pre class="diagram">v' = q · (0, v) · q⁻¹            // "sandwich": q on the left, its inverse on the right</pre>
+
+  <p>For a <em>unit</em> quaternion the inverse is just the <strong>conjugate</strong> <code>q* = (−x, −y,
+  −z, w)</code> — flip the sign of the vector part — which is cheap. Multiplying that product out by hand gives
+  a closed form with no quaternion algebra left in it (the Euler–Rodrigues formula), and that's what our
+  <code>Quat::rotate</code> actually runs, because it costs a couple of dot/cross products instead of two full
+  quaternion multiplies:</p>
+
+  <pre class="diagram">v' = 2·(u·v)·u  +  (s² − u·u)·v  +  2·s·(u × v)      where u = (x,y,z), s = w</pre>
+
+  <p>The intuition to keep: <em>q</em> says "turn by θ about this axis," and the sandwich carries the vector
+  along that turn. Rotating a normal or a position is the same operation.</p>
+
+  <h2>5. Composing rotations: the Hamilton product</h2>
+
+  <p>Just like the 2D complex numbers multiplied to add their angles, <strong>multiplying two quaternions
+  composes their rotations</strong>. The rule (the <em>Hamilton product</em>) in scalar/vector form is:</p>
+
+  <pre class="diagram">q1 · q2  =  ( s1·s2 − v1·v2 ,   s1·v2 + s2·v1 + v1 × v2 )
+             └── new w ──┘       └────── new (x,y,z) ──────┘
+                                    scalar parts s, vector parts v</pre>
+
+  <p>Two things to note. First, like matrices, it reads <strong>right-to-left</strong>: <code>q1·q2</code>
+  means "do q2's rotation first, then q1's." That cross-product term is why quaternion multiplication (like
+  rotation itself) is <em>not</em> commutative — turning then rolling is not the same as rolling then turning.
+  Second, this is exactly how <code>Quat::fromEuler</code> is built: it makes one quaternion per axis and
+  multiplies them in the same <code>qz · qy · qx</code> order the old matrix path used — which is what let us
+  swap the storage type without changing a single rendered frame (more in §8).</p>
+
+  <h2>6. So why no gimbal lock?</h2>
+
+  <p>Because a quaternion never decomposes the rotation into a fixed <em>sequence</em> of axis turns. It stores
+  <em>one</em> axis and <em>one</em> angle for the whole rotation at once. There is no "middle" turn that can
+  swing another axis onto a neighbour, so there is no pose where two controls collapse into one. Every unit
+  quaternion is a valid, unambiguous orientation, and you can compose or interpolate them freely without ever
+  hitting a singular configuration.</p>
+
+  <h2>7. Slerp: smoothly blending two orientations</h2>
+
+  <p>This is the property that makes quaternions non-negotiable for animation. Because every unit quaternion is
+  a point on the surface of a 4-dimensional unit sphere, "blending two orientations" becomes a clean geometric
+  idea: <strong>slide along the great-circle arc</strong> connecting the two points. That's
+  <strong>slerp</strong> — <em>spherical linear interpolation</em>:</p>
+
+  <pre class="diagram">slerp(a, b, t)  walks the SHORTEST arc from a to b at CONSTANT angular speed
+   t = 0   →  a
+   t = 0.5 →  the true half-way orientation   (no wobble, no long way round)
+   t = 1   →  b</pre>
+
+  <p>An animation player stores a rotation per keyframe and calls <code>slerp</code> to fill in the frames
+  between them; a camera can slerp from its current look to a target. Two subtleties our implementation handles,
+  both worth understanding:</p>
+
+  <ul>
+    <li><strong>Double cover.</strong> A quaternion <code>q</code> and its negation <code>−q</code> represent
+    the <em>same</em> rotation (θ about â equals −θ about −â). So before interpolating we check the dot product
+    of <code>a</code> and <code>b</code>; if it's negative they're on "opposite sides" of the sphere, and we
+    flip <code>b</code> so slerp takes the short way (≤ 180°) instead of the long way.</li>
+    <li><strong>Near-parallel fallback.</strong> The slerp formula divides by <code>sin(θ)</code> between the
+    two quaternions; when they're almost identical that's ≈ 0. There we fall back to a plain normalised lerp,
+    which is indistinguishable at that tiny angle and doesn't divide by near-zero.</li>
+  </ul>
+
+  <p>Our <code>slerp</code> is fully unit-tested this step (endpoints, the true midpoint, and the shortest-arc
+  sign flip), even though the demo doesn't animate with it yet — it's the hook the animation step will grab.</p>
+
+  <h2>8. In the engine: a drop-in swap for Transform</h2>
+
+  <p>The new type lives in <a href="../../src/math/Quat.hpp">src/math/Quat.hpp</a> — header-only and pure,
+  exactly like <a href="../../src/math/Vec.hpp">Vec</a> and <a href="../../src/math/Mat4.hpp">Mat4</a>. It
+  offers <code>fromAxisAngle</code>, <code>fromEuler</code>, the Hamilton <code>operator*</code>,
+  <code>rotate</code>, <code>slerp</code>, and a <code>toMat4()</code> that hands the renderer the same 4×4
+  model matrix it always consumed. <code>Transform</code> changed by one field:</p>
+
+  <pre class="diagram">// before                                  // after
+Vec3 rotationEuler {0,0,0};                 Quat rotation {Quat::identity()};
+
+Mat4 localMatrix() const {                  Mat4 localMatrix() const {
+  return translation(position)                return translation(position)
+       * rotationZ(e.z)*rotationY(e.y)             * rotation.toMat4()
+       * rotationX(e.x) * scaling(scale);          * scaling(scale);
+}                                           }</pre>
+
+  <p>The T·R·S order and everything downstream are untouched — only the middle factor's <em>source</em>
+  changed. Call sites read a touch nicer, too: standing the demo torus upright becomes
+  <code>Quat::fromEuler({radians(90),0,0})</code>, and the spinning hub keeps a running angle and rebuilds its
+  rotation each frame with <code>Quat::fromAxisAngle({0,1,0}, angle)</code>.</p>
+
+  <h2>9. Knowing when <em>not</em> to: the camera stays on yaw/pitch</h2>
+
+  <p>A tempting overreach is to "quaternion-ify everything." We deliberately left the
+  <a href="../../src/scene/Camera.hpp">fly camera</a> on its two Euler angles, and that's the <em>right</em>
+  call — a genuine part of the lesson. An FPS/fly camera wants precisely two controls: turn left/right (yaw)
+  and look up/down (pitch), with <strong>no roll</strong>, and pitch clamped so you can't tip over the top.
+  Yaw + pitch expresses exactly those two degrees of freedom and structurally forbids roll. A free quaternion
+  would <em>add</em> the ability to roll — a bug, not a feature, here — and buys nothing, since the clamp
+  already sidesteps the only gimbal case a camera can reach. Quaternions shine for <em>arbitrary</em>
+  orientation and <em>interpolation</em>; a camera's constrained aiming is a different job, and picking the
+  representation that fits the job is the real skill.</p>
+
+  <h2>10. The proof: same picture, greener foundation</h2>
+
+  <p>Because <code>Quat::fromEuler</code> reproduces the old <code>Rz·Ry·Rx</code> rotation, a
+  <code>KOI_CAPTURE</code> frame from the new build looks identical to one from before — the helmet stands
+  upright, the cubes spin, the donut stands on edge, all unchanged. (Unlike the byte-identical refactor in
+  <a href="18-engine-app-separation.html">Step 17</a>, a handful of edge and highlight pixels differ in their
+  last bits: rebuilding a rotation matrix <em>via</em> a quaternion rounds slightly differently than building
+  it directly, which nudges a few antialiased silhouettes by a fraction of a shade. It's floating-point noise,
+  not a visible change.) The new <a href="../../tests/test_quat.cpp">tests/test_quat.cpp</a> pins the math down
+  hard:</p>
+
+  <pre class="diagram">fromEuler(e).toMat4()  ==  rotationZ(e.z)·rotationY(e.y)·rotationX(e.x)   // behaviour-preserving
+fromAxisAngle(Y,90°).rotate(+X)  ==  −Z                                   // matches rotationY
+(a·b).toMat4()  ==  a.toMat4() · b.toMat4()                               // composition = matrix multiply
+q · q⁻¹  ==  identity                                                     // inverse undoes it
+slerp midpoint of 0°…90° about Y  ==  45° about Y, unit length            // shortest arc, constant speed</pre>
+
+  <h2>11. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Run it.</strong> <code>cmake --build build</code>, then <code>./build/koi-demo</code> — the
+    scene behaves exactly as before; the change is entirely under the hood.</li>
+    <li><strong>Run the tests.</strong> <code>./build/koi-tests</code> — the new quaternion suite proves the
+    identities above (and that the swap kept every existing Transform/Node test green).</li>
+    <li><strong>Feel gimbal lock, then feel it gone.</strong> Set a Transform's rotation to
+    <code>Quat::fromEuler({radians(90),0,0})</code> and try to add a small extra yaw — with quaternions you can
+    compose freely (<code>extra · rotation</code>) with no singular pose to trip over.</li>
+    <li><strong>Preview animation.</strong> In <code>onUpdate</code>, try
+    <code>node->transform().rotation = slerp(Quat::identity(), Quat::fromAxisAngle({0,1,0}, radians(90)),
+    t)</code> with <code>t</code> ramping 0→1 — a smooth, constant-speed quarter-turn. That's the mechanism a
+    keyframe player will use.</li>
+  </ol>
+
+  <h2>12. What's next</h2>
+
+  <p>➡️ Rotation is now animation-ready. The learning thread continues with <strong>transparency &amp;
+  blending</strong> (the first non-opaque draws — sorting and blend state), while quaternions have unlocked the
+  later <strong>skeletal animation</strong> milestone, where per-joint rotations are stored as quaternions and
+  <code>slerp</code>-ed between keyframes. See the <a href="../../ROADMAP.md">roadmap</a> for the sequenced
+  plan and its dependencies.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

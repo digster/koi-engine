@@ -185,7 +185,7 @@ bool DemoApp::buildScene(GpuRenderer& renderer) {
     auto torusNode = std::make_unique<Node>(torus, torusMat);
     torusNode->transform().position      = {3.8f, -0.3f, 0.0f};
     torusNode->transform().scale         = {1.2f, 1.2f, 1.2f};
-    torusNode->transform().rotationEuler = {radians(90.0f), 0.0f, 0.0f};  // stand the donut up
+    torusNode->transform().rotation = Quat::fromEuler({radians(90.0f), 0.0f, 0.0f});  // stand the donut up
     sceneRoot_->addChild(std::move(torusNode));
 
     // Step 16: the HERO — the Khronos "Damaged Helmet", a real production glTF PBR asset
@@ -205,7 +205,7 @@ bool DemoApp::buildScene(GpuRenderer& renderer) {
         helmetNode->transform().scale         = {1.6f, 1.6f, 1.6f};
         // Z-up asset → stand upright (~72° about X, a touch under 90° so the visor tilts
         // toward the elevated camera) + a 3/4 turn so the glowing eyes read as the hero.
-        helmetNode->transform().rotationEuler = {radians(72.0f), radians(-22.0f), 0.0f};
+        helmetNode->transform().rotation = Quat::fromEuler({radians(72.0f), radians(-22.0f), 0.0f});
         sceneRoot_->addChild(std::move(helmetNode));
         KOI_INFO("Scene built: ground + cube hierarchy + 3 loaded models "
                  "(sphere.glb, torus.obj, DamagedHelmet.glb w/ imported PBR material).");
@@ -278,10 +278,15 @@ void DemoApp::onUpdate(Engine& /*engine*/, float dt) {
     camera_.processKeyboard(SDL_GetKeyboardState(nullptr), dt);
 
     // Animate the scene: spin the hub (its satellites orbit with it) and the inner
-    // pivot (its moon orbits it). Angles accumulate in radians, scaled by dt so the
-    // motion is frame-rate independent — just like the camera.
-    hub_->transform().rotationEuler.y     += 0.6f * dt;
-    spinner_->transform().rotationEuler.y += 1.5f * dt;
+    // pivot (its moon orbits it). A quaternion has no per-axis angle to bump, so we
+    // keep the running Y angle ourselves (radians, scaled by dt for frame-rate
+    // independence) and rebuild the rotation from axis-angle each frame. Rebuilding
+    // fresh also avoids the slow drift off unit length that accumulating quaternion
+    // multiplies would cause.
+    hubSpin_     += 0.6f * dt;
+    spinnerSpin_ += 1.5f * dt;
+    hub_->transform().rotation     = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, hubSpin_);
+    spinner_->transform().rotation = Quat::fromAxisAngle({0.0f, 1.0f, 0.0f}, spinnerSpin_);
 
     // Orbit the cool point light (index 2) around the scene so its colored pool
     // sweeps across the surfaces — the clearest way to SEE a moving light.

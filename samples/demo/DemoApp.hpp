@@ -67,8 +67,12 @@ private:
     // caster); the rest are coloured point/spot lights.
     std::vector<Light> lights_;
 
-    // Angle accumulator (radians) for the one orbiting point light.
-    float lightOrbit_ = 0.0f;
+    // Angle accumulators (radians) for the animated Y-spins: the hub, the inner
+    // pivot ("spinner"), and the one orbiting point light. Transform stores a
+    // quaternion now, so we track each spin angle here and rebuild it per frame.
+    float hubSpin_     = 0.0f;
+    float spinnerSpin_ = 0.0f;
+    float lightOrbit_  = 0.0f;
 };
 
 }  // namespace koi

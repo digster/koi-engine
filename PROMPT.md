@@ -390,3 +390,28 @@ proof — a `KOI_CAPTURE` frame is **byte-identical (same MD5)** to Step 16, so 
 behaviour-preserving. New tutorial `documentation/docs/18-engine-app-separation.html` + nav/index links;
 README/ARCHITECTURE/ROADMAP/CLAUDE.md updated (capture cmd → `./build/koi-demo`). Deferred: semantic
 versioning, a dedicated API-reference doc, multiple sample apps, CI + golden images (the next move).
+
+---
+
+> Give me options to pick up something next from the roadmap.
+> [In plan mode: presented four roadmap candidates (CI + golden images, transparency,
+>  quaternions, glTF scene/Sponza). User picked **quaternions**; then chose to keep the
+>  camera on yaw/pitch (Transform-only) and an internals-only demo swap.]
+
+Delivered **Step 18**: rotation moved off Euler angles onto quaternions. New hand-rolled unit
+`Quat` in `src/math/Quat.hpp` (header-only, glTF `x,y,z,w` order): `fromAxisAngle`/`fromEuler`,
+Hamilton `operator*`, sandwich-product `rotate` (Euler–Rodrigues closed form), `conjugate`/`inverse`,
+`toMat4`, and `slerp` (shortest-arc, double-cover sign flip + near-parallel nlerp fallback).
+`Transform` now stores `Quat rotation` instead of `Vec3 rotationEuler`; `localMatrix()` uses
+`rotation.toMat4()`. Call sites updated: `DemoApp` static poses → `Quat::fromEuler`, the hub/spinner
+spins → float angle accumulators + `Quat::fromAxisAngle` each frame (added `hubSpin_`/`spinnerSpin_`
+members); `tests/test_transform.cpp` + `tests/test_node.cpp` → `Quat::fromEuler`. The camera was
+**deliberately left on clamped yaw/pitch** (correct for an FPS/fly cam — no roll; can't gimbal-lock in
+practice). Verified: warning-clean build, **all 73 doctests pass** (added `tests/test_quat.cpp` — incl.
+the behaviour-preservation check `fromEuler(e).toMat4() == Rz·Ry·Rx`, composition = matrix multiply,
+inverse, and slerp endpoints/midpoint/shortest-arc). `KOI_CAPTURE` frame is **visually identical** to
+Step 17 (only ~484 edge/highlight pixels differ, max delta 33/255 — last-bit FP noise from rebuilding
+the rotation matrix via a quaternion; not byte-identical, and that's expected for a representation swap).
+New tutorial `documentation/docs/19-quaternions.html` + nav/index links (and Step 17's forward reference
+now links it); README/ARCHITECTURE/ROADMAP updated (quaternions ✅). Deferred: `Mat4` inverse, camera
+quaternions, and wiring `slerp` into the demo (kept for the skeletal-animation step).

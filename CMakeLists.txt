@@ -201,6 +201,7 @@ add_executable(koi-tests
     tests/test_shader.cpp
     tests/test_vertex.cpp
     tests/test_math.cpp
+    tests/test_quat.cpp
     tests/test_camera.cpp
     tests/test_transform.cpp
     tests/test_node.cpp

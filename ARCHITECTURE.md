@@ -82,12 +82,12 @@ bundle. See the *Engine / app separation (Step 17)* section below.
 | `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count + element size: 16-bit for primitives, 32-bit for big loaded models). Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must die before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
 | `Texture` | [src/renderer/Texture.*](src/renderer/) | RAII owner of one `SDL_GPUTexture` (sampled image). Same non-owning-device lifetime rule as `Mesh`. Created via `GpuRenderer::loadTexture` (BMP → SDL; PNG/JPG → **stb_image**; decode → upload) or `createTextureFromRGBA` (already-decoded bytes, e.g. embedded glTF images), with an **sRGB** option for colour maps (Step 16); held by `shared_ptr`. A *sampler* (how to read it) is separate, reusable device state owned by the renderer. |
 | `Primitives` | [src/renderer/Primitives.*](src/renderer/) | Free functions (`makeCubeMesh`, `makePlaneMesh`) that define a shape's vertex/index data and upload it via `createMesh`, keeping the renderer geometry-agnostic. |
-| `Transform` | [src/scene/Transform.hpp](src/scene/Transform.hpp) | Header-only, SDL-free: position / Euler rotation / scale, plus `localMatrix()` returning `T·R·S` (scale → rotate → translate). Unit-tested in `tests/test_transform.cpp`. |
+| `Transform` | [src/scene/Transform.hpp](src/scene/Transform.hpp) | Header-only, SDL-free: position / rotation (a unit **`Quat`** since Step 18 — no gimbal lock, `slerp`-able) / scale, plus `localMatrix()` returning `T·R·S` (scale → rotate → translate). Unit-tested in `tests/test_transform.cpp`. |
 | `Node` | [src/scene/Node.*](src/scene/) | One element of the scene graph: a local `Transform`, an optional shared `Mesh` (shape) + `Material` (appearance), owned children (`unique_ptr`), and a cached world matrix. Draws only with both a mesh and a material. `updateWorldTransforms` walks the tree computing `world = parentWorld · local`. Unit-tested in `tests/test_node.cpp`. |
 | `Camera` | [src/scene/Camera.*](src/scene/) | A yaw/pitch fly camera (position + angles). Produces a `view` matrix via `lookAt`; `processKeyboard`/`addMouseLook` update it from input. Lives above the renderer and knows nothing about the GPU; its header is SDL-free. Logic unit-tested in `tests/test_camera.cpp`. |
 | `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color + uv + normal + **tangent**, 56 bytes since Step 13). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
 | `Tangents` | [src/renderer/Tangents.hpp](src/renderer/Tangents.hpp) | Header-only, SDL-free (Step 13): pure math to derive a per-vertex **tangent** for normal mapping — `triangleTangent` (Lengyel, from positions + UVs) and `orthonormalizeTangent` (Gram-Schmidt vs. the normal, with a safe fallback). Used by `ModelLoader`; unit-tested headlessly (`tests/test_tangent.cpp`), the same CPU-twin pattern as `Pbr.hpp`/`Light.hpp`. |
-| `math` (`Vec`, `Mat4`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`) and column-major 4×4 matrix math (translate/rotate/scale/`perspective`/**`orthographic`**/`lookAt`). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp`. |
+| `math` (`Vec`, `Mat4`, `Quat`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`), column-major 4×4 matrix math (translate/rotate/scale/`perspective`/**`orthographic`**/`lookAt`), and a unit **`Quat`** quaternion (Step 18: axis-angle/Euler construction, Hamilton product, sandwich `rotate`, `toMat4`, **`slerp`**). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp` + `tests/test_quat.cpp`. |
 | `Shader` | [src/renderer/Shader.*](src/renderer/) | Loads a compiled shader for the active backend: `selectShaderVariant` (pure, unit-tested) picks the format/extension/entry point; `loadShader` reads the file and creates the `SDL_GPUShader` (with the right uniform-buffer and sampler counts). |
 | `Log` | [src/core/Log.hpp](src/core/Log.hpp) | Leveled logging macros over SDL's logger; one place to control verbosity. |
 
@@ -103,7 +103,7 @@ Engine: processEvents(app) → SDL_PollEvent: OS-quit → stop; every event → 
 dt               → dt = ΔSDL_GetTicksNS (clamped)
        │
 app.onUpdate(engine, dt) → camera.processKeyboard(polled keys, dt); spin a couple of nodes
-                   (rotationEuler += rate·dt); sceneRoot.updateWorldTransforms() caches world matrices
+                   (rotation = Quat::fromAxisAngle(Y, angle += rate·dt)); sceneRoot.updateWorldTransforms() caches world matrices
        │
 fv = app.frameView()   → bundle {clearColor, view = camera.viewMatrix(), root = sceneRoot,
        │                          cameraPos, lights, post}
@@ -749,7 +749,7 @@ Future milestones slot into this structure without reshaping it:
 - **Step 3 (done):** a header-only `math/` module (hand-rolled `Vec`, `Mat4`) feeds an
   MVP matrix to the shader via a uniform buffer; a depth buffer joined the render pass.
   (Quaternions were deferred — no use case yet — per the "introduce when needed"
-  principle.)
+  principle; they finally arrived in Step 18.)
 - **Step 4 (done):** `scene/` arrived with a `Camera`; the identity View matrix
   became a real `lookAt` camera flown with keyboard/mouse, and a delta-time clock
   drives motion. `Mat4` gained `lookAt`. The renderer now takes a `view` and draws a
@@ -800,7 +800,11 @@ Future milestones slot into this structure without reshaping it:
   demo lifted out of `koi_core` into a `samples/demo/` **`koi::Application`**, with the engine driving it by
   inversion of control through the `Application` hooks + a `FrameView` bundle (see the section above). The
   layering was unchanged; the demo simply moved to the other side of a public API boundary.
-- **Next:** cross-platform **CI + golden-image** tests, then the learning thread (**quaternions**,
-  **transparency**), more shadow casters (sun cascades, point-light cube maps), and eventually
+- **Step 18 (done):** **quaternions** — a hand-rolled unit `Quat` joined `src/math/`, and `Transform`'s
+  rotation changed from a `Vec3` of Euler angles to a `Quat` (no gimbal lock; `slerp`-able). `Quat::fromEuler`
+  reproduces the old `Rz·Ry·Rx` matrix, so the swap was behaviour-preserving (the capture is visually
+  identical). The camera stayed on yaw/pitch by design. This is the math prerequisite for skeletal animation.
+- **Next:** cross-platform **CI + golden-image** tests, then the learning thread continues with
+  **transparency**, more shadow casters (sun cascades, point-light cube maps), and eventually
   deferred/clustered shading — all slot into this same layering. See [`ROADMAP.md`](ROADMAP.md) for the
   sequenced plan and the wider engine-systems tracks (animation, physics, audio, tooling, gameplay).

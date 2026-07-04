@@ -74,7 +74,7 @@ TEST_CASE("rotating a parent sweeps its child's world position") {
     // child's WORLD position should be about (0, 0, -2) — it orbited the parent
     // without its own transform ever changing.
     auto root = std::make_unique<Node>();
-    root->transform().rotationEuler = {0, radians(90.0f), 0};
+    root->transform().rotation = Quat::fromEuler({0, radians(90.0f), 0});
     Node* child = root->addChild(std::make_unique<Node>());
     child->transform().position = {2, 0, 0};
 

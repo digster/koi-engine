@@ -53,9 +53,9 @@ TEST_CASE("Transform scale resizes around the object's origin") {
 TEST_CASE("Transform applies scale, then rotation, then translation") {
     // Scale 2x, rotate 90° about Z (+X -> +Y), then translate by (10, 0, 0).
     Transform t;
-    t.scale         = {2, 2, 2};
-    t.rotationEuler = {0, 0, radians(90.0f)};
-    t.position      = {10, 0, 0};
+    t.scale    = {2, 2, 2};
+    t.rotation = Quat::fromEuler({0, 0, radians(90.0f)});
+    t.position = {10, 0, 0};
 
     // Trace the model-space point (1, 0, 0):
     //   scale     -> (2, 0, 0)

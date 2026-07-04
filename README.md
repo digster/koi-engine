@@ -9,15 +9,14 @@ in [`documentation/docs/`](documentation/docs/index.html) that explains the unde
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`documentation/docs/index.html`](documentation/docs/index.html) in a browser.
 
-> **Current status — Step 17:** **engine/app separation**. The demo scene that used to live *inside* the
-> engine is now a standalone **sample app** that consumes the engine like any client would. `koi_core` keeps
-> the reusable machinery — window, renderer, and the main loop (plus the headless `KOI_CAPTURE` path) — and
-> drives a small public **`koi::Application`** interface (`onStart` / `onUpdate` / `onEvent` / `frameView`).
-> All the content and behaviour — the scene, camera, lights, animation and input — moved out to
-> [`samples/demo/`](samples/demo) as a `koi::Application`, so **nothing in `src/` hardcodes the demo**. A
-> single **`FrameView`** bundle carries "what to draw" across the boundary (shared by the live and capture
-> paths). The refactor is behaviour-preserving: the demo renders a **pixel-identical** frame, now built as
-> `./build/koi-demo`.
+> **Current status — Step 18:** **quaternions**. Rotation no longer uses Euler angles. A hand-rolled unit
+> **`Quat`** (in `src/math/`) — axis-angle/Euler construction, the Hamilton product, a sandwich-product
+> `rotate`, `toMat4`, and **`slerp`** — now backs `Transform`, so orientations can't **gimbal-lock** and can be
+> interpolated smoothly. That `slerp` is the prerequisite for the skeletal-animation milestone. Because
+> `Quat::fromEuler` reproduces the old `Rz·Ry·Rx` rotation, the swap is behaviour-preserving — the demo renders
+> the same frame — and the fly camera keeps its clamped **yaw/pitch** by design (an FPS camera wants no roll).
+> *(Step 17 drew the engine/app boundary: the demo lives in [`samples/demo/`](samples/demo) as a public
+> **`koi::Application`**, built as `./build/koi-demo`.)*
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
@@ -105,12 +104,16 @@ Full instructions, controls, and tests: [documentation/docs/00-getting-started.h
   reusable engine from the specific app: inversion of control and the `Application` hooks, one `FrameView`
   bundle of "what to draw", and the shutdown ordering that frees GPU resources safely, mapped to the Step 17
   code that lifts the demo out of the engine into a `samples/` app.
+- [documentation/docs/19-quaternions.html](documentation/docs/19-quaternions.html) — storing rotation without
+  gimbal lock: why Euler angles jam and can't be blended, the unit quaternion as an axis + half-angle, the
+  sandwich product that rotates a vector, the Hamilton product that composes turns, and `slerp` for smooth
+  interpolation, mapped to the Step 18 code that swaps `Transform` to a `Quat`.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
 
 The engine grows one runnable milestone at a time. See **[ROADMAP.md](ROADMAP.md)** for the full
-picture — every completed step (0–17) and the phased plan beyond: numbered next steps, then themed
+picture — every completed step (0–18) and the phased plan beyond: numbered next steps, then themed
 tracks across rendering, animation, physics, audio, tooling, and gameplay.
 
 ## Requirements

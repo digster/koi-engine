@@ -19,9 +19,12 @@
 //  Do it in any other order and you get surprises — e.g. translating before
 //  rotating swings the object around the world origin instead of spinning it.
 //
-//  Rotation is stored as Euler ANGLES (one angle per axis, in RADIANS) and
-//  composed Z * Y * X. Euler angles are simple and match our Camera; the project
-//  deliberately defers quaternions until a step actually needs them.
+//  Rotation is stored as a unit QUATERNION (Step 18). A quaternion has no
+//  preferred axis order, so it cannot gimbal-lock the way the old Euler triple
+//  could, and two of them can be blended along the shortest arc with slerp —
+//  the property skeletal animation will rely on. Build one from the friendlier
+//  axis-angle or Euler forms via Quat::fromAxisAngle / Quat::fromEuler. See
+//  documentation/docs/19-quaternions.html.
 //
 //  Header-only and SDL-free (pure math), like Vec/Mat4, so it's trivially
 //  unit-testable (tests/test_transform.cpp).
@@ -29,22 +32,21 @@
 #pragma once
 
 #include "math/Mat4.hpp"
+#include "math/Quat.hpp"
 #include "math/Vec.hpp"
 
 namespace koi {
 
 struct Transform {
-    Vec3 position      {0.0f, 0.0f, 0.0f};  // where it sits in its parent's space
-    Vec3 rotationEuler {0.0f, 0.0f, 0.0f};  // radians, per axis (x, y, z)
-    Vec3 scale         {1.0f, 1.0f, 1.0f};  // 1 = unchanged size
+    Vec3 position {0.0f, 0.0f, 0.0f};      // where it sits in its parent's space
+    Quat rotation {Quat::identity()};      // orientation (identity = unrotated)
+    Vec3 scale    {1.0f, 1.0f, 1.0f};      // 1 = unchanged size
 
     // Bake TRS into one "local" model matrix (local = relative to the parent;
     // the scene graph turns this into a world matrix by prepending the parent's).
     [[nodiscard]] Mat4 localMatrix() const {
         return translation(position) *
-               rotationZ(rotationEuler.z) *
-               rotationY(rotationEuler.y) *
-               rotationX(rotationEuler.x) *
+               rotation.toMat4() *
                scaling(scale);
     }
 };

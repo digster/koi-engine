@@ -31,6 +31,7 @@
     <a class="navlink" href="16-image-based-lighting.html">Image-based Lighting</a>
     <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
     <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
+    <a class="navlink" href="19-quaternions.html">Quaternions</a>
   </div>
 </nav>
 
@@ -148,6 +149,13 @@
       <p>Splitting the reusable engine from the specific app: inversion of control and the
       <code>Application</code> hooks, one <code>FrameView</code> bundle of "what to draw", and the shutdown
       ordering that frees GPU resources safely — then lifting the demo out of the engine into a sample app.</p>
+    </a>
+    <a class="card" href="19-quaternions.html">
+      <h3>Quaternions →</h3>
+      <p>Storing rotation without gimbal lock: why Euler angles jam and can't be blended, the unit
+      quaternion as an axis + half-angle, the sandwich product that rotates a vector, the Hamilton product
+      that composes turns, and <code>slerp</code> for smooth interpolation — then swapping
+      <code>Transform</code> to a <code>Quat</code> (and why the camera keeps its yaw/pitch).</p>
     </a>
   </div>
 

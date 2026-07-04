@@ -31,20 +31,25 @@ Three principles shape the plan:
 - **Step 17** (engine/app separation) shipped as
   [`documentation/docs/18-engine-app-separation.html`](documentation/docs/18-engine-app-separation.html); it
   lifted the demo out of the engine into a [`samples/demo/`](samples/demo) app behind a public
-  **`koi::Application`** interface, so `koi_core` is now genuinely reusable. With the material/lighting arc
-  closed, proven on real content, *and* the engine/app boundary drawn, **the highest-leverage next move is
-  cross-platform CI + golden images** (see *Path to 1.0*) — interleaved with quaternions and transparency
-  (see the suggested path).
+  **`koi::Application`** interface, so `koi_core` is now genuinely reusable.
+- **Step 18** (quaternions) shipped as
+  [`documentation/docs/19-quaternions.html`](documentation/docs/19-quaternions.html); `Transform` now stores a
+  unit **`Quat`** instead of Euler angles — no gimbal lock, and rotations can be `slerp`-ed, which is the
+  prerequisite for skeletal animation. With the material/lighting arc closed and proven on real content, the
+  engine/app boundary drawn, *and* rotation put on animation-ready footing, **the highest-leverage next move is
+  cross-platform CI + golden images** (see *Path to 1.0*) — interleaved with transparency (see the suggested
+  path).
 
 ---
 
-## ✅ Completed — Steps 0–17
+## ✅ Completed — Steps 0–18
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
 post-processed shading of loaded models under many lights, with per-pixel texture + normal maps,
 a cubemap sky, and image-based lighting that lets the environment light the scene — now proven by
 importing a real glTF PBR asset (the Damaged Helmet) with emissive surfaces and correct sRGB colour,
-and then made reusable by separating the engine from the app (Step 17).
+then made reusable by separating the engine from the app (Step 17), and put on animation-ready footing
+by replacing Euler rotations with quaternions (Step 18).
 Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
 [`documentation/docs/index.html`](documentation/docs/index.html).
@@ -69,6 +74,7 @@ linked per row below (note how the doc number runs one ahead of the step), and a
 | **15** | Image-based lighting | diffuse irradiance convolution, specular split-sum (prefiltered env + BRDF LUT), importance sampling + Hammersley, baking into cubemap faces | [documentation/docs/16](documentation/docs/16-image-based-lighting.html) |
 | **16** | glTF PBR import | glTF material/texture import (base-colour/MR/normal/AO/**emissive**), PNG/JPG decode via stb_image, **sRGB** colour textures, emissive term feeding bloom, the Damaged Helmet | [documentation/docs/17](documentation/docs/17-gltf-pbr-import.html) |
 | **17** | Engine/app separation | public **`koi::Application`** interface (onStart/onUpdate/onEvent/frameView), **`FrameView`** render bundle, inversion of control, demo lifted from `src/` to `samples/demo/` (pixel-identical) | [documentation/docs/18](documentation/docs/18-engine-app-separation.html) |
+| **18** | Quaternions | hand-rolled **`Quat`** (axis-angle, Hamilton product, sandwich rotate, `toMat4`, **`slerp`**), `Transform` stores a unit quaternion instead of Euler angles (no gimbal lock; interpolatable), camera kept on yaw/pitch by design | [documentation/docs/19](documentation/docs/19-quaternions.html) |
 
 > The prerequisites page [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) (building,
 > running, testing, project layout) is not a numbered step.
@@ -167,6 +173,21 @@ provides, and both build toward "metals that reflect their surroundings."
   cleanly, the engine can't be built on. Doing it now, before more systems land, stops each new subsystem
   from baking more demo into the engine.
 
+### ✅ Step 18 — Quaternions *(done — [tutorial](documentation/docs/19-quaternions.html))*
+- **Shipped:** a hand-rolled unit quaternion, [`src/math/Quat.hpp`](src/math/Quat.hpp) (header-only, glTF
+  `x,y,z,w` order): `fromAxisAngle`/`fromEuler`, the Hamilton product (`operator*`), the sandwich-product
+  `rotate`, `conjugate`/`inverse`, `toMat4`, and **`slerp`** (shortest-arc, with double-cover sign flip and a
+  near-parallel nlerp fallback). [`Transform`](src/scene/Transform.hpp) now stores a `Quat rotation` in place
+  of `Vec3 rotationEuler`, so orientations can no longer gimbal-lock and can be interpolated. Because
+  `Quat::fromEuler` reproduces the old `Rz·Ry·Rx` composition, the swap was **behaviour-preserving** (the
+  `KOI_CAPTURE` frame is visually identical — a few edge/highlight pixels differ only in their last FP bits).
+  Unit-tested in [`tests/test_quat.cpp`](tests/test_quat.cpp).
+- **Deliberately deferred:** a `Mat4` inverse; converting the camera to quaternions (its clamped yaw/pitch is
+  the correct control scheme — no roll — so it stays Euler by design); and wiring `slerp` into the demo (it's
+  implemented and tested, but the visible payoff waits for skeletal animation).
+- **Why here:** it's the small, self-contained math prerequisite that unblocks the **skeletal animation** track
+  (per-joint rotations stored as quaternions, `slerp`-ed between keyframes).
+
 ---
 
 ## ⚠️ Architecture pivots — decide early, build late
@@ -261,8 +282,8 @@ state, so glass, smoke, and foliage are all impossible.
 ### Engine systems
 
 **Math & transforms** — foundational; unblocks animation, culling, picking, and physics.
-- **Quaternions** (replace Euler rotations; enable smooth `slerp`) — deliberately deferred until a
-  real use case arrived. This is it.
+- ✅ **Quaternions** (replace Euler rotations; enable smooth `slerp`) — *done, Step 18*
+  ([`src/math/Quat.hpp`](src/math/Quat.hpp)); `Transform` now stores a unit `Quat`.
 - A **geometry utility layer** in [`src/math/`](src/math/): **AABB**, **ray**, **plane**, and
   **frustum** types with intersection tests. Unnamed until now, but it's the shared prerequisite
   of frustum culling, ray-cast picking, *and* the physics broadphase — one small, fully
@@ -368,9 +389,11 @@ Step 16  glTF PBR material import (Damaged Helmet)   ✅ done
    │
 Step 17  engine/app separation                       ✅ done
    │
+Step 18  quaternions (Transform rotation, slerp)     ✅ done
+   │
 CI + golden images                               ◀── next; highest production leverage, do early
    │
-quaternions ──▶ transparency + blending ──▶ glTF node hierarchy / Sponza
+transparency + blending ──▶ glTF node hierarchy / Sponza
    │
 geometry utils (AABB/ray/frustum) ──▶ render queue ──▶ frustum culling ──▶ cascaded shadows
    │
