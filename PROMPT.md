@@ -466,3 +466,17 @@ README/ARCHITECTURE/ROADMAP updated (render-queue pivot ✅, frustum culling ✅
 cross-platform CI + golden images** across ROADMAP (still a 1.0 requirement, but deferred to after the learning
 tracks). Deferred: sorting the queue by material/pipeline, instancing, culling the shadow pass to the light
 frustum, ray-cast picking.
+
+> The tutorial pages under documentation/docs/ have inconsistent, stale navigation bars: newer steps were
+> never backfilled (00-getting-started stops at Step 17; 18/19 never link to 20). Make every page's
+> `<nav class="site-nav">` the full, identical ordered navlink list (Home, Getting Started, 01…21) matching
+> `21-render-queue-and-frustum-culling.html`; keep `aria-current="page"` on each page's own self-link; don't
+> touch page bodies. Then run a link audit and confirm each page links to all targets. Pure doc-nav cleanup.
+
+Backfilled the stale doc navs (no code changes). Canonical source = page 21's `<nav class="site-nav">`: stripped
+its `aria-current`, then re-stamped `aria-current="page"` onto each page's own navlink (for `index.html` the
+*Home* navlink, not the `brand` — both point to `index.html`). Replaced the whole nav block on every page so all
+23 doc pages share the **identical** 23-navlink list (Home + tutorials 00–21) in the same order. The debt was
+pure truncation: **77 insertions, 0 deletions** across the 20 stale pages (`00`–`19`); `20`/`21`/`index` were
+already correct. Page bodies untouched. Link audit: **0 broken internal links** across all hrefs of all 23
+pages; each page verified to carry all 23 targets with exactly one correctly-placed `aria-current`.
