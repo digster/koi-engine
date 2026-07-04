@@ -415,3 +415,30 @@ the rotation matrix via a quaternion; not byte-identical, and that's expected fo
 New tutorial `documentation/docs/19-quaternions.html` + nav/index links (and Step 17's forward reference
 now links it); README/ARCHITECTURE/ROADMAP updated (quaternions ✅). Deferred: `Mat4` inverse, camera
 quaternions, and wiring `slerp` into the demo (kept for the skeletal-animation step).
+
+---
+
+## 2026-07-04
+
+> Show me options to work on next from the roadmap.
+> [In plan mode: surveyed the ROADMAP tracks and presented two rounds of option menus. User chose the
+>  **geometry-utility layer**, then scoped it to **also bundle the inverse-transpose normal matrix** fix.]
+
+Delivered **Step 19**: geometry utilities + the normal matrix. Added `Mat4` `inverse` (cofactor/adjugate,
+singular→identity fail-soft) and `transpose` to `src/math/Mat4.hpp`, and a new pure header
+`src/math/Geometry.hpp` with `Ray` (+`pointAt`), `Aabb` (center/extents/contains/expand/merge/`transformed`,
+inverted `empty()` identity), `Plane` (signedDistance/normalized), `Frustum` (`fromViewProjection` with
+**z∈[0,1]** extraction — near = `row2` alone, not `row3+row2` — + positive-vertex `intersectsAabb`), and a
+slab-based `intersect(ray, box, tHit)`. Spent the new inverse on the **normal matrix**: `triangle.vert`'s UBO
+grew to `{ mvp, model, normalMatrix }`, `vWorldNormal` now uses `mat3(normalMatrix)` =
+`transpose(inverse(model))` (tangent deliberately stays on `mat3(model)`); `GpuRenderer.cpp`'s per-draw
+`VertexUniform` uploads it — fixing lighting under **non-uniform scale**. Verified: warning-clean build,
+**all 90 doctests pass** (new `tests/test_geometry.cpp` covers inverse·M≈I for affine+perspective, transpose,
+AABB merge/contains/transformed, ray-box hit/miss/behind/inside, plane signed distance, frustum
+inside/outside/straddle, and normal-matrix perpendicularity under non-uniform scale). Demo scene is
+uniform-scale, so the `KOI_CAPTURE` frame is **visually unchanged** (helmet/sphere/cube/torus all correct) —
+measured vs a stashed pre-change capture: not byte-identical but only 240/3.69M bytes differ, max delta 23/255
+(last-bit FP noise from the CPU normal-matrix inverse, same class as Step 18). New tutorial
+`documentation/docs/20-geometry-utilities.html` + nav/index links;
+README/ARCHITECTURE/ROADMAP updated (geometry utils ✅, normal matrix ✅, `Mat4` inverse ✅). Deferred:
+render-queue extraction + actual draw-culling, ray-cast picking UI, ray-plane/ray-sphere tests.

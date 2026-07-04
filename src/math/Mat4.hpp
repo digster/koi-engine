@@ -78,6 +78,91 @@ struct Mat4 {
     };
 }
 
+// Transpose: mirror across the diagonal — element (r,c) swaps with (c,r). For a
+// pure ROTATION matrix this also happens to be its inverse (rotations are
+// orthonormal), and it's a building block of the "normal matrix" below.
+[[nodiscard]] inline Mat4 transpose(const Mat4& m) {
+    Mat4 out;
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            out.at(r, c) = m.at(c, r);
+        }
+    }
+    return out;
+}
+
+// General 4x4 inverse.
+//
+//  The inverse "undoes" a matrix: inverse(M) * M == identity. We need it for two
+//  jobs that arrive with the geometry utilities (Step 19):
+//    * UNPROJECTION — turning a 2D cursor back into a 3D world ray for picking
+//      needs the inverse of the view-projection matrix.
+//    * THE NORMAL MATRIX — transpose(inverse(model)) is what correctly carries
+//      surface normals through a non-uniform scale (see triangle.vert).
+//
+//  This is the textbook cofactor/adjugate method: build the matrix of cofactors,
+//  and divide by the determinant. A NON-obvious but load-bearing detail: this
+//  cofactor code indexes the flat array as if it were ROW-major, yet our storage
+//  is COLUMN-major. Those two "wrongs" cancel — reading a column-major array
+//  row-major is the transpose, and inverse-of-transpose equals transpose-of-
+//  inverse, so the result lands back in correct column-major order. (The
+//  inverse(M)*M == identity unit test is what actually pins this down.)
+//
+//  If the matrix is singular (determinant ~ 0, e.g. a zero scale collapsed an
+//  axis) there is no inverse; we return identity rather than NaNs — the same
+//  "degenerate input returns something sane" stance normalize() takes for the
+//  zero vector.
+[[nodiscard]] inline Mat4 inverse(const Mat4& mat) {
+    const float* m = mat.m;
+    float inv[16];
+
+    inv[0]  =  m[5]*m[10]*m[15] - m[5]*m[11]*m[14] - m[9]*m[6]*m[15] +
+               m[9]*m[7]*m[14]  + m[13]*m[6]*m[11] - m[13]*m[7]*m[10];
+    inv[4]  = -m[4]*m[10]*m[15] + m[4]*m[11]*m[14] + m[8]*m[6]*m[15] -
+               m[8]*m[7]*m[14]  - m[12]*m[6]*m[11] + m[12]*m[7]*m[10];
+    inv[8]  =  m[4]*m[9]*m[15]  - m[4]*m[11]*m[13] - m[8]*m[5]*m[15] +
+               m[8]*m[7]*m[13]  + m[12]*m[5]*m[11] - m[12]*m[7]*m[9];
+    inv[12] = -m[4]*m[9]*m[14]  + m[4]*m[10]*m[13] + m[8]*m[5]*m[14] -
+               m[8]*m[6]*m[13]  - m[12]*m[5]*m[10] + m[12]*m[6]*m[9];
+    inv[1]  = -m[1]*m[10]*m[15] + m[1]*m[11]*m[14] + m[9]*m[2]*m[15] -
+               m[9]*m[3]*m[14]  - m[13]*m[2]*m[11] + m[13]*m[3]*m[10];
+    inv[5]  =  m[0]*m[10]*m[15] - m[0]*m[11]*m[14] - m[8]*m[2]*m[15] +
+               m[8]*m[3]*m[14]  + m[12]*m[2]*m[11] - m[12]*m[3]*m[10];
+    inv[9]  = -m[0]*m[9]*m[15]  + m[0]*m[11]*m[13] + m[8]*m[1]*m[15] -
+               m[8]*m[3]*m[13]  - m[12]*m[1]*m[11] + m[12]*m[3]*m[9];
+    inv[13] =  m[0]*m[9]*m[14]  - m[0]*m[10]*m[13] - m[8]*m[1]*m[14] +
+               m[8]*m[2]*m[13]  + m[12]*m[1]*m[10] - m[12]*m[2]*m[9];
+    inv[2]  =  m[1]*m[6]*m[15]  - m[1]*m[7]*m[14]  - m[5]*m[2]*m[15] +
+               m[5]*m[3]*m[14]  + m[13]*m[2]*m[7]  - m[13]*m[3]*m[6];
+    inv[6]  = -m[0]*m[6]*m[15]  + m[0]*m[7]*m[14]  + m[4]*m[2]*m[15] -
+               m[4]*m[3]*m[14]  - m[12]*m[2]*m[7]  + m[12]*m[3]*m[6];
+    inv[10] =  m[0]*m[5]*m[15]  - m[0]*m[7]*m[13]  - m[4]*m[1]*m[15] +
+               m[4]*m[3]*m[13]  + m[12]*m[1]*m[7]  - m[12]*m[3]*m[5];
+    inv[14] = -m[0]*m[5]*m[14]  + m[0]*m[6]*m[13]  + m[4]*m[1]*m[14] -
+               m[4]*m[2]*m[13]  - m[12]*m[1]*m[6]  + m[12]*m[2]*m[5];
+    inv[3]  = -m[1]*m[6]*m[11]  + m[1]*m[7]*m[10]  + m[5]*m[2]*m[11] -
+               m[5]*m[3]*m[10]  - m[9]*m[2]*m[7]   + m[9]*m[3]*m[6];
+    inv[7]  =  m[0]*m[6]*m[11]  - m[0]*m[7]*m[10]  - m[4]*m[2]*m[11] +
+               m[4]*m[3]*m[10]  + m[8]*m[2]*m[7]   - m[8]*m[3]*m[6];
+    inv[11] = -m[0]*m[5]*m[11]  + m[0]*m[7]*m[9]   + m[4]*m[1]*m[11] -
+               m[4]*m[3]*m[9]   - m[8]*m[1]*m[7]   + m[8]*m[3]*m[5];
+    inv[15] =  m[0]*m[5]*m[10]  - m[0]*m[6]*m[9]   - m[4]*m[1]*m[10] +
+               m[4]*m[2]*m[9]   + m[8]*m[1]*m[6]   - m[8]*m[2]*m[5];
+
+    // Determinant, expanded along the first row using the cofactors above.
+    float det = m[0]*inv[0] + m[1]*inv[4] + m[2]*inv[8] + m[3]*inv[12];
+    if (std::abs(det) < 1e-12f) {
+        return Mat4::identity();  // singular: no inverse exists — fail soft.
+    }
+    const float invDet = 1.0f / det;
+
+    Mat4 out;
+    for (int i = 0; i < 16; ++i) {
+        out.m[i] = inv[i] * invDet;
+    }
+    return out;
+}
+
 // Translation: moves a point by t. Lives in the last column.
 [[nodiscard]] inline Mat4 translation(Vec3 t) {
     Mat4 out = Mat4::identity();

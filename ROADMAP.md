@@ -112,8 +112,8 @@ provides, and both build toward "metals that reflect their surroundings."
   background pixels. A dedicated **CLAMP_TO_EDGE** cubemap sampler avoids face seams. The demo sky is
   generated procedurally by [`tools/gen_skybox.py`](tools/gen_skybox.py) (a day-sky gradient + a sun
   aligned to the scene's sun light); toggle it at runtime with `8`.
-- **Deliberately deferred:** the *fullscreen-triangle + inverse-view-projection* variant (needs a
-  `Mat4` inverse the math library doesn't have yet); loading real HDR/equirectangular skies.
+- **Deliberately deferred:** the *fullscreen-triangle + inverse-view-projection* variant (the `Mat4` inverse it
+  needs now exists as of Step 19, but the variant itself is still unbuilt); loading real HDR/equirectangular skies.
 - **Why here:** the cubemap plumbing is the prerequisite for IBL — and a sky immediately makes every
   scene look better.
 
@@ -182,11 +182,29 @@ provides, and both build toward "metals that reflect their surroundings."
   `Quat::fromEuler` reproduces the old `Rz·Ry·Rx` composition, the swap was **behaviour-preserving** (the
   `KOI_CAPTURE` frame is visually identical — a few edge/highlight pixels differ only in their last FP bits).
   Unit-tested in [`tests/test_quat.cpp`](tests/test_quat.cpp).
-- **Deliberately deferred:** a `Mat4` inverse; converting the camera to quaternions (its clamped yaw/pitch is
+- **Deliberately deferred:** a `Mat4` inverse (built next, in Step 19); converting the camera to quaternions (its clamped yaw/pitch is
   the correct control scheme — no roll — so it stays Euler by design); and wiring `slerp` into the demo (it's
   implemented and tested, but the visible payoff waits for skeletal animation).
 - **Why here:** it's the small, self-contained math prerequisite that unblocks the **skeletal animation** track
   (per-joint rotations stored as quaternions, `slerp`-ed between keyframes).
+
+### ✅ Step 19 — Geometry utilities + normal matrix *(done — [tutorial](documentation/docs/20-geometry-utilities.html))*
+- **Shipped:** the long-deferred `Mat4` **`inverse`** + **`transpose`** ([`src/math/Mat4.hpp`](src/math/Mat4.hpp))
+  and a new pure, header-only geometry layer [`src/math/Geometry.hpp`](src/math/Geometry.hpp): **`Ray`**,
+  **`Aabb`** (center/extents/contains/expand/merge/`transformed`), **`Plane`** (signed distance), and
+  **`Frustum`** — Gribb–Hartmann plane extraction adapted to our **z ∈ [0,1]** clip convention (near plane is
+  `row2` *alone*, not `row3+row2`) plus a conservative positive-vertex AABB test — with a slab-based
+  `intersect(ray, box)`. The step's live payoff spends the new inverse on the **normal matrix**: the vertex
+  shader now carries normals by `transpose(inverse(model))`
+  ([`shaders/triangle.vert`](shaders/triangle.vert), uploaded per-draw from
+  [`GpuRenderer.cpp`](src/renderer/GpuRenderer.cpp)), fixing lighting under **non-uniform scale** (the tangent
+  correctly stays on `model`). Unit-tested in [`tests/test_geometry.cpp`](tests/test_geometry.cpp). The demo
+  scene is uniform-scale, so its `KOI_CAPTURE` frame is **visually unchanged** — not byte-identical, but only
+  ~240 edge/highlight bytes differ in their last FP bits (max ≈ 23/255), the same rebuild noise as Step 18.
+- **Deliberately deferred:** the **render-queue** extraction and *actually* skipping culled draws (frustum
+  culling); ray-cast **picking** UI (unprojecting the cursor); ray–plane / ray–sphere tests.
+- **Why here:** one small, pure, fully testable layer that is the shared prerequisite of **frustum culling**,
+  **ray-cast picking**, and the **physics broadphase** — build the math before the systems that consume it.
 
 ---
 
@@ -284,12 +302,12 @@ state, so glass, smoke, and foliage are all impossible.
 **Math & transforms** — foundational; unblocks animation, culling, picking, and physics.
 - ✅ **Quaternions** (replace Euler rotations; enable smooth `slerp`) — *done, Step 18*
   ([`src/math/Quat.hpp`](src/math/Quat.hpp)); `Transform` now stores a unit `Quat`.
-- A **geometry utility layer** in [`src/math/`](src/math/): **AABB**, **ray**, **plane**, and
-  **frustum** types with intersection tests. Unnamed until now, but it's the shared prerequisite
-  of frustum culling, ray-cast picking, *and* the physics broadphase — one small, fully
-  unit-testable module unblocks three tracks.
-- Inverse-transpose normal matrix (correct normals under non-uniform scale — a known gap noted in
-  `ARCHITECTURE.md`).
+- ✅ **Geometry utility layer** in [`src/math/`](src/math/): **AABB**, **ray**, **plane**, and
+  **frustum** types with intersection tests (plus the `Mat4` inverse) — *done, Step 19*
+  ([`src/math/Geometry.hpp`](src/math/Geometry.hpp)). The shared prerequisite of frustum culling, ray-cast
+  picking, *and* the physics broadphase — one small, fully unit-testable module unblocks three tracks.
+- ✅ **Inverse-transpose normal matrix** (correct normals under non-uniform scale) — *done, Step 19*, wired
+  through [`shaders/triangle.vert`](shaders/triangle.vert).
 
 **Animation** *(needs quaternions)*
 - Skeletal animation: vertex **skinning**, a joint hierarchy, glTF keyframe tracks.
@@ -391,11 +409,13 @@ Step 17  engine/app separation                       ✅ done
    │
 Step 18  quaternions (Transform rotation, slerp)     ✅ done
    │
+Step 19  geometry utils (AABB/ray/frustum) + normal matrix   ✅ done
+   │
 CI + golden images                               ◀── next; highest production leverage, do early
    │
 transparency + blending ──▶ glTF node hierarchy / Sponza
    │
-geometry utils (AABB/ray/frustum) ──▶ render queue ──▶ frustum culling ──▶ cascaded shadows
+render queue ──▶ frustum culling (consumes Step 19 geometry) ──▶ cascaded shadows
    │
 skeletal animation ──▶ debug draw / HUD / text ──▶ particles
    │

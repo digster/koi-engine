@@ -30,13 +30,15 @@ layout(location = 4) in vec3 inTangent;
 // A uniform buffer holds values constant across the whole draw call, unlike the
 // per-vertex `in` attributes above. SDL3's GPU API places VERTEX-stage uniform
 // buffers in descriptor set 1 (set 0 is for textures/storage); we upload this each
-// frame with SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, ...). Both mat4s are
+// frame with SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, ...). All mat4s are
 // column-major, matching koi::Mat4. Step 7 added `model` (the world matrix) on its
 // own: lighting happens in WORLD space, so we need the world position and world
-// normal, which the combined `mvp` alone can't give us.
+// normal, which the combined `mvp` alone can't give us. Step 19 added
+// `normalMatrix` = transpose(inverse(model)) so normals survive a non-uniform scale.
 layout(set = 1, binding = 0) uniform UBO {
-    mat4 mvp;    // proj * view * model — straight to clip space
-    mat4 model;  // model (world) matrix — places this object in the world
+    mat4 mvp;           // proj * view * model — straight to clip space
+    mat4 model;         // model (world) matrix — places this object in the world
+    mat4 normalMatrix;  // transpose(inverse(model)) — the correct transform for normals
 };
 
 layout(location = 0) out vec3 vColor;
@@ -53,14 +55,17 @@ void main() {
     // World-space position of this vertex (drop the homogeneous w, which is 1).
     vWorldPos = vec3(model * vec4(inPosition, 1.0));
 
-    // Rotate the normal into world space with the model's upper-left 3x3. This is
-    // correct for UNIFORM scale (the only kind our scene uses): scale + rotation
-    // only changes the normal's length, which the fragment shader's normalize()
-    // undoes. Non-uniform scale would need the inverse-transpose "normal matrix".
-    vWorldNormal = mat3(model) * inNormal;
+    // Carry the normal into world space with the NORMAL MATRIX, not `model`.
+    // A normal is a covector (it must stay perpendicular to the surface), so under
+    // a non-uniform scale — say 2x on X only — multiplying by model would tilt it
+    // off the surface. transpose(inverse(model)) is the transform that keeps it
+    // perpendicular; for a pure rotation/uniform scale it reduces to mat3(model)
+    // up to a length the fragment shader's normalize() discards anyway.
+    vWorldNormal = mat3(normalMatrix) * inNormal;
 
-    // Rotate the tangent into world space too (same upper-left 3x3). The fragment
-    // shader re-orthonormalizes it against the interpolated normal and builds the TBN
+    // The TANGENT, unlike the normal, IS an ordinary surface direction, so it
+    // rides the plain `model` matrix (mat3). The fragment shader then re-
+    // orthonormalizes it against the interpolated normal and rebuilds the TBN
     // basis from the pair — so a tangent-space normal map can be lit in world space.
     vWorldTangent = mat3(model) * inTangent;
 

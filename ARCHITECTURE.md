@@ -3,7 +3,7 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 17 (window & render loop, the first triangle, geometry in GPU
+through Step 19 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
@@ -20,8 +20,11 @@ per-vertex tangent + **TBN** basis, with **mipmaps** and **anisotropic filtering
 the environment lights the surfaces themselves and metals reflect their surroundings, and **glTF PBR
 material import** — reading a model's base-colour / metallic-roughness / normal / AO / **emissive** maps
 straight from the file (PNG/JPG decoded by **stb_image**, colour textures handled as **sRGB**), proven by
-loading the Khronos **Damaged Helmet**, and finally an **engine/app separation** that lifts the demo out of
-the engine into a `samples/` app behind a public `koi::Application` interface).
+loading the Khronos **Damaged Helmet**, an **engine/app separation** that lifts the demo out of
+the engine into a `samples/` app behind a public `koi::Application` interface, **quaternion** rotations that
+replace Euler angles in `Transform` (no gimbal lock, `slerp`-able), and a **geometry-utility layer** — AABB /
+ray / plane / frustum plus the `Mat4` **inverse** — whose first payoff is an inverse-transpose **normal
+matrix** for correct lighting under non-uniform scale).
 
 ## Guiding principles
 
@@ -87,7 +90,7 @@ bundle. See the *Engine / app separation (Step 17)* section below.
 | `Camera` | [src/scene/Camera.*](src/scene/) | A yaw/pitch fly camera (position + angles). Produces a `view` matrix via `lookAt`; `processKeyboard`/`addMouseLook` update it from input. Lives above the renderer and knows nothing about the GPU; its header is SDL-free. Logic unit-tested in `tests/test_camera.cpp`. |
 | `Vertex` | [src/renderer/Vertex.hpp](src/renderer/Vertex.hpp) | The CPU-side layout of one vertex (3D position + color + uv + normal + **tangent**, 56 bytes since Step 13). Its byte layout is the contract the pipeline's vertex attributes describe; pinned by `static_assert`s and `tests/test_vertex.cpp`. |
 | `Tangents` | [src/renderer/Tangents.hpp](src/renderer/Tangents.hpp) | Header-only, SDL-free (Step 13): pure math to derive a per-vertex **tangent** for normal mapping — `triangleTangent` (Lengyel, from positions + UVs) and `orthonormalizeTangent` (Gram-Schmidt vs. the normal, with a safe fallback). Used by `ModelLoader`; unit-tested headlessly (`tests/test_tangent.cpp`), the same CPU-twin pattern as `Pbr.hpp`/`Light.hpp`. |
-| `math` (`Vec`, `Mat4`, `Quat`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`), column-major 4×4 matrix math (translate/rotate/scale/`perspective`/**`orthographic`**/`lookAt`), and a unit **`Quat`** quaternion (Step 18: axis-angle/Euler construction, Hamilton product, sandwich `rotate`, `toMat4`, **`slerp`**). No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp` + `tests/test_quat.cpp`. |
+| `math` (`Vec`, `Mat4`, `Quat`, `Geometry`) | [src/math/](src/math/) | Hand-rolled, header-only vector (`Vec2/3/4`), column-major 4×4 matrix math (translate/rotate/scale/`perspective`/**`orthographic`**/`lookAt`, and Step 19's **`inverse`** + **`transpose`**), a unit **`Quat`** quaternion (Step 18: axis-angle/Euler construction, Hamilton product, sandwich `rotate`, `toMat4`, **`slerp`**), and the Step 19 **geometry layer** [`Geometry.hpp`](src/math/Geometry.hpp) — **`Ray`**, **`Aabb`**, **`Plane`**, **`Frustum`** (z∈[0,1] plane extraction) with ray-box + frustum-box tests. No GLM — written ourselves so nothing stays a black box. Pure, so fully unit-tested in `tests/test_math.cpp` + `tests/test_quat.cpp` + `tests/test_geometry.cpp`. |
 | `Shader` | [src/renderer/Shader.*](src/renderer/) | Loads a compiled shader for the active backend: `selectShaderVariant` (pure, unit-tested) picks the format/extension/entry point; `loadShader` reads the file and creates the `SDL_GPUShader` (with the right uniform-buffer and sampler counts). |
 | `Log` | [src/core/Log.hpp](src/core/Log.hpp) | Leveled logging macros over SDL's logger; one place to control verbosity. |
 
@@ -290,8 +293,10 @@ normal. Lighting is computed **in world space**, which forces one structural cha
 the vertex shader needs the **model matrix on its own** (not just the combined MVP) to
 output each fragment's world position + world normal. So the vertex uniform grew to
 `{ mvp, model }`, pushed per node (`model` is the node's `worldMatrix()`). World normal
-= `mat3(model) * normal` — correct for the scene's **uniform** scale; non-uniform scale
-would need the inverse-transpose normal matrix (a noted future refinement).
+= `mat3(model) * normal` — correct for the scene's **uniform** scale. *(Step 19 lifted this
+restriction: the uniform is now `{ mvp, model, normalMatrix }` with `normalMatrix =
+transpose(inverse(model))`, so normals stay correct under non-uniform scale — the tangent
+keeps riding `model`. See the geometry-utilities step.)*
 
 ```
    vertex shader (set=1)            fragment shader
@@ -525,8 +530,8 @@ The scene finally gets a **world behind it**: a **cubemap** sky drawn in the sam
 after the geometry. A cubemap is six square textures forming a cube, sampled by a 3D
 **direction** rather than a 2D UV — exactly the shape "a colour per viewing direction" needs.
 The chosen technique is the **cube-around-the-camera** one (over the fullscreen-triangle +
-inverse-view-projection variant, which would need a `Mat4` inverse the math library doesn't
-have yet).
+inverse-view-projection variant, which would need a `Mat4` inverse — added later in Step 19,
+though this variant is still unbuilt).
 
 ```
    tools/gen_skybox.py  ─ 6 BMP faces ─►  loadCubemap → uploadCubemap (type CUBE, 6 layers, mips)

@@ -32,6 +32,7 @@
     <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
     <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
     <a class="navlink" href="19-quaternions.html">Quaternions</a>
+    <a class="navlink" href="20-geometry-utilities.html">Geometry Utilities</a>
   </div>
 </nav>
 
@@ -156,6 +157,13 @@
       quaternion as an axis + half-angle, the sandwich product that rotates a vector, the Hamilton product
       that composes turns, and <code>slerp</code> for smooth interpolation — then swapping
       <code>Transform</code> to a <code>Quat</code> (and why the camera keeps its yaw/pitch).</p>
+    </a>
+    <a class="card" href="20-geometry-utilities.html">
+      <h3>Geometry Utilities →</h3>
+      <p>The spatial primitives an engine reuses everywhere: a <code>Mat4</code> inverse, an axis-aligned
+      bounding box, a ray with the slab test, a plane's signed distance, and the camera frustum extracted from
+      the view-projection matrix (with the z∈[0,1] near-plane caveat) — then spending the new inverse on a real
+      fix, the <strong>normal matrix</strong> for correct lighting under non-uniform scale.</p>
     </a>
   </div>
 

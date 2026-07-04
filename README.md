@@ -9,14 +9,17 @@ in [`documentation/docs/`](documentation/docs/index.html) that explains the unde
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`documentation/docs/index.html`](documentation/docs/index.html) in a browser.
 
-> **Current status — Step 18:** **quaternions**. Rotation no longer uses Euler angles. A hand-rolled unit
-> **`Quat`** (in `src/math/`) — axis-angle/Euler construction, the Hamilton product, a sandwich-product
-> `rotate`, `toMat4`, and **`slerp`** — now backs `Transform`, so orientations can't **gimbal-lock** and can be
-> interpolated smoothly. That `slerp` is the prerequisite for the skeletal-animation milestone. Because
-> `Quat::fromEuler` reproduces the old `Rz·Ry·Rx` rotation, the swap is behaviour-preserving — the demo renders
-> the same frame — and the fly camera keeps its clamped **yaw/pitch** by design (an FPS camera wants no roll).
-> *(Step 17 drew the engine/app boundary: the demo lives in [`samples/demo/`](samples/demo) as a public
-> **`koi::Application`**, built as `./build/koi-demo`.)*
+> **Current status — Step 19:** **geometry utilities + the normal matrix**. A new pure, header-only
+> [`src/math/Geometry.hpp`](src/math/Geometry.hpp) adds the spatial primitives an engine reuses everywhere —
+> **`Ray`**, an axis-aligned **`Aabb`**, a **`Plane`**, and the camera **`Frustum`** (extracted from the
+> view-projection matrix, with the z∈[0,1] near-plane caveat) — plus a ray-box and frustum-box test, backed by
+> the long-missing `Mat4` **`inverse`**/**`transpose`**. The step spends that inverse on a real fix: the vertex
+> shader now carries normals by the **normal matrix** `transpose(inverse(model))`, so surfaces are lit
+> correctly under **non-uniform scale**. It's pure math (fully unit-tested), the shared prerequisite for frustum
+> culling, ray-cast picking, and physics; the demo scene is uniform-scale, so its frame is visually unchanged
+> (only last-bit FP noise on a handful of edge pixels).
+> *(Step 18 replaced Euler rotation in `Transform` with a hand-rolled unit **`Quat`** — no gimbal lock,
+> `slerp`-able.)*
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
@@ -108,6 +111,11 @@ Full instructions, controls, and tests: [documentation/docs/00-getting-started.h
   gimbal lock: why Euler angles jam and can't be blended, the unit quaternion as an axis + half-angle, the
   sandwich product that rotates a vector, the Hamilton product that composes turns, and `slerp` for smooth
   interpolation, mapped to the Step 18 code that swaps `Transform` to a `Quat`.
+- [documentation/docs/20-geometry-utilities.html](documentation/docs/20-geometry-utilities.html) — the spatial
+  primitives an engine reuses everywhere: a `Mat4` inverse, an axis-aligned bounding box, a ray with the slab
+  test, a plane's signed distance, and the camera frustum extracted from the view-projection matrix (with the
+  z∈[0,1] near-plane caveat) — then spending the inverse on the **normal matrix** for correct lighting under
+  non-uniform scale, mapped to the Step 19 code.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap

@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Geometry Utilities · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
+    <a class="navlink" href="16-image-based-lighting.html">Image-based Lighting</a>
+    <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
+    <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
+    <a class="navlink" href="19-quaternions.html">Quaternions</a>
+    <a class="navlink" href="20-geometry-utilities.html" aria-current="page">Geometry Utilities</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Geometry Utilities</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 19:</strong> build the small kit of <em>spatial primitives</em> an engine leans on
+    constantly — a <strong>ray</strong>, an axis-aligned <strong>bounding box</strong>, a <strong>plane</strong>,
+    and the camera's view <strong>frustum</strong> — plus the missing <code>Mat4</code> <strong>inverse</strong>
+    they need. These are pure math (no GPU), so we can write them and pin them down with tests before any system
+    consumes them.</p>
+    <p>They aren't four unrelated gadgets: they're <em>one idea reused three ways</em>. Box + frustum answers
+    "can the camera see this?" (<strong>culling</strong>); ray + box answers "what's under the cursor?"
+    (<strong>picking</strong>); box-vs-box is the cheap first pass of collision (<strong>physics</strong>). To
+    make the step visibly pay off <em>today</em>, we also spend the new <code>inverse</code> on a real bug fix:
+    the <strong>normal matrix</strong>, which finally lets a non-uniformly-scaled object be lit correctly.</p>
+  </blockquote>
+
+  <h2>1. First, the missing piece: a matrix inverse</h2>
+
+  <p>A matrix <em>transforms</em> space; its <strong>inverse</strong> is the transform that exactly
+  <em>undoes</em> it — <code>inverse(M) · M = identity</code>. If <code>M</code> moves a model into the world,
+  <code>inverse(M)</code> brings a world point back into the model's own frame. We've gotten this far without
+  one only because we always <em>built</em> the matrices we needed directly (the view matrix, for instance, is
+  the camera's inverse assembled by hand in <a href="../../src/math/Mat4.hpp">lookAt</a>). Two jobs in this step
+  finally force the general case:</p>
+
+  <pre class="diagram">screen pixel  ──inverse(proj·view)──▶  world-space ray      (picking)
+model matrix  ──transpose(inverse(·))─▶  normal matrix        (correct normals under scale)</pre>
+
+  <p>Our <code>inverse</code> is the textbook <em>cofactor / adjugate</em> method: build the matrix of signed
+  minors, then divide by the determinant. If the determinant is ~0 the matrix is <strong>singular</strong> (some
+  scale collapsed an axis, so information was lost and there's nothing to undo) — we return identity rather than
+  emit NaNs, the same "degenerate input stays sane" stance <code>normalize</code> takes for the zero vector.</p>
+
+  <h2>2. AABB — the axis-aligned bounding box</h2>
+
+  <p>A bounding box is the smallest box that fully wraps a piece of geometry. <em>Axis-aligned</em> means its
+  faces stay parallel to the world's X/Y/Z axes — the box never tilts, even if the object inside it does. That
+  restriction is the entire point: because the faces are axis-parallel, "is this point inside?" and "do these
+  two boxes overlap?" reduce to a few <code>min</code>/<code>max</code> comparisons per axis, with no rotation
+  math at all. A tighter <em>oriented</em> box would cull a hair more, but the AABB's near-free tests are why
+  culling, physics broadphase, and BVH trees are all built on it.</p>
+
+  <pre class="diagram">Aabb { Vec3 min;  Vec3 max; }         // two opposite corners define the whole box
+contains(p)  =  min ≤ p ≤ max          (componentwise — 6 comparisons)</pre>
+
+  <p>The subtle operation is <code>transformed(M)</code>: turning a mesh's <em>local</em> box into a
+  <em>world</em> box. You can't just transform <code>min</code> and <code>max</code> — once the box rotates it's
+  no longer axis-aligned, so those two corners no longer describe it. Instead we transform all <strong>eight
+  corners</strong> and fit a fresh AABB around them:</p>
+
+  <pre class="diagram">local box ──rotate 45°──▶ tilted box ──re-fit──▶ new, larger axis-aligned box
+   the diagonal corner swings out, so the new bounds are WIDER than the original</pre>
+
+  <p>That "build from nothing, fold points in" pattern needs an identity element, so <code>Aabb::empty()</code>
+  returns a deliberately <em>inverted</em> box (<code>min = +∞</code>, <code>max = −∞</code>) that contains
+  nothing; <code>expand</code> then grows it to swallow each corner. (A default <code>{0,0,0}…{0,0,0}</code> box
+  would wrongly include the origin.)</p>
+
+  <h2>3. Ray — a half-line through space</h2>
+
+  <p>A ray is an <strong>origin</strong> plus a <strong>direction</strong>: the set of points
+  <code>origin + t·dir</code> for <code>t ≥ 0</code>. The canonical use is <strong>picking</strong> — to find
+  what the user clicked, you shoot the ray that starts at the camera and passes through the cursor's pixel out
+  into the scene, then ask what it hits first. (Producing that ray is exactly the <code>inverse(proj·view)</code>
+  "unprojection" from §1; wiring the cursor to it is a later step, but the ray/box test it needs lands here.)</p>
+
+  <p>Testing a ray against an AABB uses the elegant <strong>slab method</strong>. An AABB is the intersection of
+  three "slabs" — the space between its two parallel faces on each axis. For each axis we compute the pair of
+  <code>t</code> values where the ray crosses that slab's two faces, and keep the running <em>overlap</em> of the
+  three <code>[t<sub>enter</sub>, t<sub>exit</sub>]</code> intervals:</p>
+
+  <pre class="diagram">for each axis:  t0 = (min − origin)/dir,  t1 = (max − origin)/dir   (swap if dir &lt; 0)
+                tmin = max(tmin, t0)      tmax = min(tmax, t1)
+hit  ⟺  tmin ≤ tmax          the ray is inside all three slabs at once</pre>
+
+  <p>We start <code>tmin</code> at 0 so a box entirely <em>behind</em> the origin correctly reports a miss (the
+  ray is a half-line, not an infinite line), and if the origin sits inside the box the entry distance clamps to
+  0. A neat bonus: for a ray running exactly parallel to an axis, <code>dir = 0</code> makes <code>t0/t1</code>
+  come out as IEEE <code>±∞</code>, and the <code>min</code>/<code>max</code> handle it for free — inside the
+  slab it's ignored, outside it collapses to a miss.</p>
+
+  <h2>4. Plane — and which side you're on</h2>
+
+  <p>A plane is an infinite flat surface. We store it as a unit <strong>normal</strong> and a scalar
+  <code>d</code> such that every point on the plane satisfies <code>normal · p + d = 0</code>. The value of that
+  expression for an arbitrary point — its <strong>signed distance</strong> — is the workhorse: its
+  <em>sign</em> says which side of the plane the point is on, and (for a unit normal) its <em>magnitude</em> is
+  the actual distance to the plane.</p>
+
+  <pre class="diagram">signedDistance(p) = normal · p + d      &gt; 0 : in front (normal's side)
+                                        = 0 : on the plane
+                                        &lt; 0 : behind</pre>
+
+  <p>That single test is the atom of visibility culling — because a frustum is just six planes, all facing
+  inward.</p>
+
+  <h2>5. Frustum — the shape the camera can see</h2>
+
+  <p>Not everything in the world is on screen. The region a perspective camera actually captures is a
+  <strong>frustum</strong>: a pyramid with its tip at the eye, sliced off by a <em>near</em> and a <em>far</em>
+  plane — six planes in all (left, right, bottom, top, near, far). If we know these six planes we can, for each
+  object, ask "is it inside?" and skip drawing the ones that aren't. That's <strong>frustum culling</strong>,
+  and on a big scene it's the difference between drawing a thousand objects and drawing the fifty you can see.</p>
+
+  <pre class="diagram">                far plane
+             ┌───────────────┐
+              \             /
+               \  visible  /        every point that survives the GPU's clip test
+                \ region  /         lies on the INSIDE of all six planes
+                 \       /
+                  └─────┘  near plane
+                     △ eye</pre>
+
+  <p>Here's the beautiful part (due to Gribb &amp; Hartmann): the six planes fall straight out of the
+  <strong>view-projection matrix</strong>, no geometry required. Remember that a point's clip coordinate is just
+  a row of that matrix dotted with the point. The GPU keeps a point only when its clip coordinates satisfy
+  <code>−w ≤ x ≤ w</code>, <code>−w ≤ y ≤ w</code>, and the depth bounds. Rearrange each of those inequalities
+  into the form "<code>(some row combination) · p ≥ 0</code>" and you've got a plane:</p>
+
+  <pre class="diagram">left   = row3 + row0        right  = row3 − row0
+bottom = row3 + row1        top    = row3 − row1
+near   = row2               far    = row3 − row2      ◀── note the near plane!</pre>
+
+  <p><strong>Watch the depth convention.</strong> Most textbooks write <code>near = row3 + row2</code>, because
+  they assume OpenGL's clip range <code>−w ≤ z ≤ w</code>. Koi — like Vulkan, D3D and Metal, and matching our
+  <a href="../../src/math/Mat4.hpp">perspective()</a> — maps depth to <code>0 ≤ z ≤ w</code> instead. So the
+  near-plane inequality is simply <code>z ≥ 0</code>, and the near plane is <code>row2</code> <em>alone</em>.
+  Use the OpenGL formula with our projection and objects mysteriously vanish at the near plane — a bug worth
+  recognising on sight.</p>
+
+  <p>Testing a box against the frustum uses the <strong>positive-vertex</strong> trick. For each plane we only
+  need to check the single AABB corner that reaches furthest in the plane's normal direction (the "positive
+  vertex"). If even <em>that</em> corner is behind the plane, the whole box is, and we reject immediately:</p>
+
+  <pre class="diagram">for each of the 6 planes:
+    p⁺ = the box corner furthest along this plane's normal
+    if signedDistance(p⁺) &lt; 0  →  box is fully outside  →  cull it
+otherwise: visible (or straddling — which we conservatively keep)</pre>
+
+  <p>The test is deliberately <em>conservative</em>: it may occasionally keep a box that only pokes into a
+  frustum corner. That's fine — a culler must never wrongly discard something visible; a rare false "keep" just
+  costs one extra draw.</p>
+
+  <h2>6. Spending the inverse: the normal matrix (a real fix)</h2>
+
+  <p>Now the visible payoff. Since <a href="08-lighting-and-normals.html">Step 7</a> the vertex shader has
+  carried surface normals into world space with the model matrix's upper-left 3×3, guarded by a comment that it
+  "would need the inverse-transpose under non-uniform scale." We can finally lift that restriction.</p>
+
+  <p>The issue is that a <strong>normal is not an ordinary direction</strong> — it's a <em>covector</em>, defined
+  by staying <em>perpendicular</em> to the surface. Apply a non-uniform scale (say 2× on X only) and an ordinary
+  direction lying in the surface stretches with it, but a normal transformed the same way tilts <em>off</em> the
+  surface — it's no longer perpendicular, and the lighting goes wrong:</p>
+
+  <pre class="diagram">scale ×2 on X:
+   surface tangent  →   stretches, stays in the surface        (use  model)
+   surface normal   →   naïve: tilts OFF the surface  ✗        (need  transpose(inverse(model)))
+                        correct: the "normal matrix" keeps it ⟂ ✓</pre>
+
+  <p>The transform that keeps a normal perpendicular is the <strong>inverse-transpose</strong> of the model's
+  3×3, the classic <em>normal matrix</em>. For an affine matrix, computing
+  <code>transpose(inverse(model))</code> on the full 4×4 and taking its <code>mat3()</code> gives exactly this —
+  the translation coupling lands in the 4th column, outside the 3×3 block. So the CPU uploads one extra matrix,
+  and the shader switches a single line:</p>
+
+  <pre class="diagram">// GpuRenderer, per draw                 // triangle.vert
+struct VertexUniform {                    vWorldNormal  = mat3(normalMatrix) * inNormal;  // ← was mat3(model)
+  Mat4 mvp;                               vWorldTangent = mat3(model)        * inTangent;  // stays on model
+  Mat4 model;
+  Mat4 normalMatrix;  // transpose(inverse(model))
+};</pre>
+
+  <p>Note the <strong>asymmetry</strong>: only the <em>normal</em> moves to the normal matrix. The
+  <strong>tangent</strong> is a genuine surface direction, so it keeps riding <code>model</code>; the fragment
+  shader then re-orthonormalises the pair (Gram–Schmidt) and rebuilds the bitangent, exactly as before. Get this
+  backwards and normal-mapped surfaces light incorrectly under scale.</p>
+
+  <h2>7. In the engine</h2>
+
+  <ul>
+    <li><a href="../../src/math/Mat4.hpp">src/math/Mat4.hpp</a> — gains <code>transpose</code> and the general
+    4×4 <code>inverse</code> (free functions, like the rest of the matrix API).</li>
+    <li><a href="../../src/math/Geometry.hpp">src/math/Geometry.hpp</a> — the new header: <code>Ray</code>,
+    <code>Aabb</code>, <code>Plane</code>, <code>Frustum</code>, and the <code>intersect(ray, box)</code> test.
+    Pure and header-only, like <a href="../../src/math/Vec.hpp">Vec</a> / <a href="../../src/math/Quat.hpp">Quat</a>.</li>
+    <li><a href="../../shaders/triangle.vert">shaders/triangle.vert</a> and
+    <a href="../../src/renderer/GpuRenderer.cpp">GpuRenderer.cpp</a> — the normal-matrix wiring from §6.</li>
+    <li><a href="../../tests/test_geometry.cpp">tests/test_geometry.cpp</a> — pins all of it down.</li>
+  </ul>
+
+  <p>Because the demo scene uses only <em>uniform</em> scale, its lit frame is <strong>visually identical</strong>
+  (under uniform scale the new normal differs only by a length that <code>normalize()</code> erases), while any
+  non-uniformly-scaled object would now be lit correctly. It isn't quite <em>byte</em>-identical, though: like
+  the quaternion swap in <a href="19-quaternions.html">Step 18</a>, a couple of hundred edge/highlight bytes
+  differ in their last floating-point bits (max ≈ 23/255) — computing the normal matrix through a CPU
+  <code>inverse</code> rounds a shade differently than the old <code>mat3(model)</code>. That's FP noise, not a
+  visible change. The tests carry the real proof:</p>
+
+  <pre class="diagram">inverse(M) · M              == identity            (affine AND perspective matrices)
+box.transformed(rotZ 45°)    widens to ±√2 in x,y   (re-fit around the tilted corners)
+ray(0,0,5 → −Z) vs unit box == hit at t = 4         (miss when the box is behind the origin)
+frustum(proj·view) rejects a box behind the camera  (the z∈[0,1] near plane, working)
+transpose(inverse(model))·N  stays ⟂ to model·T     (under non-uniform scale — the §6 fix)</pre>
+
+  <h2>8. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Run the tests.</strong> <code>cmake --build build</code> then <code>./build/koi-tests</code> —
+    the new geometry suite proves every identity above.</li>
+    <li><strong>Confirm nothing moved.</strong> <code>KOI_CAPTURE=out.bmp ./build/koi-demo</code> renders the
+    same frame as before; the normal-matrix change is invisible until an object is non-uniformly scaled.</li>
+    <li><strong>See the fix.</strong> Give a demo node a lopsided scale (e.g.
+    <code>node-&gt;transform().scale = {2, 1, 1}</code>) and capture again: with the normal matrix its shading
+    stays correct where the old <code>mat3(model)</code> path would have skewed the highlights.</li>
+  </ol>
+
+  <h2>9. What's next</h2>
+
+  <p>➡️ This layer is the shared foundation for three tracks. The immediate next move is a
+  <strong>render-queue</strong> extraction — turning the inline draw loop into a flat list — so we can build each
+  node's world <code>Aabb</code>, test it against the camera <code>Frustum</code>, and actually
+  <em>skip</em> the culled draws (<strong>frustum culling</strong>). The same primitives then power
+  <strong>ray-cast picking</strong> (unproject the cursor with <code>inverse(proj·view)</code>, then
+  <code>intersect</code> against node boxes) and, later, the <strong>physics broadphase</strong>. See the
+  <a href="../../ROADMAP.md">roadmap</a> for the sequenced plan.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

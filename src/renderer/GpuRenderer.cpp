@@ -1808,14 +1808,20 @@ void GpuRenderer::recordNode(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
         indexBinding.buffer = mesh->indexBuffer();
         SDL_BindGPUIndexBuffer(pass, &indexBinding, mesh->indexElementSize());
 
-        // Push the two matrices the vertex shader needs: the full MVP (proj·view·
-        // world, to clip space) AND the model/world matrix on its own (so the
-        // fragment shader can light in world space). `model` is the node's world
-        // matrix, already computed by updateWorldTransforms — world already folds in
-        // every ancestor's transform, so parented objects move as a group for free.
-        struct VertexUniform { Mat4 mvp; Mat4 model; };
+        // Push the three matrices the vertex shader needs: the full MVP (proj·view·
+        // world, to clip space), the model/world matrix on its own (so the fragment
+        // shader can light in world space), and the NORMAL MATRIX. `model` is the
+        // node's world matrix, already computed by updateWorldTransforms — world
+        // already folds in every ancestor's transform, so parented objects move as a
+        // group for free.
+        //
+        // normalMatrix = transpose(inverse(model)) is the transform that keeps
+        // surface normals perpendicular under a non-uniform scale (Step 19). The
+        // shader takes its mat3() — for an affine matrix the translation part lands
+        // outside that 3x3 block, so this is exactly the classic 3x3 normal matrix.
+        struct VertexUniform { Mat4 mvp; Mat4 model; Mat4 normalMatrix; };
         const Mat4 model = node.worldMatrix();
-        const VertexUniform u = { projView * model, model };
+        const VertexUniform u = { projView * model, model, transpose(inverse(model)) };
         SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &u, sizeof(u));
         SDL_DrawGPUIndexedPrimitives(pass, mesh->indexCount(), /*num_instances=*/1,
                                      /*first_index=*/0, /*vertex_offset=*/0,
