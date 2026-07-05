@@ -88,8 +88,11 @@ layout(set = 3, binding = 0) uniform LightUBO {
 
 // Per-object material (set 3, binding 1). `material`: x = metallic FACTOR, y = roughness
 // FACTOR — multipliers on the metallic-roughness MAP's channels since Step 13 (a white
-// fallback leaves them unchanged). `emissive` (Step 16): rgb = the emissive FACTOR
-// (glTF emissiveFactor × emissive_strength), multiplying the emissive map; 0 = no glow.
+// fallback leaves them unchanged); z is unused; w = OPACITY (Step 21, glTF baseColorFactor.a):
+// the surface's alpha, multiplied by the albedo map's own alpha to form outColor.a. For an
+// opaque material this is 1, and since the opaque pipeline has blending off it's ignored.
+// `emissive` (Step 16): rgb = the emissive FACTOR (glTF emissiveFactor × emissive_strength),
+// multiplying the emissive map; 0 = no glow.
 layout(set = 3, binding = 1) uniform MaterialUBO {
     vec4 material;
     vec4 emissive;
@@ -185,7 +188,10 @@ vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float roughness) {
 }
 
 void main() {
-    vec3 albedo = texture(uAlbedoMap, vUV).rgb * vColor;
+    // Sample the base-colour map ONCE and keep the whole rgba: .rgb tints the surface
+    // (× the vertex colour) as before, while .a feeds the transparency alpha below.
+    vec4 albedoSample = texture(uAlbedoMap, vUV);
+    vec3 albedo = albedoSample.rgb * vColor;
 
     // --- Normal mapping: perturb the geometric normal with the normal map ---------
     // Build the TBN basis at this fragment. The interpolated tangent may have drifted
@@ -304,5 +310,10 @@ void main() {
     // add nothing. Bright emissive pixels also cross the Step 10 bloom threshold and glow.
     color += texture(uEmissiveMap, vUV).rgb * emissive.rgb;
 
-    outColor = vec4(color, 1.0);
+    // Alpha (Step 21): the material's opacity (material.w) times the albedo map's own
+    // alpha. Opaque materials keep opacity 1 and their images are fully opaque, so this
+    // is 1.0 — and the opaque pipeline has blending disabled anyway, so it's ignored.
+    // Only the transparent pipeline (blend on, depth-write off) consumes this to
+    // composite the surface OVER what's already in the HDR target.
+    outColor = vec4(color, material.w * albedoSample.a);
 }

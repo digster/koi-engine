@@ -17,6 +17,7 @@
 #include "math/Mat4.hpp"
 #include "renderer/RenderQueue.hpp"
 #include "renderer/Vertex.hpp"
+#include "scene/Material.hpp"  // partitionByBlend reads Material::alphaMode
 
 using namespace koi;
 
@@ -125,4 +126,110 @@ TEST_CASE("cullToFrustum clears the output before filling it") {
     const std::size_t kept = cullToFrustum(items, f, visible);
     CHECK(kept == 1);
     CHECK(visible.size() == 1);
+}
+
+// ----------------------------------------------------------------------------
+//  partitionByBlend — the Step 21 opaque/transparent split + back-to-front sort.
+//  Pure (Material is header-only, no GPU), so we build real Materials + items and
+//  view them through a pointer list exactly as recordScene does after culling.
+// ----------------------------------------------------------------------------
+
+// A render item tagged with a material and centred on `center` (a small point box,
+// so worldBounds.center() == center drives the distance sort).
+static RenderItem itemFor(const Material* mat, Vec3 center) {
+    RenderItem item;
+    item.material    = mat;
+    item.worldBounds = Aabb{center - Vec3{0.1f, 0.1f, 0.1f}, center + Vec3{0.1f, 0.1f, 0.1f}};
+    return item;
+}
+
+// Wrap a vector<RenderItem> in the pointer list partitionByBlend consumes.
+static std::vector<const RenderItem*> asPointers(const std::vector<RenderItem>& items) {
+    std::vector<const RenderItem*> ptrs;
+    for (const RenderItem& it : items) {
+        ptrs.push_back(&it);
+    }
+    return ptrs;
+}
+
+TEST_CASE("partitionByBlend splits items by AlphaMode, opaque in queue order") {
+    Material opaque;  // defaults to AlphaMode::Opaque
+    Material blend;   blend.alphaMode = AlphaMode::Blend;
+
+    // Interleave the two modes so a correct split can't be an accident of ordering.
+    std::vector<RenderItem> items = {
+        itemFor(&opaque, {0, 0, 0}),
+        itemFor(&blend,  {0, 0, 1}),
+        itemFor(&opaque, {0, 0, 2}),
+        itemFor(&blend,  {0, 0, 3}),
+    };
+    const std::vector<const RenderItem*> visible = asPointers(items);
+
+    std::vector<const RenderItem*> opaqueOut, transparentOut;
+    partitionByBlend(visible, /*cameraPos=*/{0, 0, 10}, /*sortTransparent=*/true,
+                     opaqueOut, transparentOut);
+
+    // Opaque bucket keeps the queue's original relative order.
+    REQUIRE(opaqueOut.size() == 2);
+    CHECK(opaqueOut[0] == &items[0]);
+    CHECK(opaqueOut[1] == &items[2]);
+    // Transparent bucket holds exactly the two BLEND items.
+    REQUIRE(transparentOut.size() == 2);
+}
+
+TEST_CASE("partitionByBlend orders transparent items back-to-front") {
+    Material blend;  blend.alphaMode = AlphaMode::Blend;
+    // Camera at z = +10 looking toward the origin. In queue order the items are at
+    // z = 0, 8, 4 → distances 10, 2, 6. Back-to-front = farthest first = 0, 4, 8.
+    std::vector<RenderItem> items = {
+        itemFor(&blend, {0, 0, 0}),  // distance 10 (farthest)
+        itemFor(&blend, {0, 0, 8}),  // distance 2  (nearest)
+        itemFor(&blend, {0, 0, 4}),  // distance 6
+    };
+    const std::vector<const RenderItem*> visible = asPointers(items);
+
+    std::vector<const RenderItem*> opaqueOut, transparentOut;
+    partitionByBlend(visible, /*cameraPos=*/{0, 0, 10}, /*sortTransparent=*/true,
+                     opaqueOut, transparentOut);
+
+    CHECK(opaqueOut.empty());
+    REQUIRE(transparentOut.size() == 3);
+    CHECK(transparentOut[0] == &items[0]);  // z=0, farthest → drawn first
+    CHECK(transparentOut[1] == &items[2]);  // z=4
+    CHECK(transparentOut[2] == &items[1]);  // z=8, nearest → drawn last (on top)
+}
+
+TEST_CASE("partitionByBlend leaves transparent in queue order when sorting is off") {
+    Material blend;  blend.alphaMode = AlphaMode::Blend;
+    std::vector<RenderItem> items = {
+        itemFor(&blend, {0, 0, 0}),
+        itemFor(&blend, {0, 0, 8}),
+        itemFor(&blend, {0, 0, 4}),
+    };
+    const std::vector<const RenderItem*> visible = asPointers(items);
+
+    std::vector<const RenderItem*> opaqueOut, transparentOut;
+    partitionByBlend(visible, /*cameraPos=*/{0, 0, 10}, /*sortTransparent=*/false,
+                     opaqueOut, transparentOut);
+
+    // No sort → the queue's original order is preserved (this is the A/B "wrong" case).
+    REQUIRE(transparentOut.size() == 3);
+    CHECK(transparentOut[0] == &items[0]);
+    CHECK(transparentOut[1] == &items[1]);
+    CHECK(transparentOut[2] == &items[2]);
+}
+
+TEST_CASE("partitionByBlend clears both outputs before filling them") {
+    Material opaque;
+    Material blend;  blend.alphaMode = AlphaMode::Blend;
+    std::vector<RenderItem> items = { itemFor(&opaque, {0, 0, 0}), itemFor(&blend, {0, 0, 1}) };
+    const std::vector<const RenderItem*> visible = asPointers(items);
+
+    // Pre-seed both outputs with junk; partitionByBlend must replace, not append.
+    std::vector<const RenderItem*> opaqueOut = { nullptr, nullptr };
+    std::vector<const RenderItem*> transparentOut = { nullptr, nullptr, nullptr };
+    partitionByBlend(visible, {0, 0, 10}, true, opaqueOut, transparentOut);
+
+    CHECK(opaqueOut.size() == 1);
+    CHECK(transparentOut.size() == 1);
 }

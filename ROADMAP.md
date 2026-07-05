@@ -51,15 +51,16 @@ Three principles shape the plan:
 
 ---
 
-## ✅ Completed — Steps 0–20
+## ✅ Completed — Steps 0–21
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
 post-processed shading of loaded models under many lights, with per-pixel texture + normal maps,
 a cubemap sky, and image-based lighting that lets the environment light the scene — now proven by
 importing a real glTF PBR asset (the Damaged Helmet) with emissive surfaces and correct sRGB colour,
 then made reusable by separating the engine from the app (Step 17), put on animation-ready footing
-by replacing Euler rotations with quaternions (Step 18), given a geometry layer (Step 19), and
-restructured around a **render queue** with **frustum culling** (Step 20 — the scaling-track pivot).
+by replacing Euler rotations with quaternions (Step 18), given a geometry layer (Step 19),
+restructured around a **render queue** with **frustum culling** (Step 20 — the scaling-track pivot),
+and given see-through surfaces via **alpha blending** with a sorted back-to-front transparent pass (Step 21).
 Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
 [`documentation/docs/index.html`](documentation/docs/index.html).
@@ -233,6 +234,23 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** the render queue is *the* structural first move of the whole scaling track — culling, sorting,
   instancing, transparency and deferred all operate on the flat list, none expressible while draw ≡ traverse.
 
+### ✅ Step 21 — Transparency + alpha blending *(done — [tutorial](documentation/docs/22-transparency-and-alpha-blending.html))*
+- **Shipped:** the engine's **first translucent surfaces**. [`Material`](src/scene/Material.hpp) gains an
+  **`AlphaMode`** (`Opaque`/`Blend`) + **`opacity`**; [`triangle.frag`](shaders/triangle.frag) now emits a real
+  alpha (`material.w × albedo.a`) instead of a hardcoded `1.0`. [`GpuRenderer`](src/renderer/GpuRenderer.cpp)
+  builds a **second scene pipeline** — same shaders, but **blending on** (the "over" operator) and **depth-write
+  off** (depth *test* stays) — and `recordScene` now runs **opaque → skybox → transparent**, the sky moving before
+  the transparent pass so glass blends over the resolved background. `partitionByBlend`
+  ([`RenderQueue.cpp`](src/renderer/RenderQueue.cpp)) splits the culled list and sorts the transparent items
+  **back-to-front** by camera distance; a runtime toggle (key **`T`**) turns the sort off to expose the artifact.
+  The demo gains two overlapping glass panes; unit-tested in
+  [`tests/test_render_queue.cpp`](tests/test_render_queue.cpp).
+- **Deliberately deferred:** **alpha-tested cutout** (glTF `MASK`); translucent objects still cast **solid
+  shadows** (the shadow pass ignores materials); the per-object sort **mis-orders interpenetrating** meshes (→ OIT);
+  the glTF loader still imports every model **opaque** (`alphaMode`/`baseColorFactor.a` unread).
+- **Why here:** blending is order-dependent, so it's the first feature that *had* to have the Step 20 render
+  queue — you can sort a flat list, never a tree walk.
+
 ---
 
 ## ⚠️ Architecture pivots — decide early, build late
@@ -245,8 +263,8 @@ should be designed knowing they're coming:
 - ✅ **Render-queue extraction** *(done — Step 20)*. `GpuRenderer` no longer walks the scene graph and
   draws inline; it flattens the tree into a flat `RenderItem` list (*traverse → draw list → submit*,
   [`src/renderer/RenderQueue.hpp`](src/renderer/RenderQueue.hpp)) — the structural first move of the whole
-  Scaling track, now made. Still to build **on** the list: material/pipeline sorting (a known cost since
-  Step 8), instancing, transparency sorting, and deferred shading.
+  Scaling track, now made. Already built **on** the list: **transparency sorting** (Step 21). Still to come:
+  material/pipeline sorting (a known cost since Step 8), instancing, and deferred shading.
 - **Multithreading / job system.** Everything is single-threaded today. Asset loading, command
   recording, and simulation all eventually parallelize — and every system written before the job
   system bakes in single-threaded assumptions. Design new subsystems (asset manager, physics)
@@ -292,10 +310,12 @@ tracks are first-class peers of the rendering ones.
 - GPU-driven culling via SDL3 GPU **compute** shaders; **occlusion culling** (Hi-Z) as a stretch.
 - **SIMD** pass over the hand-rolled [`src/math/`](src/math/) once benchmarks exist to prove it.
 
-**Transparency & blended effects** — the engine is **opaque-only** today: no pipeline has a blend
-state, so glass, smoke, and foliage are all impossible.
-- **Alpha blending** + back-to-front sorting (why transparent draws can't use the depth-write
-  trick opaque ones do — a classic, and it needs the render queue to sort).
+**Transparency & blended effects** — the engine was **opaque-only** until Step 21, which added the
+first blend-enabled pipeline; smoke, foliage cutouts, and particles are still to come.
+- ✅ **Alpha blending** + back-to-front sorting — *done, Step 21* ([tutorial](documentation/docs/22-transparency-and-alpha-blending.html)):
+  a second **depth-write-off, blend-on** pipeline, a `Material` **`alphaMode`/`opacity`**, and
+  `partitionByBlend` sorting the queue far-to-near (the depth-write trick opaque draws use can't work for
+  glass — this is exactly why it needed the render queue to sort).
 - **Alpha-tested cutout** (foliage, fences — the cheap half-way house that keeps depth writes).
 - **Particle systems**: camera-facing **billboards**, additive/alpha blends; CPU-simulated first,
   then GPU **compute** (a natural second use of compute after Step 15's IBL bake).
@@ -443,7 +463,9 @@ Step 19  geometry utils (AABB/ray/frustum) + normal matrix   ✅ done
    │
 Step 20  render queue ──▶ frustum culling (consumes Step 19 geometry)   ✅ done
    │
-transparency + blending ──▶ glTF node hierarchy / Sponza          ◀── next (learning thread leads)
+Step 21  transparency + alpha blending (consumes Step 20 queue sort)    ✅ done
+   │
+glTF node hierarchy / Sponza ──▶ alpha-tested cutout        ◀── next (learning thread leads)
    │
 sort queue by material / instancing ──▶ cascaded shadows
    │

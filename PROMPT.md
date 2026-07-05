@@ -480,3 +480,18 @@ its `aria-current`, then re-stamped `aria-current="page"` onto each page's own n
 pure truncation: **77 insertions, 0 deletions** across the 20 stale pages (`00`–`19`); `20`/`21`/`index` were
 already correct. Page bodies untouched. Link audit: **0 broken internal links** across all hrefs of all 23
 pages; each page verified to carry all 23 targets with exactly one correctly-placed `aria-current`.
+
+> Pick up something from the roadmap to work on next.
+
+Step 21 — **transparency + alpha blending** (the roadmap's "learning thread leads" next). Added a
+`Material` **`AlphaMode`** (`Opaque`/`Blend`) + `opacity`; `triangle.frag` now emits a real alpha
+(`material.w × albedo.a`) instead of hardcoded `1.0`. `GpuRenderer` builds a **second scene pipeline** —
+same shaders, but **blending on** (over operator) and **depth-write off** — and `recordScene` runs
+**opaque → skybox → transparent** (the sky moved before the transparent pass so glass blends over the
+resolved background). New pure `partitionByBlend` (`RenderQueue.cpp`) splits the culled list and sorts the
+transparent items **back-to-front**; extracted `bindFrameLighting` to re-bind shadow/IBL after the pipeline
+switch. Demo gains two overlapping glass panes + a `T` toggle (sort on/off) to expose the artifact. Four new
+`partitionByBlend` tests (100 cases pass). New tutorial `documentation/docs/22-transparency-and-alpha-blending.html`
+(+ nav backfilled across all pages, index card). Verified with `KOI_CAPTURE`: glass see-through + correct
+overlap compositing, no GPU errors, opaque scene unchanged. **Deferred:** solid shadows from translucent
+casters, per-object sort (mis-orders interpenetrating meshes → OIT), glTF alpha import.

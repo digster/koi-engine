@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transparency &amp; Alpha Blending · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
+    <a class="navlink" href="16-image-based-lighting.html">Image-based Lighting</a>
+    <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
+    <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
+    <a class="navlink" href="19-quaternions.html">Quaternions</a>
+    <a class="navlink" href="20-geometry-utilities.html">Geometry Utilities</a>
+    <a class="navlink" href="21-render-queue-and-frustum-culling.html">Render Queue &amp; Culling</a>
+    <a class="navlink" href="22-transparency-and-alpha-blending.html" aria-current="page">Transparency &amp; Blending</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Transparency &amp; Alpha Blending</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 21:</strong> make surfaces you can <em>see through</em> — glass, water, coloured
+    film. Every object so far has been <strong>opaque</strong>: it completely hides whatever is behind it. A
+    <strong>translucent</strong> object instead lets some of the background show through, so its final colour is a
+    <em>mix</em> of the surface and everything behind it. Producing that mix is <strong>alpha blending</strong>,
+    and getting it <em>right</em> forces two changes on the pipeline and one on the draw order.</p>
+    <p>This is the first feature to actually cash in the <a href="21-render-queue-and-frustum-culling.html">Step
+    20</a> render queue: blended objects must be drawn <strong>back-to-front</strong>, and you can only sort a
+    <em>flat list</em>, never a tree walk.</p>
+  </blockquote>
+
+  <h2>1. Why order didn't matter — until now</h2>
+
+  <p>Recall the <a href="04-3d-cube-mvp-and-depth.html">depth buffer</a>. For every pixel it stores the distance
+  of the nearest surface drawn so far; each new fragment is kept only if it is <em>closer</em>, and when kept it
+  <strong>writes</strong> its own depth back. That one mechanism makes opaque rendering
+  <strong>order-independent</strong>: draw a thousand solid objects in any sequence you like and the depth test
+  still leaves exactly the nearest one visible at every pixel. Draw order is irrelevant because a nearer surface
+  <em>completely replaces</em> a farther one.</p>
+
+  <pre class="diagram">opaque fragment wins the depth test  →  it REPLACES the pixel   (dst is discarded)
+    final = src                         ← the background contributes nothing</pre>
+
+  <p>Transparency breaks that assumption at its root. A translucent fragment does <em>not</em> replace the pixel;
+  it <em>combines</em> with it. So the background suddenly matters, and therefore so does the order in which
+  things were drawn into that background.</p>
+
+  <h2>2. The "over" operator: what blending computes</h2>
+
+  <p>Give every fragment an <strong>alpha</strong> (α) — its opacity, from <code>0</code> (invisible) to
+  <code>1</code> (solid). Compositing a translucent <em>source</em> fragment over whatever colour is already in
+  the target (the <em>destination</em>) is the classic <strong>"over" operator</strong>:</p>
+
+  <pre class="diagram">out = src.rgb · src.α  +  dst.rgb · (1 − src.α)
+        ▲ the surface's own    ▲ how much of the background
+          colour, weighted        still shows through</pre>
+
+  <p>At α = 1 this reduces to <code>out = src</code> (fully opaque, the background vanishes); at α = 0 it reduces
+  to <code>out = dst</code> (the surface is invisible); at α = 0.4 you get 40% surface + 60% background — coloured
+  glass. The GPU does this in <strong>fixed-function</strong> hardware at the very end of the pipeline: you don't
+  write the formula in a shader, you <em>configure</em> it with <strong>blend factors</strong>. The source colour
+  is multiplied by <code>SRC_ALPHA</code>, the destination by <code>ONE_MINUS_SRC_ALPHA</code>, and the two are
+  <code>ADD</code>ed — which is exactly the equation above.</p>
+
+  <h2>3. Two reasons order now matters</h2>
+
+  <p><strong>(a) Blending is not commutative.</strong> "Red glass over blue glass" and "blue glass over red glass"
+  are genuinely different images — whichever you composite <em>last</em> dominates. So overlapping translucent
+  surfaces must be composited in a definite order: <strong>back-to-front</strong>, farthest first, so each nearer
+  layer blends on top of the result so far. This is the <strong>painter's algorithm</strong>, the same reason a
+  painter lays down the sky before the mountains before the foreground.</p>
+
+  <pre class="diagram">far pane, then near pane   ✓   near composites over far        (correct)
+near pane, then far pane   ✗   far composites over near        (wrong — looks inside-out)</pre>
+
+  <p><strong>(b) The depth-write trick actively sabotages blending.</strong> If a translucent fragment
+  <em>wrote</em> its depth like an opaque one, it would tell the depth test "I am the nearest surface here" — and
+  a translucent surface <em>behind</em> it would then be depth-<em>rejected</em> and never drawn, so you'd never
+  see it through the glass. The whole point of glass is that things behind it survive. So translucent draws must
+  keep the depth <strong>test</strong> (they're still hidden by nearer <em>opaque</em> walls) but turn depth
+  <strong>write</strong> <em>off</em> (they must not block each other). Correct front-to-back ordering then comes
+  from our <em>sort</em>, not from the depth buffer.</p>
+
+  <h2>4. Two pipelines, one shader</h2>
+
+  <p>In SDL3's GPU API, blend state and the depth-write flag are <strong>baked into the pipeline object</strong>
+  when it's created — they are not per-draw switches. So a renderer that draws both opaque and translucent
+  geometry needs <strong>two pipelines</strong>. They share the exact same <code>triangle.vert</code> /
+  <code>triangle.frag</code> and vertex layout; only two pieces of fixed-function state differ:</p>
+
+  <pre class="diagram">                        depth TEST   depth WRITE   blending
+  opaque  pipeline          LESS          ON          off       (the Step 20 pipeline, unchanged)
+  transparent pipeline      LESS          OFF         ON  (over operator, SRC_ALPHA / 1−SRC_ALPHA)</pre>
+
+  <p>The fragment shader itself barely changes. It already computed a lit <code>color</code>; now it also emits an
+  <strong>alpha</strong> instead of a hardcoded <code>1.0</code>:</p>
+
+  <pre class="diagram">outColor = vec4(color, material.w * albedoSample.a)
+                        ▲ opacity        ▲ the base-colour map's own alpha</pre>
+
+  <p><code>material.w</code> is the material's <code>opacity</code> (glTF calls it <em>baseColorFactor.a</em>),
+  and it's multiplied by the albedo texture's alpha channel so a map can carve out see-through regions per texel.
+  For an <strong>opaque</strong> material both are <code>1</code>, so the alpha is <code>1.0</code> — and since
+  the opaque pipeline has blending <em>off</em>, that alpha is ignored entirely. That's why adding this line
+  changes nothing about how the existing scene renders: the opaque path is byte-for-byte the same, and only the
+  new blend pipeline consumes the alpha.</p>
+
+  <h2>5. The draw order, and a skybox subtlety</h2>
+
+  <p>Putting it together, one render pass now runs in three stages:</p>
+
+  <pre class="diagram">1. OPAQUE      pipeline: depth-write ON   → fills the depth buffer, any order (depth sorts them)
+2. SKYBOX      depth-write OFF, LEQUAL    → paints the background where nothing opaque was drawn
+3. TRANSPARENT pipeline: depth-write OFF  → sorted far→near, each blends OVER what's already there</pre>
+
+  <p>Why must the <a href="15-skybox-and-cubemaps.html">skybox</a> come <em>between</em> the opaque and
+  transparent stages, not last as it used to? The sky writes <em>no</em> depth and only fills pixels the opaque
+  pass left at the far plane. If we drew the translucent panes <em>before</em> the sky, a pane sitting against
+  empty background would blend over the clear colour — and then the sky, seeing that those pixels are still at far
+  depth, would paint straight over the pane and erase it. Resolving the background <em>first</em> means a
+  translucent surface correctly blends over the actual sky behind it. The render queue makes this reordering a
+  one-line change: same list, three ordered sub-passes.</p>
+
+  <p>One nicety for free: because the scene is composited in the <a href="11-post-processing.html">HDR
+  target</a> <em>before</em> tone-mapping, blending happens in <strong>linear light</strong> — which is the
+  physically correct place to mix colours. Blending after gamma encoding (a common beginner bug) darkens the
+  seams between layers; we sidestep it entirely.</p>
+
+  <h2>6. Sorting the queue</h2>
+
+  <p>The sort itself is a pure pass over the culled list. <code>partitionByBlend</code> walks the visible items
+  once, dropping each into an <strong>opaque</strong> or a <strong>transparent</strong> bucket by its material's
+  <code>alphaMode</code>. The opaque bucket keeps queue order (the depth buffer will sort it); the transparent
+  bucket is sorted by <strong>distance from the camera, farthest first</strong> — using each item's world-space
+  bounding-box centre (an <a href="20-geometry-utilities.html">Step 19</a> <code>Aabb</code>) as a cheap stand-in
+  for its position.</p>
+
+  <pre class="diagram">partitionByBlend(visible, cameraPos, sort):
+    for item in visible:
+        (item.material.alphaMode == Blend ? transparent : opaque).push(item)
+    if sort: stable_sort(transparent) by distance²(cameraPos, item.bounds.center) DESCENDING</pre>
+
+  <p>Because it touches no GPU state, it is <a href="../../tests/test_render_queue.cpp">unit-tested</a> headlessly:
+  the split, the back-to-front order, the untouched queue order when sorting is off, and that it clears its
+  outputs. A runtime toggle (<kbd>T</kbd>) turns the sort off so you can <em>see</em> the artifact it prevents.</p>
+
+  <h2>7. Honest limitations</h2>
+
+  <p>Per-object sorting is the <em>simple</em> transparency, and it is deliberately not perfect. Three cracks are
+  worth naming out loud, because seeing them is how you understand why "real" transparency is a research topic:</p>
+
+  <ul>
+    <li><strong>Translucent objects cast solid shadows.</strong> The <a href="10-models-and-shadows.html">shadow
+    pass</a> draws the whole queue as depth-only and ignores materials, so a glass pane throws an opaque shadow.
+    Fixing it (alpha-tested or stochastic shadow casters) is a later step.</li>
+    <li><strong>The sort is per-object, by a single centre point.</strong> Two panes that interpenetrate, or one
+    large translucent mesh that wraps around another, can still composite in the wrong order — there is no single
+    "which is in front" for shapes that overlap in depth. This is exactly what motivates
+    <strong>order-independent transparency (OIT)</strong>.</li>
+    <li><strong>Only hand-authored transparency.</strong> The glTF loader still imports every model as opaque; it
+    doesn't yet read the file's <code>alphaMode</code> / <code>baseColorFactor.a</code>. The demo's glass is
+    authored in code.</li>
+  </ul>
+
+  <h2>8. In the engine</h2>
+
+  <ul>
+    <li><a href="../../src/scene/Material.hpp">src/scene/Material.hpp</a> — a new <code>AlphaMode</code> enum plus
+    <code>alphaMode</code> and <code>opacity</code> fields (added last, so existing initialisers are unchanged).</li>
+    <li><a href="../../shaders/triangle.frag">shaders/triangle.frag</a> — samples the albedo as a full
+    <code>vec4</code> and outputs <code>outColor.a = material.w · albedoSample.a</code>.</li>
+    <li><a href="../../src/renderer/RenderQueue.hpp">src/renderer/RenderQueue.hpp</a> /
+    <a href="../../src/renderer/RenderQueue.cpp">.cpp</a> — <code>partitionByBlend</code>, the pure opaque/transparent
+    split with the back-to-front sort.</li>
+    <li><a href="../../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a> —
+    <code>createTrianglePipeline</code> now builds a second, blend-enabled / depth-write-off pipeline from the same
+    shaders; <code>recordScene</code> runs the opaque → skybox → transparent stages; <code>bindFrameLighting</code>
+    re-establishes the shadow/IBL bindings after the pipeline switch. <code>setTransparentSortEnabled</code> is the
+    <kbd>T</kbd> toggle.</li>
+    <li><a href="../../samples/demo/DemoApp.cpp">samples/demo/DemoApp.cpp</a> — two translucent glass panes at
+    different depths in front of the scene.</li>
+  </ul>
+
+  <h2>9. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Run the tests.</strong> <code>cmake --build build</code> then <code>./build/koi-tests</code> — the
+    render-queue suite now also proves the split and the back-to-front sort.</li>
+    <li><strong>Look through the glass.</strong> Run <code>./build/koi-demo</code>: the whole scene is visible
+    through the two coloured panes, tinted by each. Where the panes overlap, the nearer one blends on top.</li>
+    <li><strong>Break the sort.</strong> Press <kbd>T</kbd> to disable back-to-front sorting. When the panes
+    overlap the compositing flips to the wrong order; press <kbd>T</kbd> again to restore it. That flip is the
+    whole reason the sort exists.</li>
+    <li><strong>Capture a frame.</strong> <code>KOI_CAPTURE=out.bmp ./build/koi-demo</code>, then
+    <code>sips -s format png out.bmp --out out.png</code> to view it.</li>
+  </ol>
+
+  <h2>10. What's next</h2>
+
+  <p>➡️ The queue keeps paying off. <strong>Alpha-tested cutout</strong> (glTF <code>MASK</code>: keep the
+  depth-write trick but <code>discard</code> fragments below an alpha threshold — foliage, fences) is the cheap
+  half-way house between opaque and blended. <strong>Particle systems</strong> — camera-facing billboards with
+  additive/alpha blends — are the natural next use of this blend pipeline. And <strong>sorting the opaque queue
+  by material</strong> to cut per-draw rebinding, then <strong>instancing</strong>, are the remaining scaling
+  wins the flat list unlocks. Farther out, <strong>order-independent transparency</strong> removes the per-object
+  sort limitation entirely. See the <a href="../../ROADMAP.md">roadmap</a> for the sequenced plan.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

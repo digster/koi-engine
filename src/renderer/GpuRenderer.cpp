@@ -298,18 +298,51 @@ bool GpuRenderer::createTrianglePipeline() {
     // Tell the pipeline it renders into a depth target too, and its format.
     pipelineInfo.target_info.has_depth_stencil_target  = true;
     pipelineInfo.target_info.depth_stencil_format      = depthFormat_;
-    // Blending and face culling stay at defaults (off): the depth test alone
-    // resolves visibility for our opaque cube. Culling is a later optimization.
+    // Blending and face culling stay at defaults (off) for the OPAQUE pipeline: the
+    // depth test alone resolves visibility. (The transparent pipeline below flips
+    // blending on.) Culling is a later optimization.
 
     trianglePipeline_ = SDL_CreateGPUGraphicsPipeline(device_, &pipelineInfo);
 
-    // The pipeline copies what it needs from the shaders, so we can release the
-    // shader objects immediately — the pipeline keeps working without them.
+    // ------------------------------------------------------------------------
+    //  The TRANSPARENT pipeline (Step 21) — same shaders + layout, two changes:
+    //   * BLENDING ON, the "over" operator: out = src·srcAlpha + dst·(1-srcAlpha).
+    //     That composites a translucent fragment on top of whatever colour is already
+    //     in the HDR target. (SDL bakes blend state into the immutable pipeline, so it
+    //     can't be a per-draw toggle — hence a second pipeline object.)
+    //   * DEPTH-WRITE OFF (test still LESS): a translucent surface is still occluded by
+    //     nearer opaque geometry, but leaves the depth buffer untouched so the
+    //     back-to-front translucent draws behind it can blend through instead of being
+    //     depth-rejected. Correct ordering comes from sorting the queue, not from depth.
+    // Reuse pipelineInfo wholesale; only the color target's blend state and the
+    // depth-write flag differ.
+    SDL_GPUColorTargetDescription transparentColorTargetDesc = colorTargetDesc;
+    SDL_GPUColorTargetBlendState& blend = transparentColorTargetDesc.blend_state;
+    blend.enable_blend          = true;
+    blend.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+    blend.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    blend.color_blend_op        = SDL_GPU_BLENDOP_ADD;
+    blend.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    blend.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    blend.alpha_blend_op        = SDL_GPU_BLENDOP_ADD;
+
+    SDL_GPUGraphicsPipelineCreateInfo transparentInfo = pipelineInfo;
+    transparentInfo.target_info.color_target_descriptions = &transparentColorTargetDesc;
+    transparentInfo.depth_stencil_state.enable_depth_write = false;  // test stays on (LESS)
+
+    transparentPipeline_ = SDL_CreateGPUGraphicsPipeline(device_, &transparentInfo);
+
+    // Both pipelines copy what they need from the shaders, so release the shader
+    // objects now — the pipelines keep working without them.
     SDL_ReleaseGPUShader(device_, vertexShader);
     SDL_ReleaseGPUShader(device_, fragmentShader);
 
     if (trianglePipeline_ == nullptr) {
         KOI_ERROR("Failed to create graphics pipeline: %s", SDL_GetError());
+        return false;
+    }
+    if (transparentPipeline_ == nullptr) {
+        KOI_ERROR("Failed to create transparent graphics pipeline: %s", SDL_GetError());
         return false;
     }
     return true;
@@ -1630,29 +1663,23 @@ bool GpuRenderer::ensureDepthTexture(Uint32 width, Uint32 height) {
     return true;
 }
 
-void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                              const std::vector<RenderItem>& queue, const Mat4& view,
-                              float aspect, const Vec3& cameraPos,
-                              std::span<const Light> lights,
-                              const Mat4& lightViewProj) const {
-    // Bind the one pipeline every mesh shares. Per-mesh vertex/index buffers AND
-    // per-material textures are now bound inside recordNode, just before each node's
-    // draw — different nodes use different materials, so binding can't be hoisted
-    // out of the loop the way the single global texture was in Step 7.
-    SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
-
+void GpuRenderer::bindFrameLighting(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                                    const Vec3& cameraPos, std::span<const Light> lights,
+                                    const Mat4& lightViewProj) const {
     // Bind the SHADOW MAP at fragment sampler slot 4 (Step 13 moved it past the four
-    // per-material maps bound at slots 0–3 in recordNode). One shadow map for the whole
-    // frame, so bind it once here.
+    // per-material maps bound at slots 0–3 in submitItem). One shadow map for the whole
+    // frame. These sampler binds must be re-run after every scene pipeline bind — a
+    // pipeline switch resets the pass's sampler bindings — which is why they live here
+    // and this helper is called once per pass (opaque, then transparent).
     SDL_GPUTextureSamplerBinding shadowBinding = {};
     shadowBinding.texture = shadowMap_;
     shadowBinding.sampler = shadowSampler_;
     SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/4, &shadowBinding, /*num_bindings=*/1);
 
-    // Bind the IBL maps at fragment sampler slots 5–7 (Step 15) — one set for the whole
-    // frame, like the shadow map: the diffuse irradiance cube, the specular prefilter cube,
-    // and the environment BRDF LUT. They always exist (created at init), so the bind is
-    // unconditional; the shader only READS them when the IBL flag in ambient.w is set.
+    // Bind the IBL maps at fragment sampler slots 5–7 (Step 15): the diffuse irradiance
+    // cube, the specular prefilter cube, and the environment BRDF LUT. They always exist
+    // (created at init), so the bind is unconditional; the shader only READS them when the
+    // IBL flag in ambient.w is set.
     const SDL_GPUTextureSamplerBinding iblBindings[3] = {
         {iblIrradiance_, iblSampler_},
         {iblPrefilter_,  iblSampler_},
@@ -1664,7 +1691,8 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
     // fill, the eye (for specular), the sun's shadow matrix, and the ARRAY of active
     // lights. This C++ layout must match LightUBO in triangle.frag BYTE FOR BYTE — every
     // field is vec4-aligned and each GpuLight is exactly 4 vec4s (64 bytes), so std140
-    // adds no hidden padding. Constant across every draw, so pushed ONCE here.
+    // adds no hidden padding. (Pushed uniform data actually survives a pipeline switch,
+    // but re-pushing per pass is cheap and keeps all per-frame lighting set up here.)
     struct GpuLight {
         float positionRange[4];   // xyz position, w range
         float directionType[4];   // xyz direction, w type (0=dir,1=point,2=spot)
@@ -1721,17 +1749,23 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
     }
     light.lightCount[0] = packed;
     SDL_PushGPUFragmentUniformData(cmd, /*slot=*/0, &light, sizeof(light));
+}
 
+void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                              const std::vector<RenderItem>& queue, const Mat4& view,
+                              float aspect, const Vec3& cameraPos,
+                              std::span<const Light> lights,
+                              const Mat4& lightViewProj) const {
     // The projection depends only on the viewport, and the view only on the
     // camera, so combine them ONCE here. Each item then only adds one multiply by
     // its own world matrix: mvp = (proj * view) * world.
     const Mat4 projection = perspective(radians(60.0f), aspect, 0.1f, 100.0f);
     const Mat4 projView   = projection * view;
 
-    // CULL → SUBMIT (Step 20). Extract the six camera-frustum planes from the SAME
-    // projView the shader uses (so what we cull matches what's on screen), then keep
-    // only the items whose world bounds intersect it. With culling off, every item
-    // is drawn (the pre-Step-20 behaviour). visibleItems_ is a reused scratch vector.
+    // CULL (Step 20). Extract the six camera-frustum planes from the SAME projView the
+    // shader uses (so what we cull matches what's on screen), then keep only the items
+    // whose world bounds intersect it. With culling off, every item survives (the
+    // pre-Step-20 behaviour). visibleItems_ is a reused scratch vector.
     const Frustum cameraFrustum = Frustum::fromViewProjection(projView);
     visibleItems_.clear();
     for (const RenderItem& item : queue) {
@@ -1751,17 +1785,40 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
         }
     }
 
-    // Submit the survivors, in the queue's original (depth-first) order.
-    for (const RenderItem* item : visibleItems_) {
+    // PARTITION (Step 21). Split the survivors into opaque + transparent lists; the
+    // transparent list is ordered back-to-front (unless the runtime toggle is off) so
+    // alpha blending composites correctly. Reused scratch vectors, like visibleItems_.
+    partitionByBlend(visibleItems_, cameraPos, transparentSortEnabled_,
+                     opaqueItems_, transparentItems_);
+
+    // --- OPAQUE PASS: depth-write ON, no blending ----------------------------------
+    // Order among opaque items doesn't matter — the depth buffer resolves visibility.
+    SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
+    bindFrameLighting(cmd, pass, cameraPos, lights, lightViewProj);
+    for (const RenderItem* item : opaqueItems_) {
         submitItem(cmd, pass, *item, projView);
     }
 
-    // Draw the sky LAST (Step 14): with the depth buffer now holding the scene's
-    // depths, the skybox's LEQUAL test + far-plane depth make it fill ONLY the
-    // background pixels — no overdraw of shaded geometry. Skipped if no cubemap was
-    // loaded or the sky is toggled off.
+    // --- SKYBOX (Step 14) ----------------------------------------------------------
+    // Drawn AFTER the opaque geometry (which filled the depth buffer) so its LEQUAL
+    // test + far-plane depth make it fill ONLY the background pixels. It must also come
+    // BEFORE the transparent pass: the sky writes no depth, so if transparent objects
+    // (which also write no depth) drew first, the sky would paint over them. Resolving
+    // the background first lets translucent surfaces blend correctly over the sky.
     if (skyboxCubemap_ != nullptr && skyboxEnabled_) {
         recordSkybox(cmd, pass, view, projection);
+    }
+
+    // --- TRANSPARENT PASS: blending ON, depth-write OFF ----------------------------
+    // Draw the sorted (far → near) translucent items so each composites over what's
+    // already there. Binding the transparent pipeline reset the pass's sampler bindings,
+    // so re-establish the per-frame shadow/IBL maps (and re-push the light uniform).
+    if (!transparentItems_.empty()) {
+        SDL_BindGPUGraphicsPipeline(pass, transparentPipeline_);
+        bindFrameLighting(cmd, pass, cameraPos, lights, lightViewProj);
+        for (const RenderItem* item : transparentItems_) {
+            submitItem(cmd, pass, *item, projView);
+        }
     }
 }
 
@@ -1827,10 +1884,12 @@ void GpuRenderer::submitItem(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
         SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/8, &emissiveBinding, /*num_bindings=*/1);
 
         // Push this material's parameters (fragment set=3, binding 1), matching the two
-        // vec4s of MaterialUBO in triangle.frag: {metallic, roughness, -, -} then the
-        // emissive factor {r, g, b, -}. Per draw, so each object's PBR + glow is its own.
+        // vec4s of MaterialUBO in triangle.frag: {metallic, roughness, -, opacity} then
+        // the emissive factor {r, g, b, -}. Per draw, so each object's PBR + glow + alpha
+        // is its own. `opacity` lands in material.w — the shader multiplies it by the
+        // albedo map's alpha to form outColor.a (only the transparent pipeline blends it).
         const float materialParams[8] = {
-            material->metallic, material->roughness, 0.0f, 0.0f,
+            material->metallic, material->roughness, 0.0f, material->opacity,
             material->emissiveFactor[0], material->emissiveFactor[1],
             material->emissiveFactor[2], 0.0f };
         SDL_PushGPUFragmentUniformData(cmd, /*slot=*/1, materialParams, sizeof(materialParams));
@@ -1963,6 +2022,10 @@ GpuRenderer::~GpuRenderer() {
         if (trianglePipeline_ != nullptr) {
             SDL_ReleaseGPUGraphicsPipeline(device_, trianglePipeline_);
             trianglePipeline_ = nullptr;
+        }
+        if (transparentPipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, transparentPipeline_);
+            transparentPipeline_ = nullptr;
         }
         // Order matters: detach the window's swapchain from the device BEFORE
         // destroying the device. DestroyGPUDevice also waits for the GPU to go

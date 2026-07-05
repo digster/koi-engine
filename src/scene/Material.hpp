@@ -49,6 +49,15 @@
 //  These feed the Cook-Torrance BRDF in triangle.frag (mirrored, for tests, by the
 //  pure helpers in renderer/Pbr.hpp).
 //
+//  Step 21 (transparency) adds an ALPHA MODE. Until now every material was opaque:
+//  the depth buffer alone resolved visibility, so draw order didn't matter. A
+//  BLEND material is *translucent* — the renderer composites it OVER whatever is
+//  already on screen using `src·α + dst·(1-α)` (the "over" operator), which is
+//  order-dependent, so blended objects must be drawn back-to-front (see
+//  RenderQueue::partitionByBlend). `opacity` is that α (glTF's baseColorFactor.a):
+//  1 = solid, 0 = invisible; the shader multiplies it by the albedo map's own alpha.
+//  Opaque materials leave both at their defaults and render exactly as before.
+//
 //  Header-only: it's a plain data struct. We only store shared_ptr<Texture>s, so a
 //  forward declaration is enough here — no need to pull in the SDL-heavy header.
 // ============================================================================
@@ -59,6 +68,12 @@
 namespace koi {
 
 class Texture;  // the map images; full definition in renderer/Texture.hpp
+
+// How a material's alpha is interpreted (a subset of glTF's alphaMode). OPAQUE
+// ignores alpha entirely (the depth buffer resolves visibility); BLEND composites
+// the surface translucently and so must be sorted back-to-front. glTF's third mode,
+// MASK (alpha-tested cutout), is a separate later step and isn't modelled yet.
+enum class AlphaMode { Opaque, Blend };
 
 struct Material {
     // Field ORDER matters: positional aggregate inits like `Material{tex, 0, 0.85f}`
@@ -74,6 +89,12 @@ struct Material {
     // materials render exactly as before. Kept as three floats (not a Vec3) so this
     // header stays include-light — it only forward-declares its dependencies.
     float                    emissiveFactor[3] = {0.0f, 0.0f, 0.0f};
+
+    // Step 21: transparency. These two go LAST so the positional aggregate inits used
+    // elsewhere (e.g. Material{tex, 0, 0.85f}) keep working unchanged. Defaults make a
+    // material fully opaque, so nothing that omits them changes.
+    AlphaMode                alphaMode = AlphaMode::Opaque;  // Opaque ⇒ blended pass skipped
+    float                    opacity   = 1.0f;               // α for BLEND (glTF baseColorFactor.a)
 };
 
 }  // namespace koi

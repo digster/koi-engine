@@ -66,7 +66,8 @@ public:
     // The renderer owns no geometry or textures — those are created separately via
     // createMesh / loadTexture.
     [[nodiscard]] bool isValid() const {
-        return device_ != nullptr && trianglePipeline_ != nullptr && sampler_ != nullptr &&
+        return device_ != nullptr && trianglePipeline_ != nullptr &&
+               transparentPipeline_ != nullptr && sampler_ != nullptr &&
                shadowPipeline_ != nullptr && shadowMap_ != nullptr && shadowSampler_ != nullptr &&
                postSampler_ != nullptr && brightPipeline_ != nullptr &&
                blurPipeline_ != nullptr && compositePipeline_ != nullptr &&
@@ -138,6 +139,14 @@ public:
     // pass is never camera-culled (off-screen casters still cast in-view shadows).
     void setFrustumCullingEnabled(bool enabled) { frustumCullingEnabled_ = enabled; }
     [[nodiscard]] bool frustumCullingEnabled() const { return frustumCullingEnabled_; }
+
+    // Enable/disable back-to-front sorting of transparent objects at runtime (Step 21;
+    // the demo binds this to a key). On by default. With it OFF, translucent objects
+    // draw in queue order instead of far-to-near, so overlapping ones composite in the
+    // wrong order — a deliberate A/B for SEEING why the painter's-algorithm sort exists.
+    // No effect on opaque objects (the depth buffer orders those regardless).
+    void setTransparentSortEnabled(bool enabled) { transparentSortEnabled_ = enabled; }
+    [[nodiscard]] bool transparentSortEnabled() const { return transparentSortEnabled_; }
 
     // Render exactly one frame from a FrameView `fv`: acquire a swapchain image,
     // draw every mesh in `fv.root` (each through its own world matrix and its node's
@@ -258,12 +267,25 @@ private:
                           const std::vector<RenderItem>& queue,
                           const Mat4& lightViewProj) const;
 
+    // Bind the per-frame lighting inputs the scene shader reads, and push the light
+    // uniform: the shadow map (fragment slot 4), the three IBL maps (slots 5–7), and
+    // the packed LightUniform (fragment slot 0 — ambient/IBL flag, eye, sun matrix,
+    // the active-light array). Factored out (Step 21) because it must run once PER
+    // scene pipeline: binding a new pipeline resets the pass's SAMPLER bindings, so the
+    // opaque and transparent passes each re-establish them. (Pushed uniform data
+    // survives a pipeline switch, but re-pushing it here is cheap and keeps this the
+    // single place per-frame lighting is set up.)
+    void bindFrameLighting(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                           const Vec3& cameraPos, std::span<const Light> lights,
+                           const Mat4& lightViewProj) const;
+
     // Record the whole scene into an already-begun (main) render pass from the flat
-    // `queue` (Step 20): bind the pipeline + shadow/IBL maps, pack `lights` +
-    // `cameraPos` + `lightViewProj` into the per-frame light uniform, build the
-    // projection from `aspect`, frustum-cull the queue (when enabled), then submit
-    // each surviving item. Shared by the live (renderFrame) and off-screen
-    // (captureFrame) paths so they can't drift.
+    // `queue` (Step 20): frustum-cull it (when enabled), then split it by material
+    // alpha mode (Step 21) and draw OPAQUE items (depth-write on) → the skybox →
+    // TRANSPARENT items back-to-front through the blend pipeline (depth-write off).
+    // Builds the projection from `aspect` and packs the per-frame lighting from
+    // `lights`/`cameraPos`/`lightViewProj`. Shared by the live (renderFrame) and
+    // off-screen (captureFrame) paths so they can't drift.
     void recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                      const std::vector<RenderItem>& queue, const Mat4& view,
                      float aspect, const Vec3& cameraPos, std::span<const Light> lights,
@@ -338,6 +360,15 @@ private:
     // bound buffers and the MVP uniform change per draw.
     SDL_GPUGraphicsPipeline* trianglePipeline_ = nullptr;  // owned
 
+    // The TRANSPARENT scene pipeline (Step 21). Identical to trianglePipeline_ — same
+    // shaders, vertex layout, depth format — with two differences that make alpha
+    // blending work: blending is ENABLED (the "over" operator, src·α + dst·(1-α)) and
+    // depth WRITE is OFF (depth TEST stays on). Off-write means a translucent surface is
+    // still hidden by nearer opaque geometry, yet doesn't stamp the depth buffer, so
+    // other translucent surfaces behind it can still blend through. Built alongside
+    // trianglePipeline_ from the same shaders; used for the back-to-front transparent pass.
+    SDL_GPUGraphicsPipeline* transparentPipeline_ = nullptr;  // owned
+
     // The one sampler every texture is read through: it describes HOW to sample
     // (linear filtering between texels, REPEAT addressing past the [0,1] edges so
     // tiled UVs repeat). Reusable device state, independent of any particular
@@ -408,9 +439,15 @@ private:
     // no per-frame allocation. frustumCullingEnabled_ is the runtime A/B toggle.
     std::vector<RenderItem>        renderQueue_;                // flat draw list, rebuilt per frame
     // `mutable`: recordScene is const (it issues GPU work but owns no state), yet it
-    // fills this reused scratch buffer while culling — the classic const-method cache.
+    // fills these reused scratch buffers while culling + partitioning — the classic
+    // const-method cache. visibleItems_ holds the frustum survivors; partitionByBlend
+    // (Step 21) then splits those into the opaque + (back-to-front) transparent lists.
+    // All three are members so their capacity is REUSED frame to frame (no allocation).
     mutable std::vector<const RenderItem*> visibleItems_;      // scratch: items that passed culling
+    mutable std::vector<const RenderItem*> opaqueItems_;       // scratch: opaque survivors (queue order)
+    mutable std::vector<const RenderItem*> transparentItems_;  // scratch: blend survivors (sorted)
     bool                          frustumCullingEnabled_ = true;
+    bool                          transparentSortEnabled_ = true;  // Step 21 back-to-front A/B toggle
 
     // Post-processing (Step 10). The scene is rendered into an off-screen HDR color
     // target (sceneHdr_) instead of straight to the swapchain; a chain of fullscreen

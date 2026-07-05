@@ -9,22 +9,21 @@ in [`documentation/docs/`](documentation/docs/index.html) that explains the unde
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`documentation/docs/index.html`](documentation/docs/index.html) in a browser.
 
-> **Current status — Step 20:** **render queue + frustum culling**. The renderer no longer *draws while it
-> walks* the scene graph: [`src/renderer/RenderQueue.hpp`](src/renderer/RenderQueue.hpp) flattens the tree into a
-> flat **`RenderItem`** list (**traverse → list → submit**) — the architecture pivot that unblocks culling,
-> material sorting, instancing, and transparency. Its first payoff is **frustum culling**: each `Mesh` now carries
-> a model-space **`Aabb`**, and the main pass skips items whose world bounds fall outside the camera
-> **`Frustum`** (spending the [Step 19](documentation/docs/20-geometry-utilities.html) geometry layer). The shadow
-> pass deliberately stays *unculled* (off-screen casters still cast in-view shadows). Toggle culling with `0`; the
-> renderer logs a drawn/total count. Pure restructuring — no math changed — so the capture is **byte-for-byte
-> identical** to Step 19.
-> *(Step 19 added the geometry layer — `Ray`/`Aabb`/`Plane`/`Frustum` + the `Mat4` inverse — and the
-> inverse-transpose **normal matrix** for correct lighting under non-uniform scale.)*
+> **Current status — Step 21:** **transparency + alpha blending**. The engine can now draw **see-through**
+> surfaces. A second scene pipeline turns **blending on** (the "over" operator) and **depth-write off**, and
+> [`Material`](src/scene/Material.hpp) gains an **`alphaMode`**/`opacity`, so glass composites over what's behind
+> it. Because blending is order-dependent, the main pass now runs **opaque → skybox → transparent**, and
+> `partitionByBlend` ([`RenderQueue.cpp`](src/renderer/RenderQueue.cpp)) sorts the translucent items
+> **back-to-front** — the first feature to cash in the Step 20 render queue's sortability. Toggle the sort with
+> `T` to see why it's needed. *(Known deferrals: translucent objects cast solid shadows; the per-object sort
+> mis-orders interpenetrating meshes; glTF still imports opaque.)*
+> *(Step 20 was the render-queue + frustum-culling pivot — **traverse → list → submit** — flattening the scene
+> graph into a flat **`RenderItem`** list and skipping off-screen draws against the camera `Frustum`.)*
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
 > Lights: `5` point lights, `6` spot, `7` sun. Environment: `8` skybox, `9` image-based lighting.
-> Rendering: `0` frustum culling.
+> Rendering: `0` frustum culling, `T` back-to-front transparency sort.
 
 ## Quick start
 
@@ -121,12 +120,16 @@ Full instructions, controls, and tests: [documentation/docs/00-getting-started.h
   the architecture pivot from *draw-while-you-walk* to **traverse → flat list → submit**: what a render queue is
   and why it unblocks culling/sorting/instancing, per-mesh bounding boxes, **frustum culling**, and the shadow-pass
   culling trap, mapped to the Step 20 code.
+- [documentation/docs/22-transparency-and-alpha-blending.html](documentation/docs/22-transparency-and-alpha-blending.html) —
+  what **alpha blending** is (the "over" operator), why it's order-dependent, and the **back-to-front sort** the
+  render queue makes possible — plus a second blend pipeline (depth-write off) and the opaque → skybox →
+  **transparent** draw order, mapped to the Step 21 code.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
 
 The engine grows one runnable milestone at a time. See **[ROADMAP.md](ROADMAP.md)** for the full
-picture — every completed step (0–20) and the phased plan beyond: numbered next steps, then themed
+picture — every completed step (0–21) and the phased plan beyond: numbered next steps, then themed
 tracks across rendering, animation, physics, audio, tooling, and gameplay.
 
 ## Requirements

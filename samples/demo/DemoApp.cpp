@@ -41,6 +41,7 @@ bool DemoApp::onStart(Engine& engine) {
     KOI_INFO("Controls: WASD move, E/Q up/down, mouse look, Esc to quit.");
     KOI_INFO("Post-processing: 1=tone-map 2=bloom 3=FXAA 4=vignette, [ / ] exposure.");
     KOI_INFO("Lights: 5=point lights 6=spot 7=sun. Environment: 8=skybox 9=IBL.");
+    KOI_INFO("Culling/transparency: 0=frustum culling, T=back-to-front sort.");
     return true;
 }
 
@@ -187,6 +188,45 @@ bool DemoApp::buildScene(GpuRenderer& renderer) {
     torusNode->transform().scale         = {1.2f, 1.2f, 1.2f};
     torusNode->transform().rotation = Quat::fromEuler({radians(90.0f), 0.0f, 0.0f});  // stand the donut up
     sceneRoot_->addChild(std::move(torusNode));
+
+    // Step 21: two translucent "glass" panes between the camera and the rest of the
+    // scene, so the whole world is visible THROUGH them. Each is the flat plane mesh
+    // stood upright (rotate +90° about X so it faces the camera) and shrunk to a small
+    // pane. Their albedo is a 1×1 solid colour (a clean uniform tint — the plane's
+    // vertex colour is uniform, unlike the RGB-cube), and their material is AlphaMode::
+    // Blend with opacity 0.4, so the transparent pass composites them over the scene.
+    // They OVERLAP on screen at DIFFERENT depths, which is the whole point: the nearer
+    // pane must blend on top of the farther one (press 'T' to disable the back-to-front
+    // sort and watch that ordering break). Parented to the root (not the spinning hub)
+    // so the deterministic t=0 capture is stable.
+    const Uint8 bluePixels[4]  = {40, 120, 255, 255};   // cool blue glass
+    const Uint8 amberPixels[4] = {255, 150, 40, 255};   // warm amber glass
+    auto blueTex  = renderer.createTextureFromRGBA(bluePixels,  1, 1, /*srgb=*/true, /*withMips=*/false);
+    auto amberTex = renderer.createTextureFromRGBA(amberPixels, 1, 1, /*srgb=*/true, /*withMips=*/false);
+    if (blueTex && amberTex) {
+        auto blueGlassMat = std::make_shared<Material>(Material{
+            .albedo = blueTex, .metallic = 0.0f, .roughness = 0.1f,
+            .alphaMode = AlphaMode::Blend, .opacity = 0.4f});
+        auto amberGlassMat = std::make_shared<Material>(Material{
+            .albedo = amberTex, .metallic = 0.0f, .roughness = 0.1f,
+            .alphaMode = AlphaMode::Blend, .opacity = 0.4f});
+
+        // Amber sits FARTHER from the camera (smaller z); blue sits NEARER. With sorting
+        // on, amber draws first and blue composites over it where they overlap.
+        auto amberPane = std::make_unique<Node>(plane, amberGlassMat);
+        amberPane->transform().position = {0.5f, 0.8f, 5.6f};
+        amberPane->transform().rotation = Quat::fromEuler({radians(90.0f), 0.0f, 0.0f});
+        amberPane->transform().scale    = {0.14f, 0.14f, 0.14f};
+        sceneRoot_->addChild(std::move(amberPane));
+
+        auto bluePane = std::make_unique<Node>(plane, blueGlassMat);
+        bluePane->transform().position = {-0.5f, 1.0f, 6.4f};
+        bluePane->transform().rotation = Quat::fromEuler({radians(90.0f), 0.0f, 0.0f});
+        bluePane->transform().scale    = {0.14f, 0.14f, 0.14f};
+        sceneRoot_->addChild(std::move(bluePane));
+    } else {
+        KOI_WARN("buildScene: failed to create glass-pane textures — skipping transparency demo.");
+    }
 
     // Step 16: the HERO — the Khronos "Damaged Helmet", a real production glTF PBR asset
     // (downloaded at configure time; see CMakeLists.txt). Loading it exercises the glTF
@@ -390,6 +430,16 @@ void DemoApp::onEvent(Engine& engine, const SDL_Event& event) {
                     const bool on = !engine.renderer().frustumCullingEnabled();
                     engine.renderer().setFrustumCullingEnabled(on);
                     KOI_INFO("Frustum culling: %s", on ? "on" : "off");
+                    break;
+                }
+                case SDLK_T: {
+                    // Step 21: toggle back-to-front sorting of the translucent panes.
+                    // With it OFF they draw in scene order, so where the two overlap the
+                    // blending composites in the WRONG order — the visible artifact that
+                    // makes the case for the painter's-algorithm sort.
+                    const bool on = !engine.renderer().transparentSortEnabled();
+                    engine.renderer().setTransparentSortEnabled(on);
+                    KOI_INFO("Transparent sorting (back-to-front): %s", on ? "on" : "off");
                     break;
                 }
                 default:

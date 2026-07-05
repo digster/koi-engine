@@ -94,4 +94,25 @@ void buildRenderQueue(const Node& root, std::vector<RenderItem>& out);
     return visible.size();
 }
 
+// Split an already-culled `visible` list by the material's AlphaMode (Step 21):
+// opaque items into `opaqueOut`, translucent (BLEND) items into `transparentOut`.
+// Both outputs are CLEARED first (this replaces, not appends). Opaque items keep the
+// queue's original order — the depth buffer resolves their visibility regardless.
+//
+// When `sortTransparent` is true, `transparentOut` is ordered BACK-TO-FRONT: farthest
+// from `cameraPos` first. This is the painter's algorithm, and it's mandatory for
+// alpha blending — the "over" operator `src·α + dst·(1-α)` is NOT commutative, so a
+// nearer translucent surface must be composited AFTER (on top of) a farther one to
+// look right. Passing false leaves them in queue order, which visibly mis-composites
+// overlapping translucent objects — useful as an A/B to SEE why the sort exists.
+//
+// Pure (no GPU): the renderer calls it each frame, and tests exercise it headlessly.
+// Distance uses each item's world-bounds CENTRE — a per-object key, so large or
+// interpenetrating translucent meshes can still sort wrongly (the classic limitation
+// that motivates order-independent transparency).
+void partitionByBlend(const std::vector<const RenderItem*>& visible,
+                      const Vec3& cameraPos, bool sortTransparent,
+                      std::vector<const RenderItem*>& opaqueOut,
+                      std::vector<const RenderItem*>& transparentOut);
+
 }  // namespace koi
