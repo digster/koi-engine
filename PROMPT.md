@@ -511,3 +511,22 @@ of `recordScene`; vertices cross the boundary via a new `FrameView::debugLines` 
 `documentation/docs/23-debug-draw.html` (+ nav backfilled on all 24 pages, index card); README/ARCHITECTURE/ROADMAP
 updated. Verified: `KOI_DEBUG_DRAW` capture shows depth-occluded overlays; debug-**off** capture is **byte-identical
 to Step 21** (git-stash baseline). **Deferred:** x-ray (depth-off) mode, per-vertex normals viz, text labels.
+
+> Show me options from the roadmap to work on next. [chose: HUD / text rendering]
+
+Step 23 — **HUD & text** (chosen from four roadmap candidates: glTF node hierarchy/Sponza, alpha-tested cutout,
+skeletal animation, HUD/text). On-screen **text** via an embedded public-domain **8×8 bitmap font**
+(`src/renderer/Font.hpp`) baked into a **texture atlas** at startup, and a new pure `src/renderer/Hud.hpp`/`.cpp`
+collector (`HudVertex { pos, uv, color }` + `text`/`rect` → a flat **triangle list** in pixel coords; one reserved
+solid-white atlas cell lets panels share the text pipeline; half-texel UV inset avoids atlas bleeding). New
+`hud.vert` (pixels → clip space, orthographic, Y-flip, viewport uniform) / `hud.frag` (`atlas × tint`) + a
+textured, alpha-blended, **depth-less** `hudPipeline_` at the **swapchain (LDR)** format. Key structural choice:
+the HUD draws in its **own pass, last, onto the final image** — *after* `runPostChain` (`LOAD_OP_LOAD`, no depth) —
+so glyphs stay **crisp**, unlike the HDR-pass debug lines. Vertices cross the boundary via a new
+`FrameView::hudVertices` span, uploaded into a **transient** per-frame buffer (`uploadHud` / `recordHud`); threaded
+through both `renderFrame` and `captureFrame`. Demo `buildHud()` shows a live panel (FPS/frame-time, camera pos,
+debug toggles, legend); key **`H`** + `KOI_HUD` for headless captures. 11 new tests (**118 pass**, 2723 assertions).
+New tutorial `documentation/docs/24-hud-and-text.html` (+ nav backfilled on all 25 pages, index card);
+README/ARCHITECTURE/ROADMAP updated. Verified: `KOI_HUD` capture shows crisp text over the post-processed scene;
+HUD-**off** capture is **byte-identical to Step 22** (lower 86% of the frame identical HUD-on vs off; overlay pass
+skipped when empty). **Deferred:** SDF/proportional fonts, scissor clip, Unicode.

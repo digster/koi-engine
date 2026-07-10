@@ -51,7 +51,7 @@ Three principles shape the plan:
 
 ---
 
-## ✅ Completed — Steps 0–22
+## ✅ Completed — Steps 0–23
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
 post-processed shading of loaded models under many lights, with per-pixel texture + normal maps,
@@ -61,8 +61,9 @@ then made reusable by separating the engine from the app (Step 17), put on anima
 by replacing Euler rotations with quaternions (Step 18), given a geometry layer (Step 19),
 restructured around a **render queue** with **frustum culling** (Step 20 — the scaling-track pivot),
 given see-through surfaces via **alpha blending** with a sorted back-to-front transparent pass (Step 21),
-and given a **debug-draw** line overlay (AABBs, light icons, the camera frustum) that finally makes the
-Step 19/20 geometry visible on screen (Step 22).
+given a **debug-draw** line overlay (AABBs, light icons, the camera frustum) that finally makes the
+Step 19/20 geometry visible on screen (Step 22), and given on-screen **text + a HUD** via an embedded
+bitmap-font atlas drawn as a crisp screen-space overlay after post-processing (Step 23).
 Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
 [`documentation/docs/index.html`](documentation/docs/index.html).
@@ -272,6 +273,23 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** it's the visual companion to the just-landed culling/bounds work — you can't debug a wrong AABB or
   a mis-built frustum by reading numbers — and the shared groundwork for the HUD, text, picking, and physics viz.
 
+### ✅ Step 23 — HUD & text *(done — [tutorial](documentation/docs/24-hud-and-text.html))*
+- **Shipped:** on-screen **text**. An embedded public-domain **8×8 bitmap font** ([`Font.hpp`](src/renderer/Font.hpp))
+  is baked into a **texture atlas** at startup; a new pure [`Hud`](src/renderer/Hud.hpp)/`.cpp` collector turns
+  strings and panels into **screen-space textured quads** (`HudVertex` + `text`/`rect`, one reserved solid-white
+  atlas cell so filled panels share the text pipeline). New shaders ([`hud.vert`](shaders/hud.vert)/`.frag`) map
+  **pixels → clip space** (an orthographic divide by the viewport size, y flipped) and sample `atlas × tint`. The
+  key structural choice: the HUD draws in its **own pass, last, onto the final LDR image** (`LOAD` op, alpha blend,
+  no depth) — *after* tone-mapping + FXAA — so glyphs stay crisp, unlike the HDR-pass debug lines. Vertices cross
+  the boundary in a new [`FrameView`](src/renderer/FrameView.hpp) `hudVertices` span, uploaded into a **transient**
+  per-frame buffer (`uploadHud`). A half-texel **UV inset** avoids atlas bleeding under nearest filtering. Demo key
+  **`H`** toggles a live HUD (FPS/frame-time, camera position, debug toggles, legend), plus `KOI_HUD` for headless
+  captures; unit-tested in [`tests/test_hud.cpp`](tests/test_hud.cpp). HUD-off renders **byte-identical to Step 22**.
+- **Deliberately deferred:** proportional / **SDF** fonts (fixed-width bitmap only); a **scissor** clip for text
+  past the window edge; Unicode; a text-layout pass. These sit under the profiler / editor / console work below.
+- **Why here:** it's the natural payoff on top of debug draw (same immediate-mode collector shape) and the first
+  on-screen text — the foundation every later tool (profiler, picking labels, editor panels, console) needs.
+
 ---
 
 ## ⚠️ Architecture pivots — decide early, build late
@@ -411,8 +429,12 @@ first blend-enabled pipeline; smoke, foliage cutouts, and particles are still to
   per-frame vertex buffer, and a depth-tested / write-off overlay pipeline. The visual companion that makes the
   Step 19/20 geometry visible; the groundwork for the HUD, text, picking, and physics viz below. *Still to come:*
   an x-ray (depth-off) mode; drawing surface **normals** per vertex.
-- An immediate-mode **debug HUD** / overlay (stats, toggles).
-- **Text rendering** (bitmap or SDF fonts) — nothing on screen is text yet.
+- ✅ An immediate-mode **debug HUD** / overlay (stats, toggles) *(done — Step 23, [tutorial](documentation/docs/24-hud-and-text.html))*:
+  a live panel with FPS/frame-time, camera position, and debug-toggle states, built on the text collector below.
+- ✅ **Text rendering** *(done — Step 23, [tutorial](documentation/docs/24-hud-and-text.html))*: an embedded **8×8
+  bitmap font** baked into a **texture atlas**, a pure [`Hud`](src/renderer/Hud.hpp) collector emitting screen-space
+  textured quads, and a crisp **LDR overlay pass** after post-processing. *Still to come:* proportional / **SDF**
+  fonts, a scissor clip, Unicode.
 - **Shader hot-reload** (watch [`shaders/`](shaders/), recompile through the existing
   `glslc`/`spirv-cross` toolchain, rebuild the pipeline live) — the single biggest edit-run loop win.
 - A **config / CVar system**: engine tunables from a file + runtime tweaks (today's `KOI_*` env
@@ -492,11 +514,13 @@ Step 21  transparency + alpha blending (consumes Step 20 queue sort)    ✅ done
    │
 Step 22  debug draw (line overlay: AABBs/frustum/light icons — makes Step 19/20 visible)   ✅ done
    │
+Step 23  HUD / text (bitmap-font atlas, screen-space LDR overlay — builds on debug draw)   ✅ done
+   │
 glTF node hierarchy / Sponza ──▶ alpha-tested cutout        ◀── next (learning thread leads)
    │
 sort queue by material / instancing ──▶ cascaded shadows
    │
-skeletal animation ──▶ HUD / text (build on debug draw) ──▶ particles
+skeletal animation ──▶ particles ──▶ profiler / picking labels (build on HUD text)
    │
 deferred / clustered ──▶ fixed timestep ──▶ physics + audio ──▶ editor + gameplay
    │

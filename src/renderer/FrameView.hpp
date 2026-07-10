@@ -26,6 +26,7 @@
 #include "math/Mat4.hpp"  // Mat4 view matrix (transitively brings in Vec)
 #include "math/Vec.hpp"   // Vec3 camera position
 #include "renderer/DebugDraw.hpp"    // DebugVertex — the immediate-mode debug lines (Step 22)
+#include "renderer/Hud.hpp"          // HudVertex — the 2D screen-space overlay (Step 23)
 #include "renderer/PostProcess.hpp"  // PostSettings — which post effects to run
 #include "scene/Light.hpp"           // Light — the scene's active light list
 
@@ -58,6 +59,13 @@ struct FrameView {
     // frustum, light icons). Non-owning — a view over the app's DebugDraw storage,
     // which must outlive the FrameView. Empty ⇒ no overlay drawn (nothing changes).
     std::span<const DebugVertex> debugLines{};
+
+    // Immediate-mode HUD geometry to overlay this frame (Step 23): a triangle list
+    // of screen-space textured vertices the app rebuilt this frame (text, panels).
+    // Drawn LAST, on the final LDR image, so it stays pixel-crisp. Non-owning — a
+    // view over the app's Hud storage, which must outlive the FrameView. Empty ⇒ no
+    // HUD drawn (the overlay pass is skipped entirely).
+    std::span<const HudVertex> hudVertices{};
 };
 
 }  // namespace koi

@@ -76,7 +76,8 @@ public:
                iblIrradiancePipeline_ != nullptr && iblPrefilterPipeline_ != nullptr &&
                iblBrdfPipeline_ != nullptr && iblIrradiance_ != nullptr &&
                iblPrefilter_ != nullptr && iblBrdfLut_ != nullptr && iblSampler_ != nullptr &&
-               debugLinePipeline_ != nullptr;
+               debugLinePipeline_ != nullptr &&
+               hudPipeline_ != nullptr && hudAtlas_ != nullptr && hudSampler_ != nullptr;
     }
 
     // Upload geometry into a new Mesh and return it (shared, so many scene nodes
@@ -197,6 +198,27 @@ private:
     // at the END of recordScene so lines overlay the finished scene.
     void recordDebug(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                      const Mat4& viewProj) const;
+
+    // Build the HUD overlay resources (Step 23): bake the embedded 8x8 bitmap font
+    // (Font.hpp) into an RGBA atlas texture, create a NEAREST-filter clamp sampler
+    // (crisp, un-blurred glyphs), and build the textured overlay pipeline — a
+    // triangle list with alpha blending, NO depth, targeting the swapchain (LDR)
+    // format so the HUD draws onto the final post-processed image. Called once from
+    // the constructor, after the debug pipeline.
+    bool createHudResources();
+
+    // Upload this frame's HUD vertices into a GPU vertex buffer for the draw in
+    // recordHud (Step 23). Like uploadDebugLines, a fresh buffer is built each frame
+    // (immediate mode — no state between frames); an empty list uploads nothing and
+    // the overlay pass is skipped.
+    void uploadHud(std::span<const HudVertex> verts);
+
+    // Draw the uploaded HUD into an already-begun overlay pass on the FINAL image
+    // (Step 23): bind the HUD pipeline + atlas, push the viewport size (pixels→NDC),
+    // and issue one triangle-list draw. A no-op when nothing was queued. Called after
+    // the post chain, so the HUD sits on top of the tone-mapped, anti-aliased frame.
+    void recordHud(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                   Uint32 width, Uint32 height) const;
 
     // Create one GPU buffer of `usage` (VERTEX or INDEX), upload `size` bytes
     // from `data` into it via a staging transfer buffer + copy pass, and return
@@ -365,7 +387,8 @@ private:
                             const Node& sceneRoot, const Vec3& cameraPos,
                             std::span<const Light> lights,
                             const SDL_FColor& clearColor, const PostSettings& post,
-                            std::span<const DebugVertex> debugLines);
+                            std::span<const DebugVertex> debugLines,
+                            std::span<const HudVertex> hud);
 
     // Run the fullscreen post-processing passes over the already-rendered HDR scene,
     // ending with the final image written into `finalColor`. `width`/`height` are the
@@ -489,6 +512,18 @@ private:
     SDL_GPUBuffer*           debugVertexBuffer_  = nullptr;  // owned; recreated per frame
     Uint32                   debugVertexCount_   = 0;        // vertices uploaded this frame
     mutable Mat4             lastCameraViewProj_ = Mat4::identity();  // set in recordScene (const)
+
+    // HUD / text overlay (Step 23). A textured pipeline draws 2D screen-space quads —
+    // text glyphs and filled panels — onto the FINAL image, after post-processing, so
+    // the HUD stays crisp (no tone-map/FXAA blur). hudAtlas_ is the baked 8x8 bitmap
+    // font atlas (Font.hpp); hudSampler_ reads it with NEAREST filtering for sharp
+    // pixels. Like debug draw, the vertex buffer is rebuilt every frame from the
+    // FrameView's HUD vertices — immediate mode, no state between frames.
+    SDL_GPUGraphicsPipeline* hudPipeline_     = nullptr;  // owned
+    std::shared_ptr<Texture> hudAtlas_;                   // baked font atlas (RGBA)
+    SDL_GPUSampler*          hudSampler_      = nullptr;  // owned (nearest, clamp)
+    SDL_GPUBuffer*           hudVertexBuffer_ = nullptr;  // owned; recreated per frame
+    Uint32                   hudVertexCount_  = 0;        // vertices uploaded this frame
 
     // Post-processing (Step 10). The scene is rendered into an off-screen HDR color
     // target (sceneHdr_) instead of straight to the swapchain; a chain of fullscreen

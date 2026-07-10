@@ -149,6 +149,7 @@ add_library(koi_core STATIC
     src/core/Window.cpp
     src/renderer/DebugDraw.cpp
     src/renderer/GpuRenderer.cpp
+    src/renderer/Hud.cpp
     src/renderer/Mesh.cpp
     src/renderer/ModelLoader.cpp
     src/renderer/Primitives.cpp
@@ -207,6 +208,7 @@ add_executable(koi-tests
     tests/test_geometry.cpp
     tests/test_render_queue.cpp
     tests/test_debug_draw.cpp
+    tests/test_hud.cpp
     tests/test_camera.cpp
     tests/test_transform.cpp
     tests/test_node.cpp
@@ -304,6 +306,11 @@ koi_add_shader(brdf_lut.frag)
 # as a line list, making the Step 19/20 geometry visible.
 koi_add_shader(debug_line.vert)
 koi_add_shader(debug_line.frag)
+# Step 23: the HUD / text overlay. A textured, alpha-blended pipeline that maps
+# pixel-space quads to clip space (hud.vert) and samples the bitmap-font atlas
+# (hud.frag), drawing text + panels onto the final image after post-processing.
+koi_add_shader(hud.vert)
+koi_add_shader(hud.frag)
 
 # A target that builds all shader outputs, and a dependency so the app always has
 # up-to-date compiled shaders next to it.

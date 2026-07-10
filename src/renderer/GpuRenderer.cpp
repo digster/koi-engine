@@ -10,6 +10,8 @@
 #include "core/Log.hpp"
 #include "math/Mat4.hpp"
 #include "renderer/DebugDraw.hpp"   // DebugVertex — the immediate-mode debug lines (Step 22)
+#include "renderer/Font.hpp"        // kFont8x8 + atlas layout — baked into hudAtlas_ (Step 23)
+#include "renderer/Hud.hpp"         // HudVertex — the 2D screen-space overlay (Step 23)
 #include "renderer/Mesh.hpp"
 #include "renderer/Primitives.hpp"  // makeCubeMesh — reused as the skybox cube
 #include "renderer/Shader.hpp"
@@ -179,6 +181,16 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     //     the FrameView's per-frame debug lines. If this fails, isValid() reports it.
     // ------------------------------------------------------------------------
     if (!createDebugPipeline()) {
+        return;
+    }
+
+    // ------------------------------------------------------------------------
+    //  Step 23: the HUD / text overlay. Bakes the embedded 8x8 bitmap font into
+    //  an atlas texture and builds the textured, alpha-blended, depth-less pipeline
+    //  that draws 2D text + panels onto the final image. If this fails, isValid()
+    //  reports it.
+    // ------------------------------------------------------------------------
+    if (!createHudResources()) {
         return;
     }
 
@@ -424,6 +436,147 @@ bool GpuRenderer::createDebugPipeline() {
 
     if (debugLinePipeline_ == nullptr) {
         KOI_ERROR("Failed to create debug-line pipeline: %s", SDL_GetError());
+        return false;
+    }
+    return true;
+}
+
+bool GpuRenderer::createHudResources() {
+    // ---- 1. Bake the font atlas -------------------------------------------------
+    // Walk the embedded 8x8 bitmap font (Font.hpp) and paint every glyph into one
+    // RGBA image on the shared cell grid. A SET bit becomes an opaque WHITE texel
+    // (coverage lives in the alpha channel); a clear bit stays fully transparent.
+    // Storing white-on-transparent means the fragment shader can simply MULTIPLY by
+    // a per-vertex tint to colour the text and carry its opacity — no branching.
+    std::vector<Uint8> pixels(static_cast<size_t>(kAtlasW) * kAtlasH * 4, 0);
+    const auto setTexel = [&](int x, int y) {
+        const size_t o = (static_cast<size_t>(y) * kAtlasW + static_cast<size_t>(x)) * 4;
+        pixels[o + 0] = 255;  // R
+        pixels[o + 1] = 255;  // G
+        pixels[o + 2] = 255;  // B
+        pixels[o + 3] = 255;  // A (coverage)
+    };
+    for (int g = 0; g < 95; ++g) {  // the 95 printable glyphs (' '..'~')
+        const int cellX = (g % kFontCols) * kGlyphPx;
+        const int cellY = (g / kFontCols) * kGlyphPx;
+        for (int row = 0; row < kGlyphPx; ++row) {
+            const Uint8 bits = kFont8x8[g][row];  // one byte = one pixel row
+            for (int col = 0; col < kGlyphPx; ++col) {
+                if ((bits & (1u << col)) != 0) {  // bit 0 (LSB) = leftmost pixel
+                    setTexel(cellX + col, cellY + row);
+                }
+            }
+        }
+    }
+    // The reserved solid-white cell (index kWhiteCell) that filled panels sample.
+    {
+        const int cellX = (kWhiteCell % kFontCols) * kGlyphPx;
+        const int cellY = (kWhiteCell / kFontCols) * kGlyphPx;
+        for (int row = 0; row < kGlyphPx; ++row) {
+            for (int col = 0; col < kGlyphPx; ++col) {
+                setTexel(cellX + col, cellY + row);
+            }
+        }
+    }
+
+    // No mipmaps (withMips=false): the HUD is drawn at a 1:1-ish screen scale with
+    // nearest filtering, so a mip chain would only blur it. Not sRGB: the atlas is a
+    // coverage MASK, not a colour image — its bytes must be used as-is.
+    hudAtlas_ = createTextureFromRGBA(pixels.data(), kAtlasW, kAtlasH,
+                                      /*srgb=*/false, /*withMips=*/false);
+    if (hudAtlas_ == nullptr) {
+        KOI_ERROR("createHudResources: failed to build font atlas");
+        return false;
+    }
+
+    // ---- 2. A nearest-filter, clamp sampler ------------------------------------
+    // NEAREST (no texel interpolation) keeps the bitmap font sharp instead of
+    // smudging it; CLAMP_TO_EDGE prevents any wrap at the atlas border.
+    SDL_GPUSamplerCreateInfo samplerInfo = {};
+    samplerInfo.min_filter     = SDL_GPU_FILTER_NEAREST;
+    samplerInfo.mag_filter     = SDL_GPU_FILTER_NEAREST;
+    samplerInfo.mipmap_mode    = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    samplerInfo.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    samplerInfo.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    samplerInfo.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    hudSampler_ = SDL_CreateGPUSampler(device_, &samplerInfo);
+    if (hudSampler_ == nullptr) {
+        KOI_ERROR("createHudResources: failed to create sampler: %s", SDL_GetError());
+        return false;
+    }
+
+    // ---- 3. The textured overlay pipeline --------------------------------------
+    // hud.vert reads one uniform (the viewport size); hud.frag reads one sampler
+    // (the atlas).
+    SDL_GPUShader* vertexShader = loadShader(device_, "hud.vert",
+                                             SDL_GPU_SHADERSTAGE_VERTEX, /*numUniformBuffers=*/1);
+    SDL_GPUShader* fragmentShader = loadShader(device_, "hud.frag",
+                                               SDL_GPU_SHADERSTAGE_FRAGMENT,
+                                               /*numUniformBuffers=*/0, /*numSamplers=*/1);
+    if (vertexShader == nullptr || fragmentShader == nullptr) {
+        if (vertexShader != nullptr)   SDL_ReleaseGPUShader(device_, vertexShader);
+        if (fragmentShader != nullptr) SDL_ReleaseGPUShader(device_, fragmentShader);
+        return false;
+    }
+
+    // The HUD draws onto the FINAL image (the swapchain / capture target), which is
+    // the LDR swapchain format — NOT the HDR scene format the debug lines used.
+    SDL_GPUColorTargetDescription colorTargetDesc = {};
+    colorTargetDesc.format = SDL_GetGPUSwapchainTextureFormat(device_, window_);
+    // Straight alpha blending ("over"): out = src·srcAlpha + dst·(1-srcAlpha), so a
+    // glyph's covered texels composite over the scene and transparent ones vanish.
+    // Identical to the transparent scene pipeline's blend state.
+    SDL_GPUColorTargetBlendState& blend = colorTargetDesc.blend_state;
+    blend.enable_blend          = true;
+    blend.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+    blend.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    blend.color_blend_op        = SDL_GPU_BLENDOP_ADD;
+    blend.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+    blend.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    blend.alpha_blend_op        = SDL_GPU_BLENDOP_ADD;
+
+    // Vertex layout: one buffer at HudVertex stride with three attributes — pixel
+    // position (FLOAT2), atlas UV (FLOAT2), RGBA tint (FLOAT4). MUST match
+    // koi::HudVertex and hud.vert's `layout(location = N) in` inputs.
+    SDL_GPUVertexBufferDescription vertexBufferDesc = {};
+    vertexBufferDesc.slot       = 0;
+    vertexBufferDesc.pitch      = static_cast<Uint32>(sizeof(HudVertex));
+    vertexBufferDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+
+    const SDL_GPUVertexAttribute vertexAttributes[3] = {
+        { /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+          offsetof(HudVertex, pos) },
+        { /*location=*/1, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+          offsetof(HudVertex, uv) },
+        { /*location=*/2, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+          offsetof(HudVertex, color) },
+    };
+
+    SDL_GPUGraphicsPipelineCreateInfo info = {};
+    info.vertex_shader   = vertexShader;
+    info.fragment_shader = fragmentShader;
+    info.vertex_input_state.vertex_buffer_descriptions = &vertexBufferDesc;
+    info.vertex_input_state.num_vertex_buffers         = 1;
+    info.vertex_input_state.vertex_attributes          = vertexAttributes;
+    info.vertex_input_state.num_vertex_attributes      = 3;
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+
+    // No depth at all: the HUD is a flat 2D overlay whose draw order alone decides
+    // what sits on top, and it targets an image that has no depth buffer.
+    info.depth_stencil_state.enable_depth_test  = false;
+    info.depth_stencil_state.enable_depth_write = false;
+
+    info.target_info.num_color_targets         = 1;
+    info.target_info.color_target_descriptions = &colorTargetDesc;
+    info.target_info.has_depth_stencil_target  = false;
+
+    hudPipeline_ = SDL_CreateGPUGraphicsPipeline(device_, &info);
+
+    SDL_ReleaseGPUShader(device_, vertexShader);
+    SDL_ReleaseGPUShader(device_, fragmentShader);
+
+    if (hudPipeline_ == nullptr) {
+        KOI_ERROR("Failed to create HUD pipeline: %s", SDL_GetError());
         return false;
     }
     return true;
@@ -1245,16 +1398,19 @@ void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* 
                                      const Node& sceneRoot, const Vec3& cameraPos,
                                      std::span<const Light> lights,
                                      const SDL_FColor& clearColor, const PostSettings& post,
-                                     std::span<const DebugVertex> debugLines) {
+                                     std::span<const DebugVertex> debugLines,
+                                     std::span<const HudVertex> hud) {
     if (!ensureSceneTargets(width, height)) {
         return;  // ensureSceneTargets logged; skip this frame rather than crash
     }
 
-    // Upload this frame's debug lines (Step 22) BEFORE any render pass begins on
-    // `cmd`: uploadDebugLines does its copy on its own command buffer, and doing it
-    // here keeps the transient vertex buffer ready for recordScene's overlay draw.
-    // (Empty when debug draw is off, so this is a cheap no-op in the common case.)
+    // Upload this frame's overlay geometry (Step 22 debug lines + Step 23 HUD) BEFORE
+    // any render pass begins on `cmd`: the upload helper copies on its own command
+    // buffer, so doing it here keeps the transient vertex buffers ready for their
+    // draws. (Both are empty when their overlay is off — a cheap no-op in the common
+    // case.)
     uploadDebugLines(debugLines);
+    uploadHud(hud);
 
     // TRAVERSE → LIST (Step 20). Flatten the scene graph into a flat draw list ONCE,
     // up front, so both passes below iterate the list instead of re-walking the tree.
@@ -1300,6 +1456,24 @@ void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* 
 
     // PASSES 3+ — the fullscreen post-processing chain, ending in `finalColor`.
     runPostChain(cmd, finalColor, width, height, post);
+
+    // FINAL PASS — the HUD overlay (Step 23). It draws straight onto `finalColor`,
+    // the finished LDR image, so it must run AFTER post-processing (drawing it into
+    // the HDR scene would send text through tone-mapping + FXAA and blur it). We LOAD
+    // the existing image (don't clear it) and blend the 2D text/panels on top; no
+    // depth target, since a flat overlay's draw order alone decides what's in front.
+    // Skipped entirely when no HUD was queued this frame.
+    if (hudVertexCount_ > 0) {
+        SDL_GPUColorTargetInfo hudTarget = {};
+        hudTarget.texture  = finalColor;
+        hudTarget.load_op  = SDL_GPU_LOADOP_LOAD;    // keep the post-processed frame
+        hudTarget.store_op = SDL_GPU_STOREOP_STORE;  // and write the HUD back into it
+        hudTarget.cycle    = false;                  // finalColor isn't ours to cycle
+        SDL_GPURenderPass* hudPass =
+            SDL_BeginGPURenderPass(cmd, &hudTarget, /*num_color_targets=*/1, /*depth=*/nullptr);
+        recordHud(cmd, hudPass, width, height);
+        SDL_EndGPURenderPass(hudPass);
+    }
 }
 
 SDL_GPUBuffer* GpuRenderer::uploadToGpuBuffer(SDL_GPUBufferUsageFlags usage,
@@ -1997,6 +2171,54 @@ void GpuRenderer::recordDebug(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
                           /*first_vertex=*/0, /*first_instance=*/0);
 }
 
+void GpuRenderer::uploadHud(std::span<const HudVertex> verts) {
+    // Same immediate-mode strategy as uploadDebugLines: this frame's HUD geometry
+    // is brand new, so release last frame's buffer and build a fresh one rather than
+    // synchronize a write the previous frame might still be reading. SDL defers the
+    // free until the GPU is done, so no two frames ever touch the same buffer.
+    if (hudVertexBuffer_ != nullptr) {
+        SDL_ReleaseGPUBuffer(device_, hudVertexBuffer_);
+        hudVertexBuffer_ = nullptr;
+    }
+    hudVertexCount_ = 0;
+
+    if (verts.empty()) {
+        return;  // nothing queued this frame — the overlay pass is skipped
+    }
+
+    const Uint32 bytes = static_cast<Uint32>(verts.size_bytes());
+    hudVertexBuffer_ = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_VERTEX, verts.data(), bytes);
+    if (hudVertexBuffer_ != nullptr) {
+        hudVertexCount_ = static_cast<Uint32>(verts.size());
+    }
+}
+
+void GpuRenderer::recordHud(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                            Uint32 width, Uint32 height) const {
+    if (hudVertexCount_ == 0 || hudPipeline_ == nullptr) {
+        return;  // no HUD this frame (the common case — the overlay is opt-in)
+    }
+
+    // Bind the pipeline, then everything it needs: the viewport size (so hud.vert can
+    // map pixels → clip space), the font atlas at fragment slot 0, the vertex buffer,
+    // then one triangle-list draw of all the collected quads.
+    SDL_BindGPUGraphicsPipeline(pass, hudPipeline_);
+
+    const float viewport[2] = {static_cast<float>(width), static_cast<float>(height)};
+    SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, viewport, sizeof(viewport));
+
+    SDL_GPUTextureSamplerBinding atlasBind = {};
+    atlasBind.texture = hudAtlas_->handle();
+    atlasBind.sampler = hudSampler_;
+    SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, &atlasBind, /*num_bindings=*/1);
+
+    SDL_GPUBufferBinding vb = {};
+    vb.buffer = hudVertexBuffer_;
+    SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vb, /*num_bindings=*/1);
+    SDL_DrawGPUPrimitives(pass, hudVertexCount_, /*num_instances=*/1,
+                          /*first_vertex=*/0, /*first_instance=*/0);
+}
+
 void GpuRenderer::submitItem(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                              const RenderItem& item, const Mat4& projView) const {
     // buildRenderQueue only ever enqueues drawables, so both are guaranteed non-null
@@ -2180,6 +2402,22 @@ GpuRenderer::~GpuRenderer() {
             SDL_ReleaseGPUBuffer(device_, debugVertexBuffer_);
             debugVertexBuffer_ = nullptr;
         }
+        // HUD / text overlay (Step 23). hudAtlas_ is a member shared_ptr<Texture>, so
+        // (like skyboxMesh_) it must be dropped HERE while the device is still alive —
+        // member destructors run only after this body, past SDL_DestroyGPUDevice.
+        hudAtlas_.reset();
+        if (hudSampler_ != nullptr) {
+            SDL_ReleaseGPUSampler(device_, hudSampler_);
+            hudSampler_ = nullptr;
+        }
+        if (hudPipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, hudPipeline_);
+            hudPipeline_ = nullptr;
+        }
+        if (hudVertexBuffer_ != nullptr) {
+            SDL_ReleaseGPUBuffer(device_, hudVertexBuffer_);
+            hudVertexBuffer_ = nullptr;
+        }
         // Order matters: detach the window's swapchain from the device BEFORE
         // destroying the device. DestroyGPUDevice also waits for the GPU to go
         // idle, so no in-flight frame is left dangling.
@@ -2201,6 +2439,7 @@ void GpuRenderer::renderFrame(const FrameView& fv) {
     const std::span<const Light> lights  = fv.lights;
     const PostSettings& post             = fv.post;
     const std::span<const DebugVertex> debugLines = fv.debugLines;
+    const std::span<const HudVertex> hud          = fv.hudVertices;
 
     // ------------------------------------------------------------------------
     //  1. Acquire a command buffer.
@@ -2242,7 +2481,7 @@ void GpuRenderer::renderFrame(const FrameView& fv) {
         // The aspect ratio comes from the actual swapchain size, so the image is never
         // stretched and adapts automatically when the window is resized.
         renderSceneAndPost(cmd, swapchainTexture, width, height, view, sceneRoot,
-                           cameraPos, lights, clearColor, post, debugLines);
+                           cameraPos, lights, clearColor, post, debugLines, hud);
     }
 
     // ------------------------------------------------------------------------
@@ -2264,6 +2503,7 @@ bool GpuRenderer::captureFrame(const char* path, const FrameView& fv) {
     const std::span<const Light> lights  = fv.lights;
     const PostSettings& post             = fv.post;
     const std::span<const DebugVertex> debugLines = fv.debugLines;
+    const std::span<const HudVertex> hud          = fv.hudVertices;
 
     // Fixed capture resolution: keeps the output deterministic and small. The
     // aspect ratio (1280/720) feeds the projection so the cube isn't distorted.
@@ -2314,7 +2554,7 @@ bool GpuRenderer::captureFrame(const char* path, const FrameView& fv) {
     //    the same frame every time.
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
     renderSceneAndPost(cmd, target, kWidth, kHeight, view, sceneRoot, cameraPos,
-                       lights, clearColor, post, debugLines);
+                       lights, clearColor, post, debugLines, hud);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion region = {};

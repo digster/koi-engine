@@ -3,7 +3,7 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 22 (window & render loop, the first triangle, geometry in GPU
+through Step 23 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
@@ -28,7 +28,8 @@ matrix** for correct lighting under non-uniform scale, and a **render-queue** ex
 scene-graph walk into a flat draw list — the architecture pivot behind **frustum culling** (skip off-screen
 draws), **transparency** — a second blend-on/depth-write-off pipeline with a back-to-front sort for see-through
 surfaces — and **debug draw**, an immediate-mode **line** overlay (bounding boxes, light icons, the camera
-frustum) that makes the otherwise-invisible geometry layer visible on screen).
+frustum) that makes the otherwise-invisible geometry layer visible on screen, and a **HUD / text** overlay —
+an embedded bitmap-font atlas drawn as crisp screen-space quads in a final pass after post-processing).
 
 ## Guiding principles
 
@@ -78,7 +79,7 @@ bundle. See the *Engine / app separation (Step 17)* section below.
 |-----------|------|----------------|
 | `Engine` | [src/core/Engine.*](src/core/) | Owns the **reusable machinery only**: SDL, the `Window`, the `GpuRenderer`, and the main loop (delta-time, event pump, OS-quit, the headless `KOI_CAPTURE`/`KOI_MAX_FRAMES` paths), plus startup/shutdown order. Owns **no** scene/camera/lights. `run(Application&)` drives an app by inversion of control (`onStart`/`onUpdate`/`onEvent`/`frameView`/`onShutdown`) and exposes services to it (`renderer()`, `requestQuit()`). Step 17. |
 | `Application` | [src/core/Application.hpp](src/core/Application.hpp) | Header-only abstract interface (Step 17) — the engine/app boundary. Hooks: `onStart` (build content), `onUpdate(dt)` (animate + input), `onEvent` (per-event input; default no-op), `frameView()` (return a `FrameView` to draw), `onShutdown` (release GPU resources while the device is still alive). An app subclasses it and holds its own scene/camera/lights. |
-| `FrameView` | [src/renderer/FrameView.hpp](src/renderer/FrameView.hpp) | Header-only value (Step 17): the per-frame render bundle — clear colour, `view` matrix, scene `root` (non-owning), `cameraPos`, `lights` span, `PostSettings`, and (Step 22) a non-owning `debugLines` span of overlay geometry. Produced by `Application::frameView()`, consumed by both `renderFrame` and `captureFrame`, so the live and headless paths can't drift. Owns nothing. |
+| `FrameView` | [src/renderer/FrameView.hpp](src/renderer/FrameView.hpp) | Header-only value (Step 17): the per-frame render bundle — clear colour, `view` matrix, scene `root` (non-owning), `cameraPos`, `lights` span, `PostSettings`, (Step 22) a non-owning `debugLines` span of overlay geometry, and (Step 23) a non-owning `hudVertices` span of screen-space HUD geometry. Produced by `Application::frameView()`, consumed by both `renderFrame` and `captureFrame`, so the live and headless paths can't drift. Owns nothing. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
 | `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines), the (Step 14) **skybox** resources (a `CUBE` **cubemap** texture, a CLAMP_TO_EDGE cubemap sampler, a skybox pipeline, and the cube mesh drawn around the camera), and the (Step 15) **image-based-lighting** resources (three bake pipelines, a trilinear CLAMP sampler, and the baked **irradiance** cube + **prefiltered** cube + **BRDF LUT** targets). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload and choosing an **sRGB** format for colour maps — Step 16; `createTextureFromRGBA` for already-decoded bytes; `loadCubemap` uploads six faces into one cube texture, then `bakeIbl` bakes the IBL maps from it) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) **flattens the scene graph into a render queue once** (`buildRenderQueue`, Step 20), then runs: **shadow pass** (loops the *whole* queue, depth only) → **scene pass** into the HDR target (`recordScene`; **frustum-culls** the queue to the camera then submits each survivor via `submitItem` — binding the material's four maps per draw + the **emissive** map at slot 8 (Step 16), shadow map at slot 4, the three IBL maps at slots 5–7 — drawing in three ordered sub-passes (Step 21): **opaque** items (depth-write on) → the **sky** via `recordSkybox` → **transparent** items through a second **blend pipeline** (depth-write off), sorted back-to-front by `partitionByBlend`; `bindFrameLighting` re-binds the shadow/IBL maps after the pipeline switch) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data; holds a reused `renderQueue_` (+ `opaqueItems_`/`transparentItems_` scratch), both the opaque `trianglePipeline_` + the `transparentPipeline_`, and `frustumCullingEnabled_` / `transparentSortEnabled_` toggles. |
 | `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the **app** drives from input and hands to the renderer (via `FrameView`), plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
@@ -89,6 +90,7 @@ bundle. See the *Engine / app separation (Step 17)* section below.
 | `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count + element size: 16-bit for primitives, 32-bit for big loaded models). Also caches a **model-space `Aabb`** (Step 20), computed from the vertices in `createMesh` — the box frustum culling transforms + tests. Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must die before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
 | `RenderQueue` | [src/renderer/RenderQueue.*](src/renderer/) | The Step 20 flat draw list. `RenderItem { mesh, material, world, worldBounds }`; `computeLocalBounds` (a mesh's model-space box), `buildRenderQueue` (walk the node tree once → flat list), `cullToFrustum` (keep items whose world bounds hit the camera `Frustum`), and (Step 21) `partitionByBlend` (split the culled list by `Material::alphaMode` into opaque + a **back-to-front-sorted** transparent bucket). The pure helpers are unit-tested with no GPU (`tests/test_render_queue.cpp`); the *traverse → list → submit* split is the pivot behind culling/sorting/instancing/transparency. |
 | `DebugDraw` | [src/renderer/DebugDraw.*](src/renderer/) | The Step 22 immediate-mode line overlay. A pure, GPU-free collector: `DebugVertex { position, color }` plus `line`/`box`/`frustum`/`ray`/`cross` building a flat **line-list** vertex array (`box` and `frustum` share a 12-edge topology; `frustum` unprojects the NDC cube through `inverse(viewProj)`). Rebuilt every frame by the app and handed over via `FrameView::debugLines`; the renderer uploads it into a **transient** vertex buffer (recreated per frame) and draws it through a minimal unlit `debugLinePipeline_` (LINELIST, depth-test on / **write off**) in `recordDebug` at the end of `recordScene`. Unit-tested with no GPU (`tests/test_debug_draw.cpp`). |
+| `Hud` / `Font` | [src/renderer/Hud.*](src/renderer/), [src/renderer/Font.hpp](src/renderer/Font.hpp) | The Step 23 immediate-mode **HUD / text** overlay. `Font.hpp` is the embedded public-domain **8×8 bitmap font** table + atlas layout (`glyphCell`/`cellUV` with a half-texel inset), the single source of truth shared by the collector and the atlas bake. `Hud` is a pure, GPU-free collector: `HudVertex { pos, uv, color }` plus `text` (one 6-vertex quad per glyph, `\n`-aware, `?` fallback) and `rect` (a panel sampling the reserved solid-white cell) building a flat **triangle-list** in **pixel** coordinates. Rebuilt every frame by the app and handed over via `FrameView::hudVertices`; the renderer bakes the atlas once (`createHudResources`, nearest sampler), uploads the vertices into a **transient** buffer (`uploadHud`), and draws them through a textured, alpha-blended, depth-less `hudPipeline_` (`hud.vert`/`hud.frag`) in a **final overlay pass on the LDR image, after post** (`recordHud`) — so text stays crisp. Unit-tested with no GPU (`tests/test_hud.cpp`). |
 | `Texture` | [src/renderer/Texture.*](src/renderer/) | RAII owner of one `SDL_GPUTexture` (sampled image). Same non-owning-device lifetime rule as `Mesh`. Created via `GpuRenderer::loadTexture` (BMP → SDL; PNG/JPG → **stb_image**; decode → upload) or `createTextureFromRGBA` (already-decoded bytes, e.g. embedded glTF images), with an **sRGB** option for colour maps (Step 16); held by `shared_ptr`. A *sampler* (how to read it) is separate, reusable device state owned by the renderer. |
 | `Primitives` | [src/renderer/Primitives.*](src/renderer/) | Free functions (`makeCubeMesh`, `makePlaneMesh`) that define a shape's vertex/index data and upload it via `createMesh`, keeping the renderer geometry-agnostic. |
 | `Transform` | [src/scene/Transform.hpp](src/scene/Transform.hpp) | Header-only, SDL-free: position / rotation (a unit **`Quat`** since Step 18 — no gimbal lock, `slerp`-able) / scale, plus `localMatrix()` returning `T·R·S` (scale → rotate → translate). Unit-tested in `tests/test_transform.cpp`. |
@@ -764,6 +766,34 @@ renderer draws it* boundary as everything else:
   headless capture. **Documented deferrals:** lines are tone-mapped/FXAA'd (they draw into the HDR target); no
   x-ray (depth-off) mode; no text labels yet. With nothing queued, the overlay is a no-op and the frame is
   byte-identical to Step 21.
+
+### HUD & text (Step 23)
+
+The HUD is debug draw's 2D sibling — the same *app builds it → `FrameView` carries it → renderer draws it*
+boundary — but it draws **text**, in **screen space**, and (crucially) in its **own pass after post-processing**:
+
+- **A bitmap font in an atlas.** [`Font.hpp`](src/renderer/Font.hpp) embeds the public-domain **8×8** glyph table
+  (8 bytes/glyph, bit 0 = leftmost pixel). At startup `createHudResources` **bakes** it into an RGBA **atlas**
+  texture on a fixed 16×6 cell grid: a set bit → opaque white, clear → transparent (the alpha *is* the coverage).
+  One reserved solid-white cell lets filled panels share the text pipeline. `Font.hpp` is the single source of
+  truth for the layout, so the collector (computing UVs) and the bake (painting texels) can't disagree; `cellUV`
+  applies a **half-texel inset** to stop nearest-filter sampling from bleeding across cell borders.
+- **A pure collector.** [`Hud`](src/renderer/Hud.hpp) turns `text`/`rect` into a flat **triangle-list** of
+  `HudVertex { pos, uv, color }` in **pixel** coordinates (top-left origin) — one 6-vertex quad per glyph, the pen
+  advancing one cell per char, `\n`-aware, unknown chars → `?`. No GPU state → unit-tested headlessly
+  (`tests/test_hud.cpp`).
+- **Screen-space projection.** `hud.vert` maps pixels → clip space with a hand-written **orthographic** divide by
+  the viewport size (pushed as a uniform), flipping Y (screen-down vs clip-up). `hud.frag` is just `atlas × tint`.
+- **A final overlay pass, in LDR.** This is the key difference from debug draw. Debug lines live in the HDR scene
+  pass (and so are tone-mapped/FXAA'd); the HUD instead draws in a **separate pass on the final image**, *after*
+  `runPostChain`, with `LOAD_OP_LOAD` (keep the post-processed frame), **alpha blending**, and **no depth** — so
+  glyphs stay pixel-crisp. `createHudResources` builds the textured `hudPipeline_` at the **swapchain (LDR)** format;
+  `uploadHud` recreates the transient vertex buffer each frame; `recordHud` draws it. Because the pass targets the
+  same `finalColor` for both the live and capture paths, the HUD appears in `KOI_CAPTURE` too.
+- **In the demo.** `DemoApp::buildHud` fills a panel + title, a smoothed **FPS**/frame-time, the camera position,
+  the debug-toggle states, and a controls legend; **`H`** toggles it, `KOI_HUD` enables it for a headless capture.
+  **Documented deferrals:** fixed-width bitmap font only (no SDF/proportional), no scissor clip, ASCII only. With
+  nothing queued the overlay pass is skipped and the frame is byte-identical to Step 22.
 
 ## Lifecycle & ownership
 

@@ -36,6 +36,7 @@
     <a class="navlink" href="21-render-queue-and-frustum-culling.html">Render Queue &amp; Culling</a>
     <a class="navlink" href="22-transparency-and-alpha-blending.html">Transparency &amp; Blending</a>
     <a class="navlink" href="23-debug-draw.html">Debug Draw</a>
+    <a class="navlink" href="24-hud-and-text.html">HUD &amp; Text</a>
   </div>
 </nav>
 
@@ -186,6 +187,13 @@
       <p>Make the invisible visible: immediate-mode <strong>line-list</strong> rendering of AABBs, light icons and
       the <strong>camera frustum</strong> (unprojected from the NDC cube through <code>inverse(viewProj)</code>) —
       a <strong>transient</strong> per-frame vertex buffer that finally puts Step 19/20's geometry on screen.</p>
+    </a>
+    <a class="card" href="24-hud-and-text.html">
+      <h3>HUD &amp; Text →</h3>
+      <p>Text on screen at last: an embedded <strong>8&times;8 bitmap font</strong> baked into a
+      <strong>texture atlas</strong>, <strong>screen-space</strong> (pixel→clip) quads, and a final
+      <strong>overlay pass in LDR</strong> — drawn after post-processing so glyphs stay crisp — powering a live demo
+      HUD (FPS, camera, toggles).</p>
     </a>
   </div>
 

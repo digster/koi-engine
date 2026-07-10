@@ -2,7 +2,9 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>  // std::max — size the HUD panel to its widest line
 #include <cmath>   // std::cos, std::sin — cone cosines + the orbiting light
+#include <cstdio>  // std::snprintf — format the HUD's live readouts
 #include <memory>
 #include <string>
 
@@ -27,6 +29,11 @@ constexpr SDL_FColor kClearColor = {0.04f, 0.10f, 0.12f, 1.0f};
 // after the HDR scene is tone-mapped (the lines are drawn into the HDR target).
 constexpr Vec3 kBoundsColor  = {0.15f, 1.0f, 0.30f};  // green AABBs
 constexpr Vec3 kFrustumColor = {1.0f, 0.80f, 0.10f};  // amber camera frustum
+
+// HUD colours (Step 23). The panel is translucent black (alpha < 1) so the scene
+// shows through behind the text; the text is a near-white for legibility on it.
+constexpr Vec4 kHudPanel = {0.0f, 0.0f, 0.0f, 0.45f};
+constexpr Vec4 kHudText  = {0.92f, 0.96f, 1.0f, 1.0f};
 
 // Recursively add a green AABB for every drawable node in the subtree. A node's
 // world-space box is its mesh's model-space bounds (cached at upload, Step 20)
@@ -69,17 +76,27 @@ bool DemoApp::onStart(Engine& engine) {
         KOI_INFO("KOI_DEBUG_DRAW set — debug overlays enabled for this run.");
     }
 
-    // Build the overlay once here too (not only in onUpdate): the headless
+    // Step 23: with KOI_HUD set, show the HUD from the start so a headless KOI_CAPTURE
+    // frame includes it (no key presses possible there). Interactive runs start with
+    // the HUD hidden until you press H.
+    if (SDL_getenv("KOI_HUD") != nullptr) {
+        showHud_ = true;
+        KOI_INFO("KOI_HUD set — HUD enabled for this run.");
+    }
+
+    // Build the overlays once here too (not only in onUpdate): the headless
     // KOI_CAPTURE path renders straight after onStart WITHOUT an onUpdate tick, so
-    // this is what makes the debug lines appear in a captured t=0 frame. (Empty and
-    // harmless when the toggles above are off.)
+    // this is what makes the debug lines + HUD appear in a captured t=0 frame. (Empty
+    // and harmless when their toggles are off.)
     buildDebugLines();
+    buildHud();
 
     KOI_INFO("Controls: WASD move, E/Q up/down, mouse look, Esc to quit.");
     KOI_INFO("Post-processing: 1=tone-map 2=bloom 3=FXAA 4=vignette, [ / ] exposure.");
     KOI_INFO("Lights: 5=point lights 6=spot 7=sun. Environment: 8=skybox 9=IBL.");
     KOI_INFO("Culling/transparency: 0=frustum culling, T=back-to-front sort.");
     KOI_INFO("Debug draw: G=bounds L=light icons F=freeze+show the camera frustum.");
+    KOI_INFO("HUD: H=toggle the on-screen text overlay (FPS, camera, toggles).");
     return true;
 }
 
@@ -355,6 +372,13 @@ void DemoApp::onUpdate(Engine& /*engine*/, float dt) {
     // keys produce smooth, repeat-rate-independent movement.
     camera_.processKeyboard(SDL_GetKeyboardState(nullptr), dt);
 
+    // Smooth the frame rate for a steady HUD readout: a raw 1/dt jitters every frame,
+    // so blend it into an exponential moving average (90% history, 10% new sample).
+    if (dt > 0.0f) {
+        const float instantaneous = 1.0f / dt;
+        fps_ = (fps_ > 0.0f) ? (fps_ * 0.9f + instantaneous * 0.1f) : instantaneous;
+    }
+
     // Animate the scene: spin the hub (its satellites orbit with it) and the inner
     // pivot (its moon orbits it). A quaternion has no per-axis angle to bump, so we
     // keep the running Y angle ourselves (radians, scaled by dt for frame-rate
@@ -381,6 +405,9 @@ void DemoApp::onUpdate(Engine& /*engine*/, float dt) {
     // Rebuild this frame's debug overlay AFTER the world transforms are current, so
     // the AABBs and light crosses sit at their up-to-date world positions.
     buildDebugLines();
+
+    // Rebuild the 2D HUD (camera position + toggle states reflect this frame).
+    buildHud();
 }
 
 void DemoApp::buildDebugLines() {
@@ -412,6 +439,55 @@ void DemoApp::buildDebugLines() {
                 debug_.ray(light.position, light.direction, 1.5f, light.color);
             }
         }
+    }
+}
+
+void DemoApp::buildHud() {
+    // Immediate mode, like buildDebugLines: discard last frame's HUD and re-declare it.
+    hud_.clear();
+    if (!showHud_) {
+        return;  // hidden — leave the HUD empty so the renderer skips the overlay pass
+    }
+
+    const float scale   = 2.0f;                                 // 16px-tall glyphs
+    const float lineH   = static_cast<float>(kGlyphPx) * scale;  // one text row
+    const float pad     = 6.0f;                                  // panel inner margin
+    const float lineGap = 2.0f;                                  // gap between rows
+
+    // Format the live readouts. snprintf into fixed buffers keeps this allocation-free.
+    const Vec3 cam = camera_.position();
+    char title[48];
+    char fpsLine[48];
+    char camLine[64];
+    char toggleLine[80];
+    char helpLine[64];
+    std::snprintf(title, sizeof(title), "Koi Engine - Step 23 HUD");
+    std::snprintf(fpsLine, sizeof(fpsLine), "FPS %3.0f  (%.2f ms)",
+                  fps_, fps_ > 0.0f ? 1000.0f / fps_ : 0.0f);
+    std::snprintf(camLine, sizeof(camLine), "Cam %6.2f %6.2f %6.2f", cam.x, cam.y, cam.z);
+    std::snprintf(toggleLine, sizeof(toggleLine), "G bounds:%-3s  L lights:%-3s  F frustum:%-3s",
+                  debugBounds_ ? "on" : "off", debugLights_ ? "on" : "off",
+                  debugFrustum_ ? "on" : "off");
+    std::snprintf(helpLine, sizeof(helpLine), "WASD move   mouse look   H hud");
+
+    const char* lines[] = {title, fpsLine, camLine, toggleLine, helpLine};
+    constexpr int kLineCount = 5;
+
+    // Size a translucent backing panel to the widest line so the text stays readable
+    // over any scene. Draw the panel FIRST (behind) then the text — draw order is the
+    // only "layering" a flat 2D overlay has.
+    float maxW = 0.0f;
+    for (const char* s : lines) {
+        maxW = std::max(maxW, Hud::textWidth(s, scale));
+    }
+    const float panelW = maxW + pad * 2.0f;
+    const float panelH = kLineCount * lineH + (kLineCount - 1) * lineGap + pad * 2.0f;
+    hud_.rect(0.0f, 0.0f, panelW, panelH, kHudPanel);
+
+    float y = pad;
+    for (const char* s : lines) {
+        hud_.text(pad, y, scale, kHudText, s);
+        y += lineH + lineGap;
     }
 }
 
@@ -542,6 +618,11 @@ void DemoApp::onEvent(Engine& engine, const SDL_Event& event) {
                     debugLights_ = !debugLights_;
                     KOI_INFO("Debug light icons: %s", debugLights_ ? "on" : "off");
                     break;
+                case SDLK_H:
+                    // Step 23: toggle the 2D HUD (FPS, camera position, toggle states).
+                    showHud_ = !showHud_;
+                    KOI_INFO("HUD: %s", showHud_ ? "on" : "off");
+                    break;
                 default:
                     break;
             }
@@ -579,6 +660,9 @@ FrameView DemoApp::frameView() const {
         // The debug lines built this frame in buildDebugLines(). `debug_` is a
         // member, so the span stays valid for this call (empty ⇒ no overlay).
         .debugLines = debug_.vertices(),
+        // The HUD geometry built this frame in buildHud(); `hud_` is a member too
+        // (empty ⇒ no overlay, drawn last so it stays crisp over the final image).
+        .hudVertices = hud_.vertices(),
     };
 }
 

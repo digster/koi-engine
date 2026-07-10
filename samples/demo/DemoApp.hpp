@@ -18,6 +18,7 @@
 #include "core/Application.hpp"
 #include "math/Mat4.hpp"             // Mat4 — the frozen frustum's view-projection
 #include "renderer/DebugDraw.hpp"    // DebugDraw value member (Step 22)
+#include "renderer/Hud.hpp"          // Hud value member (Step 23)
 #include "renderer/PostProcess.hpp"  // PostSettings value member
 #include "scene/Camera.hpp"          // Camera value member
 #include "scene/Light.hpp"           // std::vector<Light> value member
@@ -57,6 +58,13 @@ private:
     // frameView().debugLines.
     void buildDebugLines();
 
+    // Rebuild this frame's 2D HUD (Step 23) from the demo state: a translucent panel
+    // with the engine title, a live FPS/frame-time readout, the camera position, the
+    // debug-toggle states, and a one-line controls legend. Called each frame from
+    // onUpdate; the result is handed to the renderer via frameView().hudVertices.
+    // Empty (nothing drawn) while the HUD is hidden.
+    void buildHud();
+
     // The scene graph. The app owns it; it holds GPU meshes + material textures, so
     // onShutdown() releases it while the engine's renderer (and its device) is alive.
     std::unique_ptr<Node> sceneRoot_;
@@ -87,6 +95,13 @@ private:
     bool      debugLights_       = false;  // L: a cross at each positioned light
     Mat4      frozenViewProj_    = Mat4::identity();
     bool      haveFrozenFrustum_ = false;  // true once a frustum has been captured
+
+    // HUD / text overlay (Step 23). `hud_` collects this frame's 2D geometry (rebuilt
+    // each frame in buildHud). `showHud_` is the runtime toggle (key H, or KOI_HUD for
+    // a headless capture); `fps_` is a smoothed frame rate for a steady on-screen readout.
+    Hud   hud_;
+    bool  showHud_ = false;
+    float fps_     = 0.0f;
 
     // Angle accumulators (radians) for the animated Y-spins: the hub, the inner
     // pivot ("spinner"), and the one orbiting point light. Transform stores a

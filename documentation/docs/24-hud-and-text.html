@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HUD &amp; Text · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
+    <a class="navlink" href="16-image-based-lighting.html">Image-based Lighting</a>
+    <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
+    <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
+    <a class="navlink" href="19-quaternions.html">Quaternions</a>
+    <a class="navlink" href="20-geometry-utilities.html">Geometry Utilities</a>
+    <a class="navlink" href="21-render-queue-and-frustum-culling.html">Render Queue &amp; Culling</a>
+    <a class="navlink" href="22-transparency-and-alpha-blending.html">Transparency &amp; Blending</a>
+    <a class="navlink" href="23-debug-draw.html">Debug Draw</a>
+    <a class="navlink" href="24-hud-and-text.html" aria-current="page">HUD &amp; Text</a>
+  </div>
+</nav>
+
+<main>
+  <h1>HUD &amp; Text</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 23:</strong> put <em>text</em> on the screen. Everything the engine has drawn so far
+    lives in the 3D world — meshes, lights, even <a href="23-debug-draw.html">debug lines</a> float in world space
+    and move with the camera. A <strong>HUD</strong> ("heads-up display") is different: it is pinned to <em>pixels</em>
+    on the window — an FPS counter in the corner, a controls legend, a value readout — and it never moves. Building
+    one means learning three new ideas: how to store letter shapes (a <strong>bitmap font</strong> in a
+    <strong>texture atlas</strong>), how to place things in <strong>screen space</strong> instead of world space, and
+    why user interface is drawn in its own pass, <em>last</em>, straight onto the finished image.</p>
+    <p>It builds directly on <a href="23-debug-draw.html">debug draw</a>: the same immediate-mode "collect this
+    frame's geometry, upload it, draw it once" shape — only now the geometry is <strong>textured triangles</strong>
+    instead of coloured lines.</p>
+  </blockquote>
+
+  <h2>1. A GPU has no idea what a letter is</h2>
+
+  <p>A graphics card can do exactly one thing: fill triangles with pixels, optionally reading colours from a
+  <a href="07-textures-and-samplers.html">texture</a>. It has no concept of an "A" or a font. So to draw text we
+  must give it letter <em>shapes</em> as something it understands — and the simplest possible shape is a tiny
+  picture. That is a <strong>bitmap font</strong>: each character is a small grid of on/off pixels. Koi uses the
+  classic <strong>8&times;8</strong> size, so one glyph is an 8-pixel-wide, 8-pixel-tall image — stored as just
+  <strong>8 bytes</strong>, one byte per row, one bit per column. A <code>1</code> bit is ink, a <code>0</code> is
+  background.</p>
+
+  <pre class="diagram">the letter 'A', 8 bytes (one per row):     bits, MSB→LSB, drawn as pixels:
+  0x0C  0x1E  0x33  0x33                       ..XX....   .XXXX...   XX..XX..   XX..XX..
+  0x3F  0x33  0x33  0x00                       XXXXXX..   XX..XX..   XX..XX..   ........</pre>
+
+  <p>We embed this table (the public-domain <code>font8x8_basic</code>) directly in the engine, in
+  <code>src/renderer/Font.hpp</code>. No <code>.ttf</code> file, no font library — Koi stays fully offline and you
+  can read a glyph at the bit level. (Bitmap fonts have a limit: they only look crisp at whole-number sizes. The
+  modern alternative, a <strong>signed-distance-field</strong> font, stays smooth at any scale — a natural follow-up
+  step.)</p>
+
+  <h2>2. The texture atlas: one image, many glyphs</h2>
+
+  <p>A shader can't sample a "byte array"; it samples a <em>texture</em>. So at start-up the renderer walks the font
+  table and <strong>paints every glyph into one image</strong> — the font <strong>atlas</strong> — on a fixed grid
+  of 8&times;8 cells. Drawing a character then becomes: draw a little quad, and point its
+  <a href="07-textures-and-samplers.html">texture coordinates (UVs)</a> at that character's cell. A texture atlas is
+  simply "many small images packed into one big one", and it exists because <strong>switching textures is
+  expensive</strong>: with every glyph in a single atlas, a whole paragraph draws from one texture in one call.</p>
+
+  <pre class="diagram">the atlas: a 16 × 6 grid of 8×8 cells (128 × 48 texels)
+  cell 0 = ' '   cell 1 = '!'   …   cell 33 = 'A'   …   cell 95 = ■ (solid white)
+  a glyph paints WHITE where a bit is set, TRANSPARENT elsewhere → the alpha IS the coverage</pre>
+
+  <p>Notice cell 95: a <strong>solid white square</strong> we reserve on purpose. A filled HUD <em>panel</em> (the
+  translucent backing behind the text) is just a quad — and if it samples that all-white cell, it goes through the
+  <em>same</em> textured pipeline as the glyphs. One pipeline, one draw, both text and boxes. Because a set bit is
+  stored as opaque white and everything else as transparent, the fragment shader's whole job is
+  <code>atlasColour &times; tint</code>: the tint supplies the colour, and the atlas's alpha supplies the letter's
+  coverage.</p>
+
+  <h2>3. Screen space: turning pixels into clip space</h2>
+
+  <p>World geometry reaches the screen through the <a href="04-3d-cube-mvp-and-depth.html">MVP matrix</a> and
+  perspective. The HUD skips all of that: its vertices are already where we want them, in <strong>pixels</strong>,
+  with the origin at the <strong>top-left</strong> (x grows right, y grows down — how everyone thinks about a 2D
+  screen). All that's left is to convert a pixel coordinate into <strong>clip space</strong>, the
+  <code>[−1, +1]</code> square the GPU rasterises into. That conversion is an <strong>orthographic</strong> (no
+  perspective) projection, and it's short enough to write by hand instead of building a matrix:</p>
+
+  <pre class="diagram">ndc.x =      px / width  * 2 − 1        // 0..width   →  −1..+1
+ndc.y = 1 − (py / height * 2)           // 0..height  →  +1..−1   (flip: screen-y is DOWN, clip-y is UP)</pre>
+
+  <p>The Y flip is the one subtlety: pixel <code>(0,0)</code> is the top-left, but clip-space <code>+1</code> is the
+  top, so we invert. The window's size is handed to the vertex shader as a uniform each frame, so the very same HUD
+  geometry lands correctly at any window size, and resizing "just works". This lives in <code>shaders/hud.vert</code>.</p>
+
+  <h2>4. Where UI is drawn: a final pass, in LDR</h2>
+
+  <p>Here is the most important idea in this step, and where the HUD deliberately <em>differs</em> from debug draw.
+  The <a href="23-debug-draw.html">debug lines</a> are drawn <em>inside</em> the scene pass, into the
+  <a href="11-post-processing.html">HDR target</a> — so they pass through tone-mapping, bloom and FXAA on the way to
+  the screen. That's fine for a wireframe. It would be <em>wrong</em> for text: tone-mapping would shift its colour
+  and FXAA would blur its crisp edges. So the HUD is drawn in its <strong>own pass</strong>, <em>after</em> the whole
+  post-processing chain, straight onto the <strong>final LDR image</strong>.</p>
+
+  <pre class="diagram">scene → HDR target → [ bloom → tone-map → FXAA ] → final image → ● HUD pass ● → present
+        (debug lines live in HERE)                                 (text lives HERE, last)</pre>
+
+  <p>Three settings make that final pass behave like an overlay:</p>
+
+  <ul>
+    <li><strong>Load, don't clear.</strong> The pass uses <code>LOAD_OP_LOAD</code> — it keeps the finished frame
+    that's already in the target and draws on top of it, rather than clearing it to a background colour.</li>
+    <li><strong>Alpha blending on.</strong> The same <a href="22-transparency-and-alpha-blending.html">"over"
+    operator</a> as the transparent pass, so a glyph's covered texels composite over the scene and its transparent
+    texels vanish — and a panel with <code>alpha &lt; 1</code> lets the scene show through.</li>
+    <li><strong>No depth at all.</strong> A flat 2D overlay has no depth to test; what sits on top is decided purely
+    by <em>draw order</em> (we draw the panel first, then the text over it).</li>
+  </ul>
+
+  <p>Because this pass targets the same image whether we're rendering to the window (<code>renderFrame</code>) or to
+  a BMP (<code>captureFrame</code>), the HUD shows up in <code>KOI_CAPTURE</code> frames too — which is exactly how
+  the screenshot for this page was made.</p>
+
+  <h2>5. The collector: immediate-mode textured quads</h2>
+
+  <p>The CPU side, <code>src/renderer/Hud.hpp</code>, is the twin of <code>DebugDraw</code> — <strong>pure</strong>
+  (no GPU, no SDL) and <strong>immediate mode</strong> (rebuilt every frame). It turns two requests, <em>text</em>
+  and <em>rectangle</em>, into a flat list of textured vertices:</p>
+
+  <pre class="diagram">struct HudVertex { Vec2 pos; Vec2 uv; Vec4 color; };   // pixel position, atlas UV, RGBA tint
+
+hud.text(x, y, scale, colour, "FPS 60")   → one 6-vertex quad per character (two triangles)
+hud.rect(x, y, w, h, colour)              → one 6-vertex quad sampling the white cell</pre>
+
+  <p>Each character advances the "pen" by one cell (8&times;<code>scale</code> pixels — a fixed-width font), and a
+  <code>\n</code> returns the pen to the start x and drops a line. Being pure, the whole thing is unit-tested
+  headlessly in <code>tests/test_hud.cpp</code>: a wrong pen advance, a flipped quad, or a glyph pointing at the
+  wrong cell would otherwise be a subtle "the text looks off" bug that no compiler catches.</p>
+
+  <h2>6. One detail that bites: atlas bleeding</h2>
+
+  <p>The atlas packs its 8&times;8 cells edge-to-edge, with no gap between them. With <strong>nearest-neighbour</strong>
+  filtering (which we use, to keep the bitmap pixels sharp), a quad sampled exactly <em>at</em> a cell boundary can
+  round into the <em>neighbouring</em> cell and drag in a stray pixel — a descender like <code>g</code> or
+  <code>p</code> bleeding into the glyph below it. The fix is a <strong>half-texel inset</strong>: nudge each glyph's
+  UV rectangle inward by half a texel on every side, so every sample stays strictly inside the intended cell while
+  still covering all eight pixels (see <code>cellUV()</code> in <code>Font.hpp</code>). It's a classic atlas gotcha,
+  worth knowing the moment you pack anything into a shared texture.</p>
+
+  <h2>7. In the engine</h2>
+
+  <p>The pieces mirror debug draw one-for-one:</p>
+
+  <ul>
+    <li><strong><code>Font.hpp</code></strong> — the embedded 8&times;8 glyph table + atlas layout, shared by the
+    collector (for UVs) and the renderer (for baking the atlas), so the two can never disagree.</li>
+    <li><strong><code>Hud.{hpp,cpp}</code></strong> — the pure collector: <code>text()</code>, <code>rect()</code>,
+    <code>clear()</code>, <code>vertices()</code>.</li>
+    <li><strong><code>shaders/hud.vert</code> / <code>hud.frag</code></strong> — pixel→clip-space in the vertex
+    shader; <code>atlas &times; tint</code> in the fragment shader.</li>
+    <li><strong><code>GpuRenderer</code></strong> — <code>createHudResources()</code> bakes the atlas into a texture,
+    makes a nearest-filter sampler, and builds the textured/blended/depth-less pipeline; <code>uploadHud()</code> and
+    <code>recordHud()</code> upload this frame's vertices and draw them in the final overlay pass.</li>
+    <li><strong><code>FrameView.hudVertices</code></strong> — the app hands its HUD geometry to the renderer through
+    the same one-frame bundle that already carries the scene, lights and debug lines.</li>
+  </ul>
+
+  <p>The demo (<code>samples/demo/DemoApp.cpp</code>) fills a <code>Hud</code> each frame in <code>buildHud()</code>
+  — a translucent panel plus the engine title, a smoothed FPS/frame-time readout, the camera position, the current
+  debug-toggle states, and a controls legend — and toggles it with the <kbd>H</kbd> key.</p>
+
+  <h2>8. Honest limitations</h2>
+
+  <p>This is a deliberately minimal first cut. The font is <strong>fixed-width</strong> (every glyph occupies one
+  8-pixel cell, so an <code>i</code> is as wide as an <code>M</code>) and looks best at whole-number scales. There is
+  <strong>no clipping</strong>: text drawn past the window edge simply runs off (a real UI would set a scissor
+  rectangle). And it covers only <strong>printable ASCII</strong> — no Unicode. Each of these is a clean future step
+  (proportional/SDF fonts, a scissor rect, a text-layout pass); none of them change the core idea you now have.</p>
+
+  <h2>9. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Run it.</strong> <code>cmake --build build &amp;&amp; ./build/koi-demo</code>, then press
+    <kbd>H</kbd> to toggle the HUD. Watch the <strong>FPS</strong> and <strong>frame-time</strong> update live, fly
+    around with <kbd>WASD</kbd> + mouse and see the <strong>camera position</strong> change, and toggle
+    <kbd>G</kbd> / <kbd>L</kbd> / <kbd>F</kbd> to watch their states reflected in the readout.</li>
+    <li><strong>Capture a frame.</strong> <code>KOI_HUD=1 KOI_CAPTURE=out.bmp ./build/koi-demo</code>, then
+    <code>sips -s format png out.bmp --out out.png</code>. The text stays pixel-crisp because it's drawn after
+    tone-mapping and FXAA. (Without <code>KOI_HUD</code> the capture is byte-for-byte identical to Step 22 — the HUD
+    adds nothing when nothing is queued, and its overlay pass is skipped entirely.)</li>
+    <li><strong>Read a glyph.</strong> Open <code>src/renderer/Font.hpp</code> and pick a character — trace its 8
+    bytes into an 8&times;8 grid of bits and you'll see the letter appear. That's the whole "font".</li>
+  </ol>
+
+  <h2>10. What's next</h2>
+
+  <p>➡️ On-screen text is the foundation of the rest of the tools track. A <strong>frame profiler</strong> (a
+  histogram of where each millisecond goes) needs it; so do <strong>ray-cast picking</strong> labels, an
+  <strong>editor</strong>'s panels, and eventually an in-engine <strong>console</strong>. The natural upgrade to the
+  text itself is a <strong>signed-distance-field</strong> font for smooth scaling and rotation. See the
+  <a href="../../ROADMAP.md">roadmap</a> for the sequenced plan.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>
