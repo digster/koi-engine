@@ -3,7 +3,7 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 19 (window & render loop, the first triangle, geometry in GPU
+through Step 22 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
@@ -26,7 +26,9 @@ replace Euler angles in `Transform` (no gimbal lock, `slerp`-able), a **geometry
 ray / plane / frustum plus the `Mat4` **inverse** — whose first payoff is an inverse-transpose **normal
 matrix** for correct lighting under non-uniform scale, and a **render-queue** extraction that flattens the
 scene-graph walk into a flat draw list — the architecture pivot behind **frustum culling** (skip off-screen
-draws) and, later, sorting / instancing / transparency).
+draws), **transparency** — a second blend-on/depth-write-off pipeline with a back-to-front sort for see-through
+surfaces — and **debug draw**, an immediate-mode **line** overlay (bounding boxes, light icons, the camera
+frustum) that makes the otherwise-invisible geometry layer visible on screen).
 
 ## Guiding principles
 
@@ -76,7 +78,7 @@ bundle. See the *Engine / app separation (Step 17)* section below.
 |-----------|------|----------------|
 | `Engine` | [src/core/Engine.*](src/core/) | Owns the **reusable machinery only**: SDL, the `Window`, the `GpuRenderer`, and the main loop (delta-time, event pump, OS-quit, the headless `KOI_CAPTURE`/`KOI_MAX_FRAMES` paths), plus startup/shutdown order. Owns **no** scene/camera/lights. `run(Application&)` drives an app by inversion of control (`onStart`/`onUpdate`/`onEvent`/`frameView`/`onShutdown`) and exposes services to it (`renderer()`, `requestQuit()`). Step 17. |
 | `Application` | [src/core/Application.hpp](src/core/Application.hpp) | Header-only abstract interface (Step 17) — the engine/app boundary. Hooks: `onStart` (build content), `onUpdate(dt)` (animate + input), `onEvent` (per-event input; default no-op), `frameView()` (return a `FrameView` to draw), `onShutdown` (release GPU resources while the device is still alive). An app subclasses it and holds its own scene/camera/lights. |
-| `FrameView` | [src/renderer/FrameView.hpp](src/renderer/FrameView.hpp) | Header-only value (Step 17): the per-frame render bundle — clear colour, `view` matrix, scene `root` (non-owning), `cameraPos`, `lights` span, `PostSettings`. Produced by `Application::frameView()`, consumed by both `renderFrame` and `captureFrame`, so the live and headless paths can't drift. Owns nothing. |
+| `FrameView` | [src/renderer/FrameView.hpp](src/renderer/FrameView.hpp) | Header-only value (Step 17): the per-frame render bundle — clear colour, `view` matrix, scene `root` (non-owning), `cameraPos`, `lights` span, `PostSettings`, and (Step 22) a non-owning `debugLines` span of overlay geometry. Produced by `Application::frameView()`, consumed by both `renderFrame` and `captureFrame`, so the live and headless paths can't drift. Owns nothing. |
 | `Window` | [src/core/Window.*](src/core/) | RAII wrapper around one `SDL_Window`. Owns the OS window; the renderer attaches a swapchain to it. |
 | `GpuRenderer` | [src/renderer/GpuRenderer.*](src/renderer/) | Owns the `SDL_GPUDevice`, the main pipeline, the depth texture, a shared **sampler** (Step 13: mipmap + **anisotropic** filtering), two neutral 1×1 **fallback maps** (`whiteTex_`, `flatNormalTex_`), the (Step 9) **shadow map** + sampler + depth-only **shadow pipeline**, the (Step 10) **post-processing** resources (off-screen HDR scene target, half-res bloom ping-pong pair, LDR target, a clamp sampler, and four fullscreen pipelines), the (Step 14) **skybox** resources (a `CUBE` **cubemap** texture, a CLAMP_TO_EDGE cubemap sampler, a skybox pipeline, and the cube mesh drawn around the camera), and the (Step 15) **image-based-lighting** resources (three bake pipelines, a trilinear CLAMP sampler, and the baked **irradiance** cube + **prefiltered** cube + **BRDF LUT** targets). Is a **factory** for meshes (`createMesh`, 16- or 32-bit indices) and textures (`loadTexture`, now generating **mipmaps** at upload and choosing an **sRGB** format for colour maps — Step 16; `createTextureFromRGBA` for already-decoded bytes; `loadCubemap` uploads six faces into one cube texture, then `bakeIbl` bakes the IBL maps from it) and a **consumer** of a scene. `renderSceneAndPost` (shared by the live and capture paths) **flattens the scene graph into a render queue once** (`buildRenderQueue`, Step 20), then runs: **shadow pass** (loops the *whole* queue, depth only) → **scene pass** into the HDR target (`recordScene`; **frustum-culls** the queue to the camera then submits each survivor via `submitItem` — binding the material's four maps per draw + the **emissive** map at slot 8 (Step 16), shadow map at slot 4, the three IBL maps at slots 5–7 — drawing in three ordered sub-passes (Step 21): **opaque** items (depth-write on) → the **sky** via `recordSkybox` → **transparent** items through a second **blend pipeline** (depth-write off), sorted back-to-front by `partitionByBlend`; `bindFrameLighting` re-binds the shadow/IBL maps after the pipeline switch) → **post chain** (`runPostChain`: bloom → tone-map composite → FXAA into the final image). Owns no geometry/texture data; holds a reused `renderQueue_` (+ `opaqueItems_`/`transparentItems_` scratch), both the opaque `trianglePipeline_` + the `transparentPipeline_`, and `frustumCullingEnabled_` / `transparentSortEnabled_` toggles. |
 | `PostProcess` | [src/renderer/PostProcess.hpp](src/renderer/PostProcess.hpp) | Header-only, SDL-free: the `PostSettings` knobs (exposure, bloom threshold/intensity, per-effect toggles) the **app** drives from input and hands to the renderer (via `FrameView`), plus pure helpers (`halfExtent`, `luminance`, `acesToneMap`) that mirror the shader math for headless unit tests (`tests/test_post.cpp`). |
@@ -86,6 +88,7 @@ bundle. See the *Engine / app separation (Step 17)* section below.
 | `ModelLoader` | [src/renderer/ModelLoader.*](src/renderer/) | `loadModel(path)` reads a model file into a **`LoadedModel`** (a `Mesh` **+** an optional `Material`): `.obj` via **tinyobjloader** (de-duplicating its separate v/vt/vn indices; geometry only — material null), `.glb/.gltf` via **cgltf**, which since **Step 16** also imports the file's PBR **material** (base-colour / metallic-roughness / normal / occlusion / **emissive** maps + factors). Its images (PNG/JPG) are decoded by **stb_image** — embedded `.glb` `buffer_view`s straight from memory, external URIs via `loadTexture` — with colour maps flagged **sRGB**. The single TU that pulls in those three third-party headers (defines their `*_IMPLEMENTATION`) — compiled warning-free (`-w`). |
 | `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count + element size: 16-bit for primitives, 32-bit for big loaded models). Also caches a **model-space `Aabb`** (Step 20), computed from the vertices in `createMesh` — the box frustum culling transforms + tests. Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must die before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
 | `RenderQueue` | [src/renderer/RenderQueue.*](src/renderer/) | The Step 20 flat draw list. `RenderItem { mesh, material, world, worldBounds }`; `computeLocalBounds` (a mesh's model-space box), `buildRenderQueue` (walk the node tree once → flat list), `cullToFrustum` (keep items whose world bounds hit the camera `Frustum`), and (Step 21) `partitionByBlend` (split the culled list by `Material::alphaMode` into opaque + a **back-to-front-sorted** transparent bucket). The pure helpers are unit-tested with no GPU (`tests/test_render_queue.cpp`); the *traverse → list → submit* split is the pivot behind culling/sorting/instancing/transparency. |
+| `DebugDraw` | [src/renderer/DebugDraw.*](src/renderer/) | The Step 22 immediate-mode line overlay. A pure, GPU-free collector: `DebugVertex { position, color }` plus `line`/`box`/`frustum`/`ray`/`cross` building a flat **line-list** vertex array (`box` and `frustum` share a 12-edge topology; `frustum` unprojects the NDC cube through `inverse(viewProj)`). Rebuilt every frame by the app and handed over via `FrameView::debugLines`; the renderer uploads it into a **transient** vertex buffer (recreated per frame) and draws it through a minimal unlit `debugLinePipeline_` (LINELIST, depth-test on / **write off**) in `recordDebug` at the end of `recordScene`. Unit-tested with no GPU (`tests/test_debug_draw.cpp`). |
 | `Texture` | [src/renderer/Texture.*](src/renderer/) | RAII owner of one `SDL_GPUTexture` (sampled image). Same non-owning-device lifetime rule as `Mesh`. Created via `GpuRenderer::loadTexture` (BMP → SDL; PNG/JPG → **stb_image**; decode → upload) or `createTextureFromRGBA` (already-decoded bytes, e.g. embedded glTF images), with an **sRGB** option for colour maps (Step 16); held by `shared_ptr`. A *sampler* (how to read it) is separate, reusable device state owned by the renderer. |
 | `Primitives` | [src/renderer/Primitives.*](src/renderer/) | Free functions (`makeCubeMesh`, `makePlaneMesh`) that define a shape's vertex/index data and upload it via `createMesh`, keeping the renderer geometry-agnostic. |
 | `Transform` | [src/scene/Transform.hpp](src/scene/Transform.hpp) | Header-only, SDL-free: position / rotation (a unit **`Quat`** since Step 18 — no gimbal lock, `slerp`-able) / scale, plus `localMatrix()` returning `T·R·S` (scale → rotate → translate). Unit-tested in `tests/test_transform.cpp`. |
@@ -735,6 +738,32 @@ pipeline switch (a pipeline bind resets the pass's sampler bindings). A `transpa
 *solid* shadows (the shadow pass ignores materials); the per-object sort mis-orders interpenetrating meshes (→ OIT);
 and the glTF loader still imports every model opaque. `partitionByBlend` is pure and unit-tested
 (`tests/test_render_queue.cpp`).
+
+### Debug draw (Step 22)
+
+Steps 19–20 added spatial data — per-mesh `Aabb`s and the camera `Frustum` — that nothing put on screen. Debug
+draw is the immediate-mode **line** overlay that does, following the same *app builds it → `FrameView` carries it →
+renderer draws it* boundary as everything else:
+
+- **A pure collector.** [`DebugDraw`](src/renderer/DebugDraw.hpp) turns shapes into a flat **line-list** vertex
+  array (`DebugVertex { position, color }`) — `line`/`box`/`frustum`/`ray`/`cross`. `box` and `frustum` share a
+  12-edge cube topology; `frustum` recovers world-space corners by unprojecting the **NDC cube** (x,y ∈ {−1,1},
+  z ∈ {0,1}) through `inverse(viewProj)` — reusing the Step 19 `Mat4` inverse. No GPU state → unit-tested
+  headlessly (`tests/test_debug_draw.cpp`).
+- **Immediate mode + a transient buffer.** The app rebuilds the lines every frame and passes them via the new
+  `FrameView::debugLines` span. `renderSceneAndPost` calls `uploadDebugLines` (before any render pass) which
+  **recreates** the vertex buffer each frame — releasing the previous one, whose free SDL defers until the GPU is
+  done, so no two frames share a buffer and nothing needs hand-synchronising.
+- **An overlay pipeline.** `createDebugPipeline` builds a minimal unlit `debugLinePipeline_` — LINELIST topology,
+  a 2-attribute (position + colour) layout, **depth-test on / write off** so lines are occluded by geometry but
+  never disturb its depth, drawing into the HDR scene target so they also appear in `KOI_CAPTURE`. `recordDebug`
+  binds it, pushes the camera `projView`, and issues one line-list draw at the *end* of `recordScene`.
+- **Seeing the culler.** `GpuRenderer::lastCameraViewProjection()` exposes the exact matrix `recordScene` culls
+  with, so the demo can **freeze** it and draw the frozen frustum — the Step 20 volume made visible. Demo keys:
+  `G` (bounds), `L` (light icons), `F` (freeze + show the frustum); `KOI_DEBUG_DRAW` enables all three for a
+  headless capture. **Documented deferrals:** lines are tone-mapped/FXAA'd (they draw into the HDR target); no
+  x-ray (depth-off) mode; no text labels yet. With nothing queued, the overlay is a no-op and the frame is
+  byte-identical to Step 21.
 
 ## Lifecycle & ownership
 

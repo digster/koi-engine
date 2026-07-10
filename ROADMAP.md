@@ -51,7 +51,7 @@ Three principles shape the plan:
 
 ---
 
-## ✅ Completed — Steps 0–21
+## ✅ Completed — Steps 0–22
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
 post-processed shading of loaded models under many lights, with per-pixel texture + normal maps,
@@ -60,7 +60,9 @@ importing a real glTF PBR asset (the Damaged Helmet) with emissive surfaces and 
 then made reusable by separating the engine from the app (Step 17), put on animation-ready footing
 by replacing Euler rotations with quaternions (Step 18), given a geometry layer (Step 19),
 restructured around a **render queue** with **frustum culling** (Step 20 — the scaling-track pivot),
-and given see-through surfaces via **alpha blending** with a sorted back-to-front transparent pass (Step 21).
+given see-through surfaces via **alpha blending** with a sorted back-to-front transparent pass (Step 21),
+and given a **debug-draw** line overlay (AABBs, light icons, the camera frustum) that finally makes the
+Step 19/20 geometry visible on screen (Step 22).
 Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
 [`documentation/docs/index.html`](documentation/docs/index.html).
@@ -251,6 +253,25 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** blending is order-dependent, so it's the first feature that *had* to have the Step 20 render
   queue — you can sort a flat list, never a tree walk.
 
+### ✅ Step 22 — Debug draw *(done — [tutorial](documentation/docs/23-debug-draw.html))*
+- **Shipped:** an **immediate-mode line overlay** that finally puts the Step 19/20 geometry on screen. A new pure
+  [`DebugDraw`](src/renderer/DebugDraw.hpp)/`.cpp` collector turns shapes into a flat **line-list** (`DebugVertex`
+  + `line`/`box`/`frustum`/`ray`/`cross`); `frustum` recovers the camera's world-space corners by unprojecting the
+  **NDC cube** through `inverse(viewProj)` (reusing the Step 19 `Mat4` inverse). New unlit shaders
+  ([`debug_line.vert`](shaders/debug_line.vert)/`.frag`) + a `debugLinePipeline_` (**LINELIST**, depth-test on /
+  **write off**) drawn at the end of `recordScene`; the vertices come across the boundary in a new
+  [`FrameView`](src/renderer/FrameView.hpp) `debugLines` span and are uploaded into a **transient**, rebuilt-per-
+  frame buffer (`uploadDebugLines`). Lines draw into the HDR target so they appear in `KOI_CAPTURE` too.
+  [`GpuRenderer`](src/renderer/GpuRenderer.cpp) exposes `lastCameraViewProjection()` so the demo can **freeze**
+  and draw the culling frustum. Demo keys **`G`** (bounds) / **`L`** (light icons) / **`F`** (freeze + show the
+  frustum), plus `KOI_DEBUG_DRAW` for headless captures; unit-tested in
+  [`tests/test_debug_draw.cpp`](tests/test_debug_draw.cpp). Debug-off renders **byte-identical to Step 21**.
+- **Deliberately deferred:** an **x-ray** (depth-test-off) mode; per-vertex **normal** visualization (needs CPU
+  vertex data the `Mesh` doesn't retain); a debug **HUD** + **text** rendering (their own later steps); the lines
+  are tone-mapped/FXAA'd since they draw into the HDR target.
+- **Why here:** it's the visual companion to the just-landed culling/bounds work — you can't debug a wrong AABB or
+  a mis-built frustum by reading numbers — and the shared groundwork for the HUD, text, picking, and physics viz.
+
 ---
 
 ## ⚠️ Architecture pivots — decide early, build late
@@ -384,8 +405,12 @@ first blend-enabled pipeline; smoke, foliage cutouts, and particles are still to
 - Ray-cast **picking** (select the object under the cursor); manipulation gizmos.
 
 **UI & tools**
-- **Debug draw**: immediate-mode line/shape rendering (bounding boxes, normals, light icons,
-  frusta) — the visual companion to culling, physics, and picking work across the other tracks.
+- ✅ **Debug draw** *(done — Step 22, [tutorial](documentation/docs/23-debug-draw.html))*: immediate-mode
+  **line-list** rendering of bounding boxes, light icons, and the camera **frustum** (unprojected from the NDC
+  cube through `inverse(viewProj)`) — a pure [`DebugDraw`](src/renderer/DebugDraw.hpp) collector, a transient
+  per-frame vertex buffer, and a depth-tested / write-off overlay pipeline. The visual companion that makes the
+  Step 19/20 geometry visible; the groundwork for the HUD, text, picking, and physics viz below. *Still to come:*
+  an x-ray (depth-off) mode; drawing surface **normals** per vertex.
 - An immediate-mode **debug HUD** / overlay (stats, toggles).
 - **Text rendering** (bitmap or SDF fonts) — nothing on screen is text yet.
 - **Shader hot-reload** (watch [`shaders/`](shaders/), recompile through the existing
@@ -465,11 +490,13 @@ Step 20  render queue ──▶ frustum culling (consumes Step 19 geometry)   �
    │
 Step 21  transparency + alpha blending (consumes Step 20 queue sort)    ✅ done
    │
+Step 22  debug draw (line overlay: AABBs/frustum/light icons — makes Step 19/20 visible)   ✅ done
+   │
 glTF node hierarchy / Sponza ──▶ alpha-tested cutout        ◀── next (learning thread leads)
    │
 sort queue by material / instancing ──▶ cascaded shadows
    │
-skeletal animation ──▶ debug draw / HUD / text ──▶ particles
+skeletal animation ──▶ HUD / text (build on debug draw) ──▶ particles
    │
 deferred / clustered ──▶ fixed timestep ──▶ physics + audio ──▶ editor + gameplay
    │

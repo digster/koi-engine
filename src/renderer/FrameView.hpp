@@ -25,6 +25,7 @@
 
 #include "math/Mat4.hpp"  // Mat4 view matrix (transitively brings in Vec)
 #include "math/Vec.hpp"   // Vec3 camera position
+#include "renderer/DebugDraw.hpp"    // DebugVertex — the immediate-mode debug lines (Step 22)
 #include "renderer/PostProcess.hpp"  // PostSettings — which post effects to run
 #include "scene/Light.hpp"           // Light — the scene's active light list
 
@@ -51,6 +52,12 @@ struct FrameView {
     std::span<const Light> lights{};
 
     PostSettings post{};  // exposure, tone-map/bloom/FXAA/vignette toggles (Step 10)
+
+    // Immediate-mode debug lines to overlay this frame (Step 22): a line list of
+    // world-space, coloured vertices the app rebuilt this frame (AABBs, the camera
+    // frustum, light icons). Non-owning — a view over the app's DebugDraw storage,
+    // which must outlive the FrameView. Empty ⇒ no overlay drawn (nothing changes).
+    std::span<const DebugVertex> debugLines{};
 };
 
 }  // namespace koi

@@ -35,6 +35,7 @@
     <a class="navlink" href="20-geometry-utilities.html">Geometry Utilities</a>
     <a class="navlink" href="21-render-queue-and-frustum-culling.html">Render Queue &amp; Culling</a>
     <a class="navlink" href="22-transparency-and-alpha-blending.html">Transparency &amp; Blending</a>
+    <a class="navlink" href="23-debug-draw.html">Debug Draw</a>
   </div>
 </nav>
 
@@ -179,6 +180,12 @@
       <p>See-through glass at last: the <strong>"over" operator</strong>, why blending is order-dependent, and the
       <strong>back-to-front sort</strong> the render queue finally makes possible — plus a second blend pipeline
       (depth-write off) and the opaque → skybox → <strong>transparent</strong> draw order.</p>
+    </a>
+    <a class="card" href="23-debug-draw.html">
+      <h3>Debug Draw →</h3>
+      <p>Make the invisible visible: immediate-mode <strong>line-list</strong> rendering of AABBs, light icons and
+      the <strong>camera frustum</strong> (unprojected from the NDC cube through <code>inverse(viewProj)</code>) —
+      a <strong>transient</strong> per-frame vertex buffer that finally puts Step 19/20's geometry on screen.</p>
     </a>
   </div>
 

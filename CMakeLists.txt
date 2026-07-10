@@ -147,6 +147,7 @@ target_compile_options(koi_warnings INTERFACE
 add_library(koi_core STATIC
     src/core/Engine.cpp
     src/core/Window.cpp
+    src/renderer/DebugDraw.cpp
     src/renderer/GpuRenderer.cpp
     src/renderer/Mesh.cpp
     src/renderer/ModelLoader.cpp
@@ -205,6 +206,7 @@ add_executable(koi-tests
     tests/test_quat.cpp
     tests/test_geometry.cpp
     tests/test_render_queue.cpp
+    tests/test_debug_draw.cpp
     tests/test_camera.cpp
     tests/test_transform.cpp
     tests/test_node.cpp
@@ -297,6 +299,11 @@ koi_add_shader(ibl_cube.vert)
 koi_add_shader(irradiance_convolution.frag)
 koi_add_shader(prefilter_env.frag)
 koi_add_shader(brdf_lut.frag)
+# Step 22: immediate-mode debug lines. A minimal unlit pipeline (world-space
+# position + flat colour) that draws AABBs, the camera frustum, and light icons
+# as a line list, making the Step 19/20 geometry visible.
+koi_add_shader(debug_line.vert)
+koi_add_shader(debug_line.frag)
 
 # A target that builds all shader outputs, and a dependency so the app always has
 # up-to-date compiled shaders next to it.

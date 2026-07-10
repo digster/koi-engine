@@ -8,6 +8,7 @@
 
 #include "core/Engine.hpp"
 #include "core/Log.hpp"
+#include "math/Mat4.hpp"             // perspective/radians for the planted capture frustum
 #include "renderer/GpuRenderer.hpp"
 #include "renderer/Mesh.hpp"
 #include "renderer/ModelLoader.hpp"
@@ -21,6 +22,23 @@ namespace {
 // The colour the screen is cleared to for pixels the scene doesn't cover. A calm
 // dark teal — distinctive enough that you can tell the GPU clear actually ran.
 constexpr SDL_FColor kClearColor = {0.04f, 0.10f, 0.12f, 1.0f};
+
+// Debug-overlay colours (Step 22). Bright + saturated so they read clearly even
+// after the HDR scene is tone-mapped (the lines are drawn into the HDR target).
+constexpr Vec3 kBoundsColor  = {0.15f, 1.0f, 0.30f};  // green AABBs
+constexpr Vec3 kFrustumColor = {1.0f, 0.80f, 0.10f};  // amber camera frustum
+
+// Recursively add a green AABB for every drawable node in the subtree. A node's
+// world-space box is its mesh's model-space bounds (cached at upload, Step 20)
+// pushed through the node's world matrix (Aabb::transformed, Step 19).
+void addNodeBounds(DebugDraw& out, const Node& node, const Vec3& color) {
+    if (node.mesh() != nullptr) {
+        out.box(node.mesh()->localBounds().transformed(node.worldMatrix()), color);
+    }
+    for (const auto& child : node.children()) {
+        addNodeBounds(out, *child, color);
+    }
+}
 }  // namespace
 
 // Out-of-line so the unique_ptr<Node> member sees the complete Node type (from
@@ -38,10 +56,30 @@ bool DemoApp::onStart(Engine& engine) {
     setupLights();
     sceneRoot_->updateWorldTransforms();
 
+    // Step 22: with KOI_DEBUG_DRAW set, turn the debug overlays on from the start so
+    // a single headless KOI_CAPTURE frame shows them (no key presses possible there).
+    // The frozen frustum is a SHORT-far (z→6) copy of the camera's own frustum, so it
+    // reads as a compact amber wireframe sitting in the scene rather than the full
+    // 100-unit pyramid. Interactive runs leave the overlays off until you press G/F/L.
+    if (SDL_getenv("KOI_DEBUG_DRAW") != nullptr) {
+        debugBounds_ = debugLights_ = debugFrustum_ = true;
+        frozenViewProj_ = perspective(radians(60.0f), 1280.0f / 720.0f, 0.1f, 6.0f)
+                          * camera_.viewMatrix();
+        haveFrozenFrustum_ = true;
+        KOI_INFO("KOI_DEBUG_DRAW set — debug overlays enabled for this run.");
+    }
+
+    // Build the overlay once here too (not only in onUpdate): the headless
+    // KOI_CAPTURE path renders straight after onStart WITHOUT an onUpdate tick, so
+    // this is what makes the debug lines appear in a captured t=0 frame. (Empty and
+    // harmless when the toggles above are off.)
+    buildDebugLines();
+
     KOI_INFO("Controls: WASD move, E/Q up/down, mouse look, Esc to quit.");
     KOI_INFO("Post-processing: 1=tone-map 2=bloom 3=FXAA 4=vignette, [ / ] exposure.");
     KOI_INFO("Lights: 5=point lights 6=spot 7=sun. Environment: 8=skybox 9=IBL.");
     KOI_INFO("Culling/transparency: 0=frustum culling, T=back-to-front sort.");
+    KOI_INFO("Debug draw: G=bounds L=light icons F=freeze+show the camera frustum.");
     return true;
 }
 
@@ -339,6 +377,42 @@ void DemoApp::onUpdate(Engine& /*engine*/, float dt) {
     // Propagate transforms down the tree (parent → child → grandchild) so every
     // node's cached world matrix is current before the engine draws this frame.
     sceneRoot_->updateWorldTransforms();
+
+    // Rebuild this frame's debug overlay AFTER the world transforms are current, so
+    // the AABBs and light crosses sit at their up-to-date world positions.
+    buildDebugLines();
+}
+
+void DemoApp::buildDebugLines() {
+    // Immediate mode: throw away last frame's lines and re-declare what to draw now.
+    debug_.clear();
+
+    // Green AABB around every drawable node — makes Step 20's per-mesh bounds (and
+    // what frustum culling tests) visible.
+    if (debugBounds_ && sceneRoot_) {
+        addNodeBounds(debug_, *sceneRoot_, kBoundsColor);
+    }
+
+    // Amber wireframe of the frozen camera frustum — the volume Step 20 culls
+    // against. Frozen (key F) so you can fly out of it and watch it stay put.
+    if (debugFrustum_ && haveFrozenFrustum_) {
+        debug_.frustum(frozenViewProj_, kFrustumColor);
+    }
+
+    // A cross at each ENABLED positioned light, tinted its own colour; spot lights
+    // also get a short ray along their aim. Directional lights have no position, so
+    // they're skipped (the sun is "everywhere").
+    if (debugLights_) {
+        for (const Light& light : lights_) {
+            if (!light.enabled || light.type == LightType::Directional) {
+                continue;
+            }
+            debug_.cross(light.position, 0.5f, light.color);
+            if (light.type == LightType::Spot) {
+                debug_.ray(light.position, light.direction, 1.5f, light.color);
+            }
+        }
+    }
 }
 
 void DemoApp::onEvent(Engine& engine, const SDL_Event& event) {
@@ -442,6 +516,32 @@ void DemoApp::onEvent(Engine& engine, const SDL_Event& event) {
                     KOI_INFO("Transparent sorting (back-to-front): %s", on ? "on" : "off");
                     break;
                 }
+                case SDLK_G:
+                    // Step 22: toggle the per-node AABB wireframes — the bounds Step 20
+                    // culls with, finally drawn on screen.
+                    debugBounds_ = !debugBounds_;
+                    KOI_INFO("Debug bounds: %s", debugBounds_ ? "on" : "off");
+                    break;
+                case SDLK_F: {
+                    // Step 22: freeze + show the CAMERA FRUSTUM. Snapshotting the last
+                    // frame's view-projection (the exact matrix the culler used) lets you
+                    // then fly out of it and watch what's culled — the payoff of Step 20
+                    // made visible. Pressing F again hides it; pressing once more re-freezes
+                    // at the new camera pose.
+                    debugFrustum_ = !debugFrustum_;
+                    if (debugFrustum_) {
+                        frozenViewProj_    = engine.renderer().lastCameraViewProjection();
+                        haveFrozenFrustum_ = true;
+                    }
+                    KOI_INFO("Debug frustum: %s", debugFrustum_ ? "frozen + shown" : "off");
+                    break;
+                }
+                case SDLK_L:
+                    // Step 22: toggle the light-position crosses (spot lights also get a
+                    // direction ray), each tinted its light's colour.
+                    debugLights_ = !debugLights_;
+                    KOI_INFO("Debug light icons: %s", debugLights_ ? "on" : "off");
+                    break;
                 default:
                     break;
             }
@@ -476,6 +576,9 @@ FrameView DemoApp::frameView() const {
         .cameraPos  = camera_.position(),
         .lights     = lights_,
         .post       = post_,
+        // The debug lines built this frame in buildDebugLines(). `debug_` is a
+        // member, so the span stays valid for this call (empty ⇒ no overlay).
+        .debugLines = debug_.vertices(),
     };
 }
 

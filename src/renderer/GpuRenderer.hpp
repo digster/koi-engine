@@ -75,7 +75,8 @@ public:
                skyboxSampler_ != nullptr && skyboxMesh_ != nullptr &&
                iblIrradiancePipeline_ != nullptr && iblPrefilterPipeline_ != nullptr &&
                iblBrdfPipeline_ != nullptr && iblIrradiance_ != nullptr &&
-               iblPrefilter_ != nullptr && iblBrdfLut_ != nullptr && iblSampler_ != nullptr;
+               iblPrefilter_ != nullptr && iblBrdfLut_ != nullptr && iblSampler_ != nullptr &&
+               debugLinePipeline_ != nullptr;
     }
 
     // Upload geometry into a new Mesh and return it (shared, so many scene nodes
@@ -148,6 +149,13 @@ public:
     void setTransparentSortEnabled(bool enabled) { transparentSortEnabled_ = enabled; }
     [[nodiscard]] bool transparentSortEnabled() const { return transparentSortEnabled_; }
 
+    // The camera view-projection (projection · view) used by the LAST rendered
+    // frame's main pass — the exact matrix Step 20's culler built its frustum from.
+    // Exposed (Step 22) so the app can "freeze" it and hand it back to DebugDraw::
+    // frustum, drawing a wireframe of the volume that was culled against. Identity
+    // until the first frame has been recorded.
+    [[nodiscard]] Mat4 lastCameraViewProjection() const { return lastCameraViewProj_; }
+
     // Render exactly one frame from a FrameView `fv`: acquire a swapchain image,
     // draw every mesh in `fv.root` (each through its own world matrix and its node's
     // material) as seen through the camera `fv.view` into an off-screen HDR target,
@@ -168,6 +176,27 @@ private:
     // vertex input layout, into an immutable pipeline object). Called once from
     // the constructor.
     bool createTrianglePipeline();
+
+    // Build the debug-line pipeline (Step 22): the minimal unlit debug_line
+    // shaders, a 2-attribute vertex layout (position + colour) at DebugVertex
+    // stride, and LINE-LIST topology (every 2 vertices = one segment). Depth TEST
+    // stays on (so lines are occluded by geometry) but depth WRITE is off (debug
+    // overlays never disturb the scene's depth). Called once from the constructor.
+    bool createDebugPipeline();
+
+    // Upload this frame's debug line vertices into a GPU vertex buffer for the
+    // draw in recordDebug (Step 22). A fresh buffer is built each frame (the old
+    // one is released — SDL defers the free until the GPU is done, so no two frames
+    // ever share a buffer and there's nothing to synchronize). Records the vertex
+    // count; an empty list uploads nothing and the overlay draw is skipped.
+    void uploadDebugLines(std::span<const DebugVertex> lines);
+
+    // Draw the uploaded debug lines into the already-begun main render pass
+    // (Step 22): bind the debug pipeline, push `viewProj`, and issue one line-list
+    // draw of debugVertexCount_ vertices. A no-op when nothing was queued. Called
+    // at the END of recordScene so lines overlay the finished scene.
+    void recordDebug(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                     const Mat4& viewProj) const;
 
     // Create one GPU buffer of `usage` (VERTEX or INDEX), upload `size` bytes
     // from `data` into it via a staging transfer buffer + copy pass, and return
@@ -335,7 +364,8 @@ private:
                             Uint32 width, Uint32 height, const Mat4& view,
                             const Node& sceneRoot, const Vec3& cameraPos,
                             std::span<const Light> lights,
-                            const SDL_FColor& clearColor, const PostSettings& post);
+                            const SDL_FColor& clearColor, const PostSettings& post,
+                            std::span<const DebugVertex> debugLines);
 
     // Run the fullscreen post-processing passes over the already-rendered HDR scene,
     // ending with the final image written into `finalColor`. `width`/`height` are the
@@ -448,6 +478,17 @@ private:
     mutable std::vector<const RenderItem*> transparentItems_;  // scratch: blend survivors (sorted)
     bool                          frustumCullingEnabled_ = true;
     bool                          transparentSortEnabled_ = true;  // Step 21 back-to-front A/B toggle
+
+    // Debug draw (Step 22). An unlit line pipeline overlays throwaway wireframes
+    // (AABBs, the camera frustum, light icons) on the scene. The vertex buffer is
+    // rebuilt every frame from the FrameView's debug lines — immediate mode — so it
+    // holds no state between frames; debugVertexCount_ is this frame's line-vertex
+    // count. lastCameraViewProj_ caches the main pass's projection·view so the app
+    // can freeze and re-draw the culling frustum (see lastCameraViewProjection()).
+    SDL_GPUGraphicsPipeline* debugLinePipeline_  = nullptr;  // owned
+    SDL_GPUBuffer*           debugVertexBuffer_  = nullptr;  // owned; recreated per frame
+    Uint32                   debugVertexCount_   = 0;        // vertices uploaded this frame
+    mutable Mat4             lastCameraViewProj_ = Mat4::identity();  // set in recordScene (const)
 
     // Post-processing (Step 10). The scene is rendered into an off-screen HDR color
     // target (sceneHdr_) instead of straight to the swapchain; a chain of fullscreen

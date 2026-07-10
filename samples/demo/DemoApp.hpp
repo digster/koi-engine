@@ -16,6 +16,8 @@
 #include <vector>
 
 #include "core/Application.hpp"
+#include "math/Mat4.hpp"             // Mat4 — the frozen frustum's view-projection
+#include "renderer/DebugDraw.hpp"    // DebugDraw value member (Step 22)
 #include "renderer/PostProcess.hpp"  // PostSettings value member
 #include "scene/Camera.hpp"          // Camera value member
 #include "scene/Light.hpp"           // std::vector<Light> value member
@@ -48,6 +50,13 @@ private:
     // Place the lights that shade the scene (the sun + coloured point/spot lights).
     void setupLights();
 
+    // Rebuild the immediate-mode debug overlay for this frame (Step 22) from the
+    // toggles below: a green AABB around every drawable node, an amber wireframe of
+    // the frozen camera frustum, and a coloured cross at each positioned light.
+    // Called each frame from onUpdate; the result is handed to the renderer via
+    // frameView().debugLines.
+    void buildDebugLines();
+
     // The scene graph. The app owns it; it holds GPU meshes + material textures, so
     // onShutdown() releases it while the engine's renderer (and its device) is alive.
     std::unique_ptr<Node> sceneRoot_;
@@ -66,6 +75,18 @@ private:
     // The scene's lights (Step 11). Index 0 is the directional sun (the shadow
     // caster); the rest are coloured point/spot lights.
     std::vector<Light> lights_;
+
+    // Debug draw (Step 22). `debug_` collects this frame's overlay lines (rebuilt
+    // each frame in buildDebugLines). The three bools are per-category runtime
+    // toggles (keys G / F / L). `frozenViewProj_` is the camera view-projection
+    // captured when the frustum was frozen (key F), so the wireframe stays put as
+    // you fly away — showing the exact volume Step 20's culler tested against.
+    DebugDraw debug_;
+    bool      debugBounds_       = false;  // G: AABB around every drawable node
+    bool      debugFrustum_      = false;  // F: draw the frozen camera frustum
+    bool      debugLights_       = false;  // L: a cross at each positioned light
+    Mat4      frozenViewProj_    = Mat4::identity();
+    bool      haveFrozenFrustum_ = false;  // true once a frustum has been captured
 
     // Angle accumulators (radians) for the animated Y-spins: the hub, the inner
     // pivot ("spinner"), and the one orbiting point light. Transform stores a

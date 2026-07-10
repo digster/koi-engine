@@ -9,21 +9,23 @@ in [`documentation/docs/`](documentation/docs/index.html) that explains the unde
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`documentation/docs/index.html`](documentation/docs/index.html) in a browser.
 
-> **Current status — Step 21:** **transparency + alpha blending**. The engine can now draw **see-through**
-> surfaces. A second scene pipeline turns **blending on** (the "over" operator) and **depth-write off**, and
-> [`Material`](src/scene/Material.hpp) gains an **`alphaMode`**/`opacity`, so glass composites over what's behind
-> it. Because blending is order-dependent, the main pass now runs **opaque → skybox → transparent**, and
-> `partitionByBlend` ([`RenderQueue.cpp`](src/renderer/RenderQueue.cpp)) sorts the translucent items
-> **back-to-front** — the first feature to cash in the Step 20 render queue's sortability. Toggle the sort with
-> `T` to see why it's needed. *(Known deferrals: translucent objects cast solid shadows; the per-object sort
-> mis-orders interpenetrating meshes; glTF still imports opaque.)*
-> *(Step 20 was the render-queue + frustum-culling pivot — **traverse → list → submit** — flattening the scene
-> graph into a flat **`RenderItem`** list and skipping off-screen draws against the camera `Frustum`.)*
+> **Current status — Step 22:** **debug draw**. The engine can now overlay throwaway **wireframes** on the scene
+> to make its spatial data visible: per-mesh **bounding boxes**, **light icons**, and the **camera frustum** — the
+> volume Step 20 culls against. A new pure [`DebugDraw`](src/renderer/DebugDraw.hpp) collector turns shapes into a
+> flat **line-list**, which the renderer uploads into a **transient** (rebuilt-every-frame) vertex buffer and
+> draws through a minimal unlit pipeline (depth-test on, **write off**) at the end of the scene pass — so the
+> lines show up in `KOI_CAPTURE` too. The frustum wireframe is recovered by unprojecting the **NDC cube** through
+> `inverse(viewProj)`, reusing the Step 19 `Mat4` inverse. Toggle overlays with `G` (bounds), `L` (light icons),
+> `F` (freeze + show the camera frustum). *(Known deferrals: lines are tone-mapped/FXAA'd since they draw into the
+> HDR target; no x-ray mode yet; no text labels.)*
+> *(Step 21 added **transparency + alpha blending** — a second blend-on, depth-write-off pipeline and a
+> back-to-front sort — the first feature to cash in the Step 20 render queue.)*
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
 > Lights: `5` point lights, `6` spot, `7` sun. Environment: `8` skybox, `9` image-based lighting.
 > Rendering: `0` frustum culling, `T` back-to-front transparency sort.
+> Debug draw: `G` bounding boxes, `L` light icons, `F` freeze + show the camera frustum.
 
 ## Quick start
 
@@ -124,6 +126,11 @@ Full instructions, controls, and tests: [documentation/docs/00-getting-started.h
   what **alpha blending** is (the "over" operator), why it's order-dependent, and the **back-to-front sort** the
   render queue makes possible — plus a second blend pipeline (depth-write off) and the opaque → skybox →
   **transparent** draw order, mapped to the Step 21 code.
+- [documentation/docs/23-debug-draw.html](documentation/docs/23-debug-draw.html) — **immediate-mode** line
+  rendering: the **line-list** primitive vs. triangles, a **transient** per-frame vertex buffer, a depth-tested
+  (write-off) overlay drawn into the HDR target, and recovering the **camera frustum**'s corners by unprojecting
+  the **NDC cube** through `inverse(viewProj)` — the trick that finally makes Step 20's culling visible, mapped to
+  the Step 22 code.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Debug Draw · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
+    <a class="navlink" href="16-image-based-lighting.html">Image-based Lighting</a>
+    <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
+    <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
+    <a class="navlink" href="19-quaternions.html">Quaternions</a>
+    <a class="navlink" href="20-geometry-utilities.html">Geometry Utilities</a>
+    <a class="navlink" href="21-render-queue-and-frustum-culling.html">Render Queue &amp; Culling</a>
+    <a class="navlink" href="22-transparency-and-alpha-blending.html">Transparency &amp; Blending</a>
+    <a class="navlink" href="23-debug-draw.html" aria-current="page">Debug Draw</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Debug Draw</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 22:</strong> make the engine's <em>invisible</em> spatial data <em>visible</em>. The
+    last two steps added machinery you can't see — <a href="20-geometry-utilities.html">bounding boxes and a
+    camera frustum</a> (Step 19), then <a href="21-render-queue-and-frustum-culling.html">frustum culling</a>
+    (Step 20) that quietly skips off-screen draws. A wrong bound or a mis-built frustum is a <em>silent</em> bug:
+    the numbers look fine and the picture looks <em>almost</em> right. Every engine solves this the same way — a
+    <strong>debug draw</strong> API that renders throwaway <strong>lines</strong> on top of the scene: a box around
+    a collider, an arrow along a normal, a wireframe of the camera's frustum.</p>
+    <p>It is also our first taste of drawing geometry that <em>changes every frame</em> — a
+    <strong>transient</strong> GPU buffer, rebuilt from scratch each frame, in contrast to the static mesh buffers
+    uploaded once at load.</p>
+  </blockquote>
+
+  <h2>1. You cannot debug space by reading numbers</h2>
+
+  <p>Suppose an object mysteriously vanishes when you rotate the camera. Is its <a
+  href="20-geometry-utilities.html">bounding box</a> too small? Is the frustum plane facing the wrong way? Is the
+  world matrix stale? You could print sixteen matrix floats and eight AABB corners to the console and try to
+  picture them in your head — or you could <strong>draw the box and the frustum right there in the scene</strong>
+  and see, instantly, that the box is half the size of the mesh. Spatial bugs are spatial; the fastest debugger
+  for them is your eyes. That is the entire motivation for debug draw, and it's why it tends to arrive right after
+  the first culling / bounds / physics code — the moment there's finally something invisible worth looking at.</p>
+
+  <h2>2. A new primitive topology: the line list</h2>
+
+  <p>Until now every draw has been made of <strong>triangles</strong> — the only thing a GPU can fill with pixels.
+  The pipeline's <em>primitive topology</em> told it how to group vertices into shapes:
+  <code>TRIANGLELIST</code> means "every three vertices are one triangle." But the GPU can also rasterize
+  <strong>lines</strong>, and that's exactly what a wireframe is. We build a second pipeline whose topology is
+  <code>LINELIST</code>: <strong>every two vertices are one independent line segment</strong>.</p>
+
+  <pre class="diagram">TRIANGLELIST   v0 v1 v2 | v3 v4 v5 | …     every 3 verts → a filled triangle
+LINELIST       v0 v1    | v2 v3    | …     every 2 verts → a 1-pixel line</pre>
+
+  <p>That is why the CPU side stores debug geometry as <strong>pairs</strong> of vertices. A box is not a special
+  "box primitive" — it is just its <strong>12 edges</strong>, i.e. 12 line segments = 24 vertices. A cross marker
+  is 3 segments; a frustum is another 12. The shader that draws them is the simplest in the engine: transform the
+  world-space endpoint by the camera's view-projection, output a flat colour. No lighting, no texture — a debug
+  line is a colour you want to <em>read</em>, not shade.</p>
+
+  <h2>3. Immediate mode and the transient buffer</h2>
+
+  <p>A mesh is uploaded to the GPU <strong>once</strong> and drawn for years; its vertex buffer is
+  <em>static</em>. Debug lines are the opposite: the set you want changes constantly — a box follows a moving
+  object, the frustum is whatever the camera is doing this instant. So debug draw is <strong>immediate
+  mode</strong>: each frame the app <em>re-declares</em> the lines it wants (<code>clear()</code>, then a burst of
+  <code>line()</code> / <code>box()</code> / <code>frustum()</code> calls), and the renderer uploads that fresh
+  vertex list into a <strong>transient</strong> GPU buffer and draws it in a single call.</p>
+
+  <pre class="diagram">static mesh      upload once at load        → draw every frame from the same buffer
+debug lines      rebuild + re-upload each    → draw once, throw the buffer away
+                 frame ("immediate mode")</pre>
+
+  <p>Re-uploading raises a hazard question: what if the GPU is still <em>reading</em> last frame's buffer when the
+  CPU wants to <em>write</em> this frame's? Our answer is the simplest correct one: <strong>build a brand-new
+  buffer each frame and release the old one</strong>. SDL defers the actual free until the GPU has finished with
+  it, so no two frames ever share a buffer and there is nothing to synchronise by hand. (A production engine would
+  instead keep one growable buffer and rotate its backing storage — SDL's "cycle" mechanism — but that's an
+  optimisation, not a concept, and debug draw is off in the common case anyway.)</p>
+
+  <h2>4. Drawing an overlay: depth on, writes off</h2>
+
+  <p>The debug lines are drawn <em>inside</em> the main scene pass, right after the opaque, skybox and transparent
+  stages, into the same <a href="11-post-processing.html">HDR target</a>. Two deliberate choices about the depth
+  buffer make the overlay behave:</p>
+
+  <pre class="diagram">depth TEST  ON    → a line behind a wall is correctly HIDDEN by it (occlusion reads right)
+depth WRITE OFF   → the throwaway overlay never stamps the scene's own depth buffer</pre>
+
+  <p>Testing but not writing is the same trick the <a href="21-render-queue-and-frustum-culling.html">transparent
+  pass</a> uses, for the same reason: the overlay should respect the scene's depth without corrupting it. Drawing
+  into the HDR target (rather than as a separate pass after tone-mapping) has one big payoff — the lines show up in
+  <code>KOI_CAPTURE</code> frames too, so headless verification sees exactly what the window does. The small cost:
+  the tone-map compresses the line colours a touch and FXAA can soften a 1-pixel line, so we pick <strong>bright,
+  saturated colours</strong> on the CPU side and they read fine.</p>
+
+  <h2>5. The frustum trick: unproject the NDC cube</h2>
+
+  <p>Drawing a box from an <code>Aabb</code> is easy — you already have its eight corners. But how do you draw the
+  <strong>camera frustum</strong>, that truncated pyramid of visible space? Its corners aren't stored anywhere.
+  The elegant answer reuses two earlier steps at once. In <strong>clip space</strong>, the frustum is just the
+  <em>unit cube</em>: everything the camera can see maps into <code>x,y ∈ [−1, 1]</code> and (in Koi's Metal /
+  Vulkan convention) <code>z ∈ [0, 1]</code>. And the matrix that maps clip space <em>back</em> to world space is
+  the <strong>inverse of the view-projection</strong> — the <a href="20-geometry-utilities.html"><code>Mat4</code>
+  inverse</a> we built in Step 19. So:</p>
+
+  <pre class="diagram">take the 8 corners of the NDC cube      (x,y ∈ {−1,+1},  z ∈ {0,1})
+push each BACKWARD through inverse(viewProj)   → the frustum's 8 world-space corners
+divide by w   (the perspective divide)  → corners spread into the truncated pyramid
+connect the same 12 edges as a box</pre>
+
+  <p>Feed it the camera's own <code>projection · view</code> and you draw a wireframe of <strong>exactly the volume
+  Step 20's culler tests against</strong>. The demo <em>freezes</em> that matrix on a key press, so you can then
+  fly the camera <em>out</em> of the frozen frustum and watch objects leave it — the culling you couldn't see in
+  Step 20, finally on screen. (The far plane is a long way off, so the demo's capture freezes a short-range copy to
+  keep the wireframe compact.)</p>
+
+  <h2>6. Honest limitations</h2>
+
+  <ul>
+    <li><strong>Colours shift slightly.</strong> Because the lines live in the HDR scene target, tone-mapping and
+    FXAA touch them. That's an accepted trade for having them appear in captures; a crisp post-tone-map overlay
+    pass is a later refinement (and would need to re-run for the capture path).</li>
+    <li><strong>Occluded, not x-ray.</strong> The lines are depth-tested, so a box's back edges hide behind the
+    object. Sometimes you'd rather see the <em>whole</em> wireframe through the geometry — an "x-ray" mode
+    (depth-test off) is a natural toggle to add next.</li>
+    <li><strong>No text yet.</strong> Debug draw shows shapes, not labels. Naming an axis or printing a value on
+    screen needs <strong>text rendering</strong>, a separate upcoming step.</li>
+  </ul>
+
+  <h2>7. In the engine</h2>
+
+  <ul>
+    <li><a href="../../src/renderer/DebugDraw.hpp">src/renderer/DebugDraw.hpp</a> /
+    <a href="../../src/renderer/DebugDraw.cpp">.cpp</a> — the pure, GPU-free collector: <code>DebugVertex</code>
+    plus <code>line</code> / <code>box</code> / <code>frustum</code> / <code>ray</code> / <code>cross</code>, all
+    building a flat line-list vertex array. <a href="../../tests/test_debug_draw.cpp">Unit-tested</a> (including
+    that <code>frustum(identity)</code> lands on the NDC cube with <code>z ∈ [0,1]</code>).</li>
+    <li><a href="../../shaders/debug_line.vert">shaders/debug_line.vert</a> /
+    <a href="../../shaders/debug_line.frag">.frag</a> — the minimal unlit line shaders (world position + flat
+    colour in, solid colour out).</li>
+    <li><a href="../../src/renderer/FrameView.hpp">src/renderer/FrameView.hpp</a> — a new non-owning
+    <code>debugLines</code> span, the app's per-frame overlay carried across the engine/app boundary.</li>
+    <li><a href="../../src/renderer/GpuRenderer.cpp">src/renderer/GpuRenderer.cpp</a> —
+    <code>createDebugPipeline</code> (LINELIST, depth-test on / write off), <code>uploadDebugLines</code> (the
+    per-frame transient buffer), and <code>recordDebug</code> (one line-list draw at the end of
+    <code>recordScene</code>). <code>lastCameraViewProjection()</code> exposes the culling matrix so the app can
+    freeze it.</li>
+    <li><a href="../../samples/demo/DemoApp.cpp">samples/demo/DemoApp.cpp</a> — builds the overlay each frame
+    (AABBs of every node, the frozen frustum, light-position crosses) and binds the <kbd>G</kbd> / <kbd>F</kbd> /
+    <kbd>L</kbd> toggles; <code>KOI_DEBUG_DRAW</code> turns it all on for a headless capture.</li>
+  </ul>
+
+  <h2>8. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Run the tests.</strong> <code>cmake --build build</code> then <code>./build/koi-tests</code> — the
+    debug-draw suite pins the box and (crucially) the frustum unprojection.</li>
+    <li><strong>Turn on the overlays.</strong> Run <code>./build/koi-demo</code> and press <kbd>G</kbd> (bounding
+    boxes), <kbd>L</kbd> (light icons), <kbd>F</kbd> (freeze + show the camera frustum). Notice a box's far edges
+    are hidden behind its object — depth testing at work.</li>
+    <li><strong>See culling.</strong> With the frustum frozen (<kbd>F</kbd>), fly the camera backward: the amber
+    wireframe stays put while the scene slides out of it — that's the volume the <kbd>0</kbd> frustum-culling
+    toggle from Step 20 is testing against.</li>
+    <li><strong>Capture a frame.</strong> <code>KOI_DEBUG_DRAW=1 KOI_CAPTURE=out.bmp ./build/koi-demo</code>, then
+    <code>sips -s format png out.bmp --out out.png</code>. (Without <code>KOI_DEBUG_DRAW</code> the capture is
+    byte-for-byte identical to Step 21 — debug draw adds nothing when nothing is queued.)</li>
+  </ol>
+
+  <h2>9. What's next</h2>
+
+  <p>➡️ Debug draw is the visual companion the rest of the tooling track builds on. A <strong>debug HUD</strong>
+  (frame stats, toggles) and <strong>text rendering</strong> (labels for the shapes we can now draw) are the next
+  overlays; <strong>ray-cast picking</strong> and a <strong>manipulation gizmo</strong> reuse these same lines to
+  show what's selected; and when <strong>physics</strong> arrives, drawing contact points and collision volumes is
+  how you'll debug it. An <strong>x-ray toggle</strong> (depth-test off) is a small immediate follow-up. See the
+  <a href="../../ROADMAP.md">roadmap</a> for the sequenced plan.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

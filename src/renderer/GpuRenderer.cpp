@@ -9,6 +9,7 @@
 
 #include "core/Log.hpp"
 #include "math/Mat4.hpp"
+#include "renderer/DebugDraw.hpp"   // DebugVertex — the immediate-mode debug lines (Step 22)
 #include "renderer/Mesh.hpp"
 #include "renderer/Primitives.hpp"  // makeCubeMesh — reused as the skybox cube
 #include "renderer/Shader.hpp"
@@ -169,6 +170,15 @@ GpuRenderer::GpuRenderer(SDL_Window* window) : window_(window) {
     //      (loadCubemap → bakeIbl). If this fails, isValid() reports it.
     // ------------------------------------------------------------------------
     if (!createIblResources()) {
+        return;
+    }
+
+    // ------------------------------------------------------------------------
+    //  8. Create the debug-line pipeline (Step 22): a minimal unlit pipeline that
+    //     overlays wireframes (AABBs, the camera frustum, light icons) drawn from
+    //     the FrameView's per-frame debug lines. If this fails, isValid() reports it.
+    // ------------------------------------------------------------------------
+    if (!createDebugPipeline()) {
         return;
     }
 
@@ -343,6 +353,77 @@ bool GpuRenderer::createTrianglePipeline() {
     }
     if (transparentPipeline_ == nullptr) {
         KOI_ERROR("Failed to create transparent graphics pipeline: %s", SDL_GetError());
+        return false;
+    }
+    return true;
+}
+
+bool GpuRenderer::createDebugPipeline() {
+    // The debug overlay's shaders: a world-space position + flat colour in, a solid
+    // colour out (no lighting, no textures). The vertex shader declares ONE uniform
+    // buffer (the view-projection); the fragment shader reads nothing.
+    SDL_GPUShader* vertexShader = loadShader(device_, "debug_line.vert",
+                                             SDL_GPU_SHADERSTAGE_VERTEX, /*numUniformBuffers=*/1);
+    SDL_GPUShader* fragmentShader = loadShader(device_, "debug_line.frag",
+                                               SDL_GPU_SHADERSTAGE_FRAGMENT);
+    if (vertexShader == nullptr || fragmentShader == nullptr) {
+        if (vertexShader != nullptr)   SDL_ReleaseGPUShader(device_, vertexShader);
+        if (fragmentShader != nullptr) SDL_ReleaseGPUShader(device_, fragmentShader);
+        return false;
+    }
+
+    // Debug lines are drawn INTO the HDR scene target (so they show up in
+    // KOI_CAPTURE frames too), so the pipeline's colour format is the HDR one — the
+    // same as the main pass. depthFormat_ was chosen when the triangle pipeline built.
+    SDL_GPUColorTargetDescription colorTargetDesc = {};
+    colorTargetDesc.format = kSceneHdrFormat;
+
+    // Vertex layout: one buffer at DebugVertex stride with two FLOAT3 attributes —
+    // position at offset 0, colour right after. This MUST match koi::DebugVertex and
+    // debug_line.vert's `layout(location = N) in` inputs.
+    SDL_GPUVertexBufferDescription vertexBufferDesc = {};
+    vertexBufferDesc.slot       = 0;
+    vertexBufferDesc.pitch      = static_cast<Uint32>(sizeof(DebugVertex));
+    vertexBufferDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+
+    const SDL_GPUVertexAttribute vertexAttributes[2] = {
+        { /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+          offsetof(DebugVertex, position) },
+        { /*location=*/1, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+          offsetof(DebugVertex, color) },
+    };
+
+    SDL_GPUGraphicsPipelineCreateInfo info = {};
+    info.vertex_shader   = vertexShader;
+    info.fragment_shader = fragmentShader;
+    info.vertex_input_state.vertex_buffer_descriptions = &vertexBufferDesc;
+    info.vertex_input_state.num_vertex_buffers         = 1;
+    info.vertex_input_state.vertex_attributes          = vertexAttributes;
+    info.vertex_input_state.num_vertex_attributes      = 2;
+    // LINELIST: every TWO vertices form one independent segment — the reason
+    // DebugDraw stores its geometry as vertex pairs.
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_LINELIST;
+
+    // Depth TEST on so a line behind opaque geometry is correctly hidden (a normal
+    // poking through a wall shouldn't show); depth WRITE off so this throwaway
+    // overlay never stamps the scene's depth buffer. LEQUAL lets a line lying
+    // exactly on a surface still draw.
+    info.depth_stencil_state.enable_depth_test  = true;
+    info.depth_stencil_state.enable_depth_write = false;
+    info.depth_stencil_state.compare_op         = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+
+    info.target_info.num_color_targets         = 1;
+    info.target_info.color_target_descriptions = &colorTargetDesc;
+    info.target_info.has_depth_stencil_target  = true;
+    info.target_info.depth_stencil_format      = depthFormat_;
+
+    debugLinePipeline_ = SDL_CreateGPUGraphicsPipeline(device_, &info);
+
+    SDL_ReleaseGPUShader(device_, vertexShader);
+    SDL_ReleaseGPUShader(device_, fragmentShader);
+
+    if (debugLinePipeline_ == nullptr) {
+        KOI_ERROR("Failed to create debug-line pipeline: %s", SDL_GetError());
         return false;
     }
     return true;
@@ -1163,10 +1244,17 @@ void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* 
                                      Uint32 width, Uint32 height, const Mat4& view,
                                      const Node& sceneRoot, const Vec3& cameraPos,
                                      std::span<const Light> lights,
-                                     const SDL_FColor& clearColor, const PostSettings& post) {
+                                     const SDL_FColor& clearColor, const PostSettings& post,
+                                     std::span<const DebugVertex> debugLines) {
     if (!ensureSceneTargets(width, height)) {
         return;  // ensureSceneTargets logged; skip this frame rather than crash
     }
+
+    // Upload this frame's debug lines (Step 22) BEFORE any render pass begins on
+    // `cmd`: uploadDebugLines does its copy on its own command buffer, and doing it
+    // here keeps the transient vertex buffer ready for recordScene's overlay draw.
+    // (Empty when debug draw is off, so this is a cheap no-op in the common case.)
+    uploadDebugLines(debugLines);
 
     // TRAVERSE → LIST (Step 20). Flatten the scene graph into a flat draw list ONCE,
     // up front, so both passes below iterate the list instead of re-walking the tree.
@@ -1762,6 +1850,10 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
     const Mat4 projection = perspective(radians(60.0f), aspect, 0.1f, 100.0f);
     const Mat4 projView   = projection * view;
 
+    // Remember this frame's camera view-projection (Step 22) so the app can freeze
+    // it and draw the culling frustum as a wireframe (see lastCameraViewProjection).
+    lastCameraViewProj_ = projView;
+
     // CULL (Step 20). Extract the six camera-frustum planes from the SAME projView the
     // shader uses (so what we cull matches what's on screen), then keep only the items
     // whose world bounds intersect it. With culling off, every item survives (the
@@ -1820,6 +1912,13 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
             submitItem(cmd, pass, *item, projView);
         }
     }
+
+    // --- DEBUG OVERLAY (Step 22) ---------------------------------------------------
+    // Drawn LAST, over the finished scene, using the same camera projView. A no-op
+    // unless the app queued debug lines this frame (they were uploaded up front in
+    // renderSceneAndPost). Depth-tested but not depth-writing, so lines are occluded
+    // by geometry yet never disturb it.
+    recordDebug(cmd, pass, projView);
 }
 
 void GpuRenderer::recordSkybox(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
@@ -1852,6 +1951,50 @@ void GpuRenderer::recordSkybox(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pas
     SDL_BindGPUIndexBuffer(pass, &ib, skyboxMesh_->indexElementSize());
     SDL_DrawGPUIndexedPrimitives(pass, skyboxMesh_->indexCount(), /*num_instances=*/1,
                                  /*first_index=*/0, /*vertex_offset=*/0, /*first_instance=*/0);
+}
+
+void GpuRenderer::uploadDebugLines(std::span<const DebugVertex> lines) {
+    // IMMEDIATE MODE: every frame's debug geometry is brand new, so rather than
+    // synchronize writes to a persistent buffer (which the previous frame's draw
+    // might still be reading), we simply release last frame's buffer and build a
+    // fresh one. SDL_ReleaseGPUBuffer defers the actual free until the GPU is done
+    // with it, so this is safe even while the previous frame is still in flight —
+    // and no two frames ever touch the same buffer, so there's nothing to fence.
+    if (debugVertexBuffer_ != nullptr) {
+        SDL_ReleaseGPUBuffer(device_, debugVertexBuffer_);
+        debugVertexBuffer_ = nullptr;
+    }
+    debugVertexCount_ = 0;
+
+    if (lines.empty()) {
+        return;  // nothing queued this frame — recordDebug will draw nothing
+    }
+
+    // Reuse the shared staging-upload helper (the same one behind every mesh).
+    const Uint32 bytes = static_cast<Uint32>(lines.size_bytes());
+    debugVertexBuffer_ = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_VERTEX, lines.data(), bytes);
+    if (debugVertexBuffer_ != nullptr) {
+        debugVertexCount_ = static_cast<Uint32>(lines.size());
+    }
+}
+
+void GpuRenderer::recordDebug(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                              const Mat4& viewProj) const {
+    if (debugVertexCount_ == 0 || debugLinePipeline_ == nullptr) {
+        return;  // no lines this frame (the common case — debug draw is opt-in)
+    }
+
+    // Binding a new pipeline resets the pass's bindings, so set everything the
+    // debug draw needs: the pipeline, the view-projection uniform, the vertex
+    // buffer, then one line-list draw of all the collected vertices.
+    SDL_BindGPUGraphicsPipeline(pass, debugLinePipeline_);
+    SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, viewProj.m, sizeof(viewProj.m));
+
+    SDL_GPUBufferBinding vb = {};
+    vb.buffer = debugVertexBuffer_;
+    SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vb, /*num_bindings=*/1);
+    SDL_DrawGPUPrimitives(pass, debugVertexCount_, /*num_instances=*/1,
+                          /*first_vertex=*/0, /*first_instance=*/0);
 }
 
 void GpuRenderer::submitItem(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
@@ -2027,6 +2170,16 @@ GpuRenderer::~GpuRenderer() {
             SDL_ReleaseGPUGraphicsPipeline(device_, transparentPipeline_);
             transparentPipeline_ = nullptr;
         }
+        // Debug draw (Step 22): the line pipeline and this frame's transient vertex
+        // buffer (null unless a frame with debug lines ran). Release tolerates null.
+        if (debugLinePipeline_ != nullptr) {
+            SDL_ReleaseGPUGraphicsPipeline(device_, debugLinePipeline_);
+            debugLinePipeline_ = nullptr;
+        }
+        if (debugVertexBuffer_ != nullptr) {
+            SDL_ReleaseGPUBuffer(device_, debugVertexBuffer_);
+            debugVertexBuffer_ = nullptr;
+        }
         // Order matters: detach the window's swapchain from the device BEFORE
         // destroying the device. DestroyGPUDevice also waits for the GPU to go
         // idle, so no in-flight frame is left dangling.
@@ -2047,6 +2200,7 @@ void GpuRenderer::renderFrame(const FrameView& fv) {
     const Vec3& cameraPos                = fv.cameraPos;
     const std::span<const Light> lights  = fv.lights;
     const PostSettings& post             = fv.post;
+    const std::span<const DebugVertex> debugLines = fv.debugLines;
 
     // ------------------------------------------------------------------------
     //  1. Acquire a command buffer.
@@ -2088,7 +2242,7 @@ void GpuRenderer::renderFrame(const FrameView& fv) {
         // The aspect ratio comes from the actual swapchain size, so the image is never
         // stretched and adapts automatically when the window is resized.
         renderSceneAndPost(cmd, swapchainTexture, width, height, view, sceneRoot,
-                           cameraPos, lights, clearColor, post);
+                           cameraPos, lights, clearColor, post, debugLines);
     }
 
     // ------------------------------------------------------------------------
@@ -2109,6 +2263,7 @@ bool GpuRenderer::captureFrame(const char* path, const FrameView& fv) {
     const Vec3& cameraPos                = fv.cameraPos;
     const std::span<const Light> lights  = fv.lights;
     const PostSettings& post             = fv.post;
+    const std::span<const DebugVertex> debugLines = fv.debugLines;
 
     // Fixed capture resolution: keeps the output deterministic and small. The
     // aspect ratio (1280/720) feeds the projection so the cube isn't distorted.
@@ -2159,7 +2314,7 @@ bool GpuRenderer::captureFrame(const char* path, const FrameView& fv) {
     //    the same frame every time.
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device_);
     renderSceneAndPost(cmd, target, kWidth, kHeight, view, sceneRoot, cameraPos,
-                       lights, clearColor, post);
+                       lights, clearColor, post, debugLines);
 
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion region = {};

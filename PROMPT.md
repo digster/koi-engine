@@ -495,3 +495,19 @@ switch. Demo gains two overlapping glass panes + a `T` toggle (sort on/off) to e
 (+ nav backfilled across all pages, index card). Verified with `KOI_CAPTURE`: glass see-through + correct
 overlap compositing, no GPU errors, opaque scene unchanged. **Deferred:** solid shadows from translucent
 casters, per-object sort (mis-orders interpenetrating meshes → OIT), glTF alpha import.
+
+> Pick something from the roadmap to work on next.
+
+Step 22 — **debug draw** (chosen from three roadmap candidates: alpha-tested cutout, glTF node hierarchy/Sponza,
+debug draw). An **immediate-mode line overlay** that finally makes the Step 19/20 geometry visible: per-mesh
+**AABBs**, **light icons**, and the **camera frustum**. New pure `src/renderer/DebugDraw.hpp`/`.cpp` collector
+(`DebugVertex` + `line`/`box`/`frustum`/`ray`/`cross` → a flat **line list**); `frustum` recovers world corners by
+unprojecting the **NDC cube** through `inverse(viewProj)` (reusing the Step 19 `Mat4` inverse). New unlit
+`debug_line.vert`/`.frag` + a `debugLinePipeline_` (**LINELIST**, depth-test on / **write off**) drawn at the end
+of `recordScene`; vertices cross the boundary via a new `FrameView::debugLines` span and upload into a
+**transient**, rebuilt-per-frame buffer (`uploadDebugLines`), so lines appear in `KOI_CAPTURE` too.
+`lastCameraViewProjection()` lets the demo **freeze** the culling frustum. Demo keys **`G`**/`L`/`F` +
+`KOI_DEBUG_DRAW` for headless captures; 7 new tests (**107 pass**). New tutorial
+`documentation/docs/23-debug-draw.html` (+ nav backfilled on all 24 pages, index card); README/ARCHITECTURE/ROADMAP
+updated. Verified: `KOI_DEBUG_DRAW` capture shows depth-occluded overlays; debug-**off** capture is **byte-identical
+to Step 21** (git-stash baseline). **Deferred:** x-ray (depth-off) mode, per-vertex normals viz, text labels.
