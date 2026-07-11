@@ -20,27 +20,27 @@ Three principles shape the plan:
 
 - The **Step N** number is the canonical milestone number: Step 0 is the first window on screen,
   Step 12 is physically-based materials.
-- Tutorials live in [`documentation/docs/`](documentation/docs/index.html), but their filenames run **one ahead** of the step
-  number, because [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) is a prerequisites
-  page rather than a step. So **Step N → `documentation/docs/(N+1)-*.html`** (e.g. Step 12 →
-  [`documentation/docs/13-pbr-materials.html`](documentation/docs/13-pbr-materials.html)).
+- Tutorials live in [`docs/tuts/`](docs/tuts/index.html), but their filenames run **one ahead** of the step
+  number, because [`docs/tuts/00-getting-started.html`](docs/tuts/00-getting-started.html) is a prerequisites
+  page rather than a step. So **Step N → `docs/tuts/(N+1)-*.html`** (e.g. Step 12 →
+  [`docs/tuts/13-pbr-materials.html`](docs/tuts/13-pbr-materials.html)).
 - **Step 16** (glTF PBR material import) shipped as
-  [`documentation/docs/17-gltf-pbr-import.html`](documentation/docs/17-gltf-pbr-import.html); it loads a real
+  [`docs/tuts/17-gltf-pbr-import.html`](docs/tuts/17-gltf-pbr-import.html); it loads a real
   production asset (the Khronos **Damaged Helmet**) with its material imported straight from the file — and
   brought **emissive** surfaces and **sRGB colour textures** along with it.
 - **Step 17** (engine/app separation) shipped as
-  [`documentation/docs/18-engine-app-separation.html`](documentation/docs/18-engine-app-separation.html); it
+  [`docs/tuts/18-engine-app-separation.html`](docs/tuts/18-engine-app-separation.html); it
   lifted the demo out of the engine into a [`samples/demo/`](samples/demo) app behind a public
   **`koi::Application`** interface, so `koi_core` is now genuinely reusable.
 - **Step 18** (quaternions) shipped as
-  [`documentation/docs/19-quaternions.html`](documentation/docs/19-quaternions.html); `Transform` now stores a
+  [`docs/tuts/19-quaternions.html`](docs/tuts/19-quaternions.html); `Transform` now stores a
   unit **`Quat`** instead of Euler angles — no gimbal lock, and rotations can be `slerp`-ed, the prerequisite for
   skeletal animation.
 - **Step 19** (geometry utilities) shipped as
-  [`documentation/docs/20-geometry-utilities.html`](documentation/docs/20-geometry-utilities.html); a pure
+  [`docs/tuts/20-geometry-utilities.html`](docs/tuts/20-geometry-utilities.html); a pure
   `Ray`/`Aabb`/`Plane`/`Frustum` layer (plus the `Mat4` **inverse**) and the inverse-transpose **normal matrix**.
 - **Step 20** (render queue + frustum culling) shipped as
-  [`documentation/docs/21-render-queue-and-frustum-culling.html`](documentation/docs/21-render-queue-and-frustum-culling.html);
+  [`docs/tuts/21-render-queue-and-frustum-culling.html`](docs/tuts/21-render-queue-and-frustum-culling.html);
   the renderer stopped drawing inline while it walked the scene graph — it now flattens the tree into a flat
   **`RenderItem`** list (*traverse → list → submit*), the **architecture pivot** that unblocks sorting,
   instancing, and transparency, and spends the Step 19 `Aabb`/`Frustum` on its first payoff, **frustum culling**.
@@ -68,31 +68,31 @@ bitmap-font atlas drawn as a crisp screen-space overlay after post-processing (S
 instanced draw calls across both the colour and shadow passes (Step 24 — the scaling track's first payoff).
 Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
-[`documentation/docs/index.html`](documentation/docs/index.html).
+[`docs/tuts/index.html`](docs/tuts/index.html).
 
 | Step | Milestone | Key concepts | Tutorial |
 |------|-----------|--------------|----------|
-| **0** | Window + clear screen | GPU device, swapchain, command buffer, render pass | [documentation/docs/01](documentation/docs/01-window-and-render-loop.html) |
-| **1** | First triangle | shaders, graphics pipeline, shader toolchain (`glslc` + `spirv-cross`) | [documentation/docs/02](documentation/docs/02-first-triangle.html) |
-| **2** | Vertex/index buffers | GPU buffers, transfer buffers, vertex layouts | [documentation/docs/03](documentation/docs/03-vertex-and-index-buffers.html) |
-| **3** | 3D cube + MVP + depth | hand-rolled `vec`/`mat4`, projection, depth testing | [documentation/docs/04](documentation/docs/04-3d-cube-mvp-and-depth.html) |
-| **4** | Camera + input movement | view matrix, delta-time, fly camera | [documentation/docs/05](documentation/docs/05-camera-and-input.html) |
-| **5** | Meshes & scene graph | mesh abstraction, Transform (TRS), node hierarchy | [documentation/docs/06](documentation/docs/06-meshes-and-scene-graph.html) |
-| **6** | Textures | UV coordinates, GPU textures, samplers (filtering & wrap) | [documentation/docs/07](documentation/docs/07-textures-and-samplers.html) |
-| **7** | Phong lighting | normals, a directional light, ambient/diffuse/specular | [documentation/docs/08](documentation/docs/08-lighting-and-normals.html) |
-| **8** | Materials | per-object texture + specular params, per-draw binding | [documentation/docs/09](documentation/docs/09-materials.html) |
-| **9** | Models & shadows | OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping | [documentation/docs/10](documentation/docs/10-models-and-shadows.html) |
-| **10** | Post-processing | offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA | [documentation/docs/11](documentation/docs/11-post-processing.html) |
-| **11** | Multiple lights | directional/point/spot lights, distance attenuation, spot cones | [documentation/docs/12](documentation/docs/12-multiple-lights.html) |
-| **12** | PBR materials | Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation | [documentation/docs/13](documentation/docs/13-pbr-materials.html) |
-| **13** | Texture & normal maps | per-pixel albedo/metallic-roughness/AO maps, tangent space + TBN matrix (normal mapping), mipmaps + anisotropic filtering | [documentation/docs/14](documentation/docs/14-texture-and-normal-maps.html) |
-| **14** | Skybox & cubemaps | cubemap textures sampled by direction, cube-around-camera skybox, translation-stripped view, far-plane depth trick (LEQUAL + `.xyww`) | [documentation/docs/15](documentation/docs/15-skybox-and-cubemaps.html) |
-| **15** | Image-based lighting | diffuse irradiance convolution, specular split-sum (prefiltered env + BRDF LUT), importance sampling + Hammersley, baking into cubemap faces | [documentation/docs/16](documentation/docs/16-image-based-lighting.html) |
-| **16** | glTF PBR import | glTF material/texture import (base-colour/MR/normal/AO/**emissive**), PNG/JPG decode via stb_image, **sRGB** colour textures, emissive term feeding bloom, the Damaged Helmet | [documentation/docs/17](documentation/docs/17-gltf-pbr-import.html) |
-| **17** | Engine/app separation | public **`koi::Application`** interface (onStart/onUpdate/onEvent/frameView), **`FrameView`** render bundle, inversion of control, demo lifted from `src/` to `samples/demo/` (pixel-identical) | [documentation/docs/18](documentation/docs/18-engine-app-separation.html) |
-| **18** | Quaternions | hand-rolled **`Quat`** (axis-angle, Hamilton product, sandwich rotate, `toMat4`, **`slerp`**), `Transform` stores a unit quaternion instead of Euler angles (no gimbal lock; interpolatable), camera kept on yaw/pitch by design | [documentation/docs/19](documentation/docs/19-quaternions.html) |
+| **0** | Window + clear screen | GPU device, swapchain, command buffer, render pass | [docs/tuts/01](docs/tuts/01-window-and-render-loop.html) |
+| **1** | First triangle | shaders, graphics pipeline, shader toolchain (`glslc` + `spirv-cross`) | [docs/tuts/02](docs/tuts/02-first-triangle.html) |
+| **2** | Vertex/index buffers | GPU buffers, transfer buffers, vertex layouts | [docs/tuts/03](docs/tuts/03-vertex-and-index-buffers.html) |
+| **3** | 3D cube + MVP + depth | hand-rolled `vec`/`mat4`, projection, depth testing | [docs/tuts/04](docs/tuts/04-3d-cube-mvp-and-depth.html) |
+| **4** | Camera + input movement | view matrix, delta-time, fly camera | [docs/tuts/05](docs/tuts/05-camera-and-input.html) |
+| **5** | Meshes & scene graph | mesh abstraction, Transform (TRS), node hierarchy | [docs/tuts/06](docs/tuts/06-meshes-and-scene-graph.html) |
+| **6** | Textures | UV coordinates, GPU textures, samplers (filtering & wrap) | [docs/tuts/07](docs/tuts/07-textures-and-samplers.html) |
+| **7** | Phong lighting | normals, a directional light, ambient/diffuse/specular | [docs/tuts/08](docs/tuts/08-lighting-and-normals.html) |
+| **8** | Materials | per-object texture + specular params, per-draw binding | [docs/tuts/09](docs/tuts/09-materials.html) |
+| **9** | Models & shadows | OBJ/glTF loading (tinyobjloader + cgltf), shadow mapping | [docs/tuts/10](docs/tuts/10-models-and-shadows.html) |
+| **10** | Post-processing | offscreen HDR targets, fullscreen passes, tone-mapping, bloom, FXAA | [docs/tuts/11](docs/tuts/11-post-processing.html) |
+| **11** | Multiple lights | directional/point/spot lights, distance attenuation, spot cones | [docs/tuts/12](docs/tuts/12-multiple-lights.html) |
+| **12** | PBR materials | Cook-Torrance metallic-roughness BRDF (GGX + Smith + Fresnel), energy conservation | [docs/tuts/13](docs/tuts/13-pbr-materials.html) |
+| **13** | Texture & normal maps | per-pixel albedo/metallic-roughness/AO maps, tangent space + TBN matrix (normal mapping), mipmaps + anisotropic filtering | [docs/tuts/14](docs/tuts/14-texture-and-normal-maps.html) |
+| **14** | Skybox & cubemaps | cubemap textures sampled by direction, cube-around-camera skybox, translation-stripped view, far-plane depth trick (LEQUAL + `.xyww`) | [docs/tuts/15](docs/tuts/15-skybox-and-cubemaps.html) |
+| **15** | Image-based lighting | diffuse irradiance convolution, specular split-sum (prefiltered env + BRDF LUT), importance sampling + Hammersley, baking into cubemap faces | [docs/tuts/16](docs/tuts/16-image-based-lighting.html) |
+| **16** | glTF PBR import | glTF material/texture import (base-colour/MR/normal/AO/**emissive**), PNG/JPG decode via stb_image, **sRGB** colour textures, emissive term feeding bloom, the Damaged Helmet | [docs/tuts/17](docs/tuts/17-gltf-pbr-import.html) |
+| **17** | Engine/app separation | public **`koi::Application`** interface (onStart/onUpdate/onEvent/frameView), **`FrameView`** render bundle, inversion of control, demo lifted from `src/` to `samples/demo/` (pixel-identical) | [docs/tuts/18](docs/tuts/18-engine-app-separation.html) |
+| **18** | Quaternions | hand-rolled **`Quat`** (axis-angle, Hamilton product, sandwich rotate, `toMat4`, **`slerp`**), `Transform` stores a unit quaternion instead of Euler angles (no gimbal lock; interpolatable), camera kept on yaw/pitch by design | [docs/tuts/19](docs/tuts/19-quaternions.html) |
 
-> The prerequisites page [`documentation/docs/00-getting-started.html`](documentation/docs/00-getting-started.html) (building,
+> The prerequisites page [`docs/tuts/00-getting-started.html`](docs/tuts/00-getting-started.html) (building,
 > running, testing, project layout) is not a numbered step.
 
 ---
@@ -103,7 +103,7 @@ The immediate path continues the physically-based rendering thread that Step 12 
 **numbered** because their order is fixed by dependency: IBL needs a cubemap, which the skybox
 provides, and both build toward "metals that reflect their surroundings."
 
-### ✅ Step 13 — Texture maps & normal mapping *(done — [tutorial](documentation/docs/14-texture-and-normal-maps.html))*
+### ✅ Step 13 — Texture maps & normal mapping *(done — [tutorial](docs/tuts/14-texture-and-normal-maps.html))*
 - **Shipped:** per-pixel material maps — a packed **metallic-roughness** map (glTF G=roughness,
   B=metallic), an **AO** map, and a tangent-space **normal map** — plus **mipmaps** and
   **anisotropic filtering**. A per-vertex `tangent` joined [`Vertex`](src/renderer/Vertex.hpp) (pure
@@ -117,7 +117,7 @@ provides, and both build toward "metals that reflect their surroundings."
   material import* under Geometry & content. This step verified with generated BMP maps on the demo
   meshes via `KOI_CAPTURE`.
 
-### ✅ Step 14 — Skybox & environment maps *(done — [tutorial](documentation/docs/15-skybox-and-cubemaps.html))*
+### ✅ Step 14 — Skybox & environment maps *(done — [tutorial](docs/tuts/15-skybox-and-cubemaps.html))*
 - **Shipped:** a **cubemap sky** drawn behind the scene. A new `uploadCubemap`/`loadCubemap` path in
   [`src/renderer/GpuRenderer.cpp`](src/renderer/GpuRenderer.cpp) uploads six BMP faces into one
   `SDL_GPU_TEXTURETYPE_CUBE` texture; a new skybox pipeline (`shaders/skybox.vert` /
@@ -133,7 +133,7 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** the cubemap plumbing is the prerequisite for IBL — and a sky immediately makes every
   scene look better.
 
-### ✅ Step 15 — Image-based lighting (IBL) *(done — [tutorial](documentation/docs/16-image-based-lighting.html))*
+### ✅ Step 15 — Image-based lighting (IBL) *(done — [tutorial](docs/tuts/16-image-based-lighting.html))*
 - **Shipped:** the environment now **lights** the scene, so **metals reflect their surroundings**
   instead of looking dark (the open problem from Step 12). Three maps are baked once from the skybox
   cubemap at load: a **diffuse irradiance** cube (the sky cosine-convolved), a **prefiltered specular**
@@ -154,7 +154,7 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** it depended on Step 14's cubemaps and **closed out the core material/lighting arc** —
   from here the engine fans out into the wider tracks below.
 
-### ✅ Step 16 — glTF PBR material import *(done — [tutorial](documentation/docs/17-gltf-pbr-import.html))*
+### ✅ Step 16 — glTF PBR material import *(done — [tutorial](docs/tuts/17-gltf-pbr-import.html))*
 - **Shipped:** materials are now **imported from glTF files**, not hand-authored. `loadModel` returns a
   `LoadedModel` (mesh **+** material); `loadGltf` reads `primitive.material` into
   [`Material`](src/scene/Material.hpp) — base-colour, metallic-roughness, normal, occlusion and **emissive**
@@ -171,7 +171,7 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** it pays off the Step 13 IOU (that step built the per-pixel map machinery but fed it
   generated BMPs), and it puts every Step 12–15 subsystem to work on a single real asset.
 
-### ✅ Step 17 — Engine / app separation *(done — [tutorial](documentation/docs/18-engine-app-separation.html))*
+### ✅ Step 17 — Engine / app separation *(done — [tutorial](docs/tuts/18-engine-app-separation.html))*
 - **Shipped:** the demo scene that used to live *inside* the engine is now a standalone **sample app**.
   `koi_core` keeps the reusable machinery — window, [`GpuRenderer`](src/renderer/GpuRenderer.cpp), and the
   main loop (plus the headless `KOI_CAPTURE`/`KOI_MAX_FRAMES` paths) — and drives a small public
@@ -189,7 +189,7 @@ provides, and both build toward "metals that reflect their surroundings."
   cleanly, the engine can't be built on. Doing it now, before more systems land, stops each new subsystem
   from baking more demo into the engine.
 
-### ✅ Step 18 — Quaternions *(done — [tutorial](documentation/docs/19-quaternions.html))*
+### ✅ Step 18 — Quaternions *(done — [tutorial](docs/tuts/19-quaternions.html))*
 - **Shipped:** a hand-rolled unit quaternion, [`src/math/Quat.hpp`](src/math/Quat.hpp) (header-only, glTF
   `x,y,z,w` order): `fromAxisAngle`/`fromEuler`, the Hamilton product (`operator*`), the sandwich-product
   `rotate`, `conjugate`/`inverse`, `toMat4`, and **`slerp`** (shortest-arc, with double-cover sign flip and a
@@ -204,7 +204,7 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** it's the small, self-contained math prerequisite that unblocks the **skeletal animation** track
   (per-joint rotations stored as quaternions, `slerp`-ed between keyframes).
 
-### ✅ Step 19 — Geometry utilities + normal matrix *(done — [tutorial](documentation/docs/20-geometry-utilities.html))*
+### ✅ Step 19 — Geometry utilities + normal matrix *(done — [tutorial](docs/tuts/20-geometry-utilities.html))*
 - **Shipped:** the long-deferred `Mat4` **`inverse`** + **`transpose`** ([`src/math/Mat4.hpp`](src/math/Mat4.hpp))
   and a new pure, header-only geometry layer [`src/math/Geometry.hpp`](src/math/Geometry.hpp): **`Ray`**,
   **`Aabb`** (center/extents/contains/expand/merge/`transformed`), **`Plane`** (signed distance), and
@@ -222,7 +222,7 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** one small, pure, fully testable layer that is the shared prerequisite of **frustum culling**,
   **ray-cast picking**, and the **physics broadphase** — build the math before the systems that consume it.
 
-### ✅ Step 20 — Render queue + frustum culling *(done — [tutorial](documentation/docs/21-render-queue-and-frustum-culling.html))*
+### ✅ Step 20 — Render queue + frustum culling *(done — [tutorial](docs/tuts/21-render-queue-and-frustum-culling.html))*
 - **Shipped:** the **render-queue extraction** (the architecture pivot) + its first payoff, **frustum culling**.
   A new [`src/renderer/RenderQueue.hpp`](src/renderer/RenderQueue.hpp)/`.cpp` introduces a flat **`RenderItem`**
   list and three functions: `computeLocalBounds` (a mesh's model-space `Aabb`, folded from its vertices),
@@ -239,7 +239,7 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** the render queue is *the* structural first move of the whole scaling track — culling, sorting,
   instancing, transparency and deferred all operate on the flat list, none expressible while draw ≡ traverse.
 
-### ✅ Step 21 — Transparency + alpha blending *(done — [tutorial](documentation/docs/22-transparency-and-alpha-blending.html))*
+### ✅ Step 21 — Transparency + alpha blending *(done — [tutorial](docs/tuts/22-transparency-and-alpha-blending.html))*
 - **Shipped:** the engine's **first translucent surfaces**. [`Material`](src/scene/Material.hpp) gains an
   **`AlphaMode`** (`Opaque`/`Blend`) + **`opacity`**; [`triangle.frag`](shaders/triangle.frag) now emits a real
   alpha (`material.w × albedo.a`) instead of a hardcoded `1.0`. [`GpuRenderer`](src/renderer/GpuRenderer.cpp)
@@ -256,7 +256,7 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** blending is order-dependent, so it's the first feature that *had* to have the Step 20 render
   queue — you can sort a flat list, never a tree walk.
 
-### ✅ Step 22 — Debug draw *(done — [tutorial](documentation/docs/23-debug-draw.html))*
+### ✅ Step 22 — Debug draw *(done — [tutorial](docs/tuts/23-debug-draw.html))*
 - **Shipped:** an **immediate-mode line overlay** that finally puts the Step 19/20 geometry on screen. A new pure
   [`DebugDraw`](src/renderer/DebugDraw.hpp)/`.cpp` collector turns shapes into a flat **line-list** (`DebugVertex`
   + `line`/`box`/`frustum`/`ray`/`cross`); `frustum` recovers the camera's world-space corners by unprojecting the
@@ -275,7 +275,7 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** it's the visual companion to the just-landed culling/bounds work — you can't debug a wrong AABB or
   a mis-built frustum by reading numbers — and the shared groundwork for the HUD, text, picking, and physics viz.
 
-### ✅ Step 23 — HUD & text *(done — [tutorial](documentation/docs/24-hud-and-text.html))*
+### ✅ Step 23 — HUD & text *(done — [tutorial](docs/tuts/24-hud-and-text.html))*
 - **Shipped:** on-screen **text**. An embedded public-domain **8×8 bitmap font** ([`Font.hpp`](src/renderer/Font.hpp))
   is baked into a **texture atlas** at startup; a new pure [`Hud`](src/renderer/Hud.hpp)/`.cpp` collector turns
   strings and panels into **screen-space textured quads** (`HudVertex` + `text`/`rect`, one reserved solid-white
@@ -292,7 +292,7 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** it's the natural payoff on top of debug draw (same immediate-mode collector shape) and the first
   on-screen text — the foundation every later tool (profiler, picking labels, editor panels, console) needs.
 
-### ✅ Step 24 — Instancing & draw-call sorting *(done — [tutorial](documentation/docs/25-instancing-and-draw-call-sorting.html))*
+### ✅ Step 24 — Instancing & draw-call sorting *(done — [tutorial](docs/tuts/25-instancing-and-draw-call-sorting.html))*
 - **Shipped:** the scaling track's first payoff — the same image with **fewer, cheaper draw calls**. New pure helpers
   in [`RenderQueue`](src/renderer/RenderQueue.hpp) — `DrawBatch`, `sortByMaterialMesh`/`sortByMesh` (stable pointer-key
   sorts) and `coalesceBatches` (runs of equal key → one instanced draw) — plan the batches; `GpuRenderer::buildFrameBatches`
@@ -363,7 +363,7 @@ tracks are first-class peers of the rendering ones.
 - ✅ Bounding volumes + **frustum culling** (skip what the camera can't see) — *done, Step 20*: each `Mesh`
   carries an `Aabb`, the camera pass tests it against the `Frustum` (consuming the Step 19 geometry layer).
 - ✅ **Instanced rendering** (one draw call for many copies) — *done, Step 24*
-  ([tutorial](documentation/docs/25-instancing-and-draw-call-sorting.html)): per-instance vertex attributes
+  ([tutorial](docs/tuts/25-instancing-and-draw-call-sorting.html)): per-instance vertex attributes
   (`model` + `normalMatrix`) fed from a transient instance buffer, `num_instances` batched draws in both the colour
   and shadow passes.
 - ✅ Sort the draw list by **pipeline / material** (kill the per-draw rebinding cost known since Step 8) — *done,
@@ -377,7 +377,7 @@ tracks are first-class peers of the rendering ones.
 
 **Transparency & blended effects** — the engine was **opaque-only** until Step 21, which added the
 first blend-enabled pipeline; smoke, foliage cutouts, and particles are still to come.
-- ✅ **Alpha blending** + back-to-front sorting — *done, Step 21* ([tutorial](documentation/docs/22-transparency-and-alpha-blending.html)):
+- ✅ **Alpha blending** + back-to-front sorting — *done, Step 21* ([tutorial](docs/tuts/22-transparency-and-alpha-blending.html)):
   a second **depth-write-off, blend-on** pipeline, a `Material` **`alphaMode`/`opacity`**, and
   `partitionByBlend` sorting the queue far-to-near (the depth-write trick opaque draws use can't work for
   glass — this is exactly why it needed the render queue to sort).
@@ -449,15 +449,15 @@ first blend-enabled pipeline; smoke, foliage cutouts, and particles are still to
 - Ray-cast **picking** (select the object under the cursor); manipulation gizmos.
 
 **UI & tools**
-- ✅ **Debug draw** *(done — Step 22, [tutorial](documentation/docs/23-debug-draw.html))*: immediate-mode
+- ✅ **Debug draw** *(done — Step 22, [tutorial](docs/tuts/23-debug-draw.html))*: immediate-mode
   **line-list** rendering of bounding boxes, light icons, and the camera **frustum** (unprojected from the NDC
   cube through `inverse(viewProj)`) — a pure [`DebugDraw`](src/renderer/DebugDraw.hpp) collector, a transient
   per-frame vertex buffer, and a depth-tested / write-off overlay pipeline. The visual companion that makes the
   Step 19/20 geometry visible; the groundwork for the HUD, text, picking, and physics viz below. *Still to come:*
   an x-ray (depth-off) mode; drawing surface **normals** per vertex.
-- ✅ An immediate-mode **debug HUD** / overlay (stats, toggles) *(done — Step 23, [tutorial](documentation/docs/24-hud-and-text.html))*:
+- ✅ An immediate-mode **debug HUD** / overlay (stats, toggles) *(done — Step 23, [tutorial](docs/tuts/24-hud-and-text.html))*:
   a live panel with FPS/frame-time, camera position, and debug-toggle states, built on the text collector below.
-- ✅ **Text rendering** *(done — Step 23, [tutorial](documentation/docs/24-hud-and-text.html))*: an embedded **8×8
+- ✅ **Text rendering** *(done — Step 23, [tutorial](docs/tuts/24-hud-and-text.html))*: an embedded **8×8
   bitmap font** baked into a **texture atlas**, a pure [`Hud`](src/renderer/Hud.hpp) collector emitting screen-space
   textured quads, and a crisp **LDR overlay pass** after post-processing. *Still to come:* proportional / **SDF**
   fonts, a scissor clip, Unicode.
@@ -483,7 +483,7 @@ physics, tooling) further along first, and take up cross-platform CI + the remai
 them. These stay hard requirements for 1.0 (see *Definition of 1.0*) — just not the near-term priority.
 
 - ✅ **Engine / app separation** *(done — Step 17,
-  [tutorial](documentation/docs/18-engine-app-separation.html))* — *the defining milestone for "production
+  [tutorial](docs/tuts/18-engine-app-separation.html))* — *the defining milestone for "production
   apps".* The demo moved out of the engine into a [`samples/demo/`](samples/demo) app that consumes
   `koi_core` through the public **`koi::Application`** interface (`onStart`/`onUpdate`/`onEvent`/`frameView`)
   plus a [`FrameView`](src/renderer/FrameView.hpp) render bundle; nothing in `src/` hardcodes demo content
@@ -579,7 +579,7 @@ these hold, regardless of how many tracks above are finished:
 - [ ] **Loaders are fuzz-clean**: malformed OBJ/glTF input fails gracefully, never crashes.
 - [ ] **Failure policy is defined and tested** for missing assets, shader load failures, and
       device loss.
-- [ ] **Docs are two-tier**: concept tutorials (the existing `documentation/docs/`) *plus* API reference for
+- [ ] **Docs are two-tier**: concept tutorials (the existing `docs/tuts/`) *plus* API reference for
       the public surface; `ARCHITECTURE.md` current.
 - [ ] **Versioned releases**: semantic versioning, a changelog, and a packaging story.
 
@@ -592,9 +592,9 @@ the ones before it:
 
 - **One small, runnable, understood step at a time.** Don't jump ahead; a step should build and be
   testable on its own before the next begins.
-- **Ship the tutorial with the code.** Add a new `documentation/docs/NN-*.html` (mind the **+1 offset**: Step 13 →
-  `documentation/docs/14-*.html`), following the existing pages' concept-first tone, and link it from
-  [`documentation/docs/index.html`](documentation/docs/index.html). Code comments teach the *code*; docs teach the *concept*.
+- **Ship the tutorial with the code.** Add a new `docs/tuts/NN-*.html` (mind the **+1 offset**: Step 13 →
+  `docs/tuts/14-*.html`), following the existing pages' concept-first tone, and link it from
+  [`docs/tuts/index.html`](docs/tuts/index.html). Code comments teach the *code*; docs teach the *concept*.
 - **Keep the CPU/GPU mirror + tests.** Shader math gets a pure CPU twin in a header — as
   [`src/renderer/Pbr.hpp`](src/renderer/Pbr.hpp) and [`src/scene/Light.hpp`](src/scene/Light.hpp)
   mirror the shaders — so `tests/` (doctest) can validate it headlessly. Add tests with each feature

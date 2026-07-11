@@ -23,7 +23,7 @@
 //
 //  This file is PURE DATA + constexpr math (no SDL, no GPU), so the Hud collector
 //  that includes it stays fully unit-testable. Concepts are explained in
-//  documentation/docs/24-hud-and-text.html.
+//  docs/tuts/24-hud-and-text.html.
 // ============================================================================
 #pragma once
 

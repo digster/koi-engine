@@ -28,7 +28,7 @@
 //  SIMPLIFICATION: we store only a vec3 tangent and let the shader take B = N×T.
 //  That assumes a consistent UV handedness; mirrored UVs would need a signed
 //  (vec4) tangent whose w flips the bitangent. Fine for our meshes — noted as a
-//  known limitation in documentation/docs/14-texture-and-normal-maps.html.
+//  known limitation in docs/tuts/14-texture-and-normal-maps.html.
 // ============================================================================
 #pragma once
 

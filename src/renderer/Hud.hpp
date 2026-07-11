@@ -22,7 +22,7 @@
 //  and every quad — glyph or panel — samples the SAME font atlas, so the whole
 //  HUD draws with one pipeline in a single draw call. Glyphs sample their cell;
 //  filled rects sample the atlas's reserved solid-white cell (see Font.hpp).
-//  Concepts are explained in documentation/docs/24-hud-and-text.html.
+//  Concepts are explained in docs/tuts/24-hud-and-text.html.
 // ============================================================================
 #pragma once
 

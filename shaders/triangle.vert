@@ -8,7 +8,7 @@
 //
 //  Since Step 7 it also prepares LIGHTING: it outputs each vertex's WORLD-space
 //  position and normal (using the separate `model` matrix), which the fragment
-//  shader needs to shade in world space. See documentation/docs/08-lighting-and-normals.html.
+//  shader needs to shade in world space. See docs/tuts/08-lighting-and-normals.html.
 //
 //  INSTANCED (Step 24). The per-object matrices used to be pushed as a uniform per
 //  draw. Now they arrive as PER-INSTANCE vertex attributes, so many copies of a mesh

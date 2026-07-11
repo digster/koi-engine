@@ -12,7 +12,7 @@
 //
 //  Everything here is pure math (no SDL, no GPU), header-only, and unit-tested
 //  (tests/test_geometry.cpp) — the same recipe as Vec/Mat4/Quat. The concepts
-//  are explained from first principles in documentation/docs/20-geometry-utilities.html.
+//  are explained from first principles in docs/tuts/20-geometry-utilities.html.
 // ============================================================================
 #pragma once
 

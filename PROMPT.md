@@ -214,15 +214,15 @@ replacing Blinn-Phong.
 
 **Decisions made (via clarifying questions):** phased horizon with non-graphics engine systems as
 **first-class** tracks (not a "someday" tier); **recap** the completed steps AND **remove the roadmap
-table from `documentation/docs/index.html`**; number the next few steps then theme the rest.
-- New **`ROADMAP.md`** (repo root): records the **Step N ↔ `documentation/docs/(N+1)-*.html`** numbering offset
-  (`00-getting-started` is a prerequisites page → next is Step 13 = `documentation/docs/14-*.html`); recap table of
+table from `docs/tuts/index.html`**; number the next few steps then theme the rest.
+- New **`ROADMAP.md`** (repo root): records the **Step N ↔ `docs/tuts/(N+1)-*.html`** numbering offset
+  (`00-getting-started` is a prerequisites page → next is Step 13 = `docs/tuts/14-*.html`); recap table of
   Steps 0–12; numbered next milestones **13 texture & normal maps → 14 skybox/env maps → 15 IBL**
   (each with goal / concepts / files-touched / why-here, in strict dependency order); then first-class
   themed tracks — Rendering (shadows, scaling/deferred, image quality, geometry) and Engine systems
   (math/quaternions, animation, scene/ECS, physics, audio, input, UI/tools, gameplay, platform) —
   plus an exploratory tier, a suggested dependency-ordered path, and a "how steps get added" section.
-- **Single source of truth:** removed the `<table>` from `documentation/docs/index.html` (kept the `Roadmap`
+- **Single source of truth:** removed the `<table>` from `docs/tuts/index.html` (kept the `Roadmap`
   heading + a pointer to `../ROADMAP.md`, matching the existing `../README.md`/`../ARCHITECTURE.md`
   links); replaced `README.md`'s duplicate table with a pointer; redirected `ARCHITECTURE.md`'s
   "Step 13+" bullet to ROADMAP.md while keeping its architectural claim.
@@ -260,9 +260,9 @@ suggested-path diagram reworked; hot-reload duplication removed.
 
 **Outcome:** Added a root `.clangd` (`CompileFlags.CompilationDatabase: build`) pointing clangd at
 the CMake-generated `build/compile_commands.json` (already emitted via `CMAKE_EXPORT_COMPILE_COMMANDS`),
-so VSCode's clangd extension gets accurate IntelliSense. Moved `docs/` → `documentation/docs/` via
+so VSCode's clangd extension gets accurate IntelliSense. Moved `docs/` → `docs/tuts/` via
 `git mv` (history preserved) and rewrote every reference: the docs' own **124 outward `../` links
-deepened to `../../`** (folder now one level lower), `docs/` → `documentation/docs/` across README,
+deepened to `../../`** (folder now one level lower), `docs/` → `docs/tuts/` across README,
 ROADMAP, ARCHITECTURE, CLAUDE.md, PROMPT.md and `memory/*.md`, and 7 path-like code comments in
 `src/`+`shaders/` (prose "docs" mentions left intact). Verified: 346/346 internal doc links resolve,
 0 broken; build + doctest suite pass unchanged.
@@ -285,7 +285,7 @@ Pillow); the hub cube showcases the metal/dielectric checker + relief, the floor
 shimmer-free recede. Deferred (roadmap-separate): glTF material/texture import, PNG loading, Damaged
 Helmet. Verified: build clean under strict warnings, 54 doctest cases pass, `KOI_MAX_FRAMES` shows no
 GPU validation errors, `KOI_CAPTURE` confirms all effects. New tutorial
-`documentation/docs/14-texture-and-normal-maps.html` + nav/index links; README/ARCHITECTURE/ROADMAP updated.
+`docs/tuts/14-texture-and-normal-maps.html` + nav/index links; README/ARCHITECTURE/ROADMAP updated.
 
 **Step 14 — skybox & environment cubemap (2026-07-02):**
 > Pick something from the roadmap to work on next.
@@ -310,7 +310,7 @@ toggle on key `8`. Deferred (roadmap): the fullscreen-triangle + inverse-VP vari
 inverse), real HDR/equirectangular skies, and IBL (Step 15). Verified: build clean under strict
 warnings (skybox shaders compile GLSL→SPIR-V→MSL), 54 doctest cases pass, `KOI_MAX_FRAMES` shows no GPU
 validation errors, `KOI_CAPTURE` confirms a seamless sky behind all geometry with the sun blooming. New
-tutorial `documentation/docs/15-skybox-and-cubemaps.html` + nav/index links (529/529 doc links resolve);
+tutorial `docs/tuts/15-skybox-and-cubemaps.html` + nav/index links (529/529 doc links resolve);
 README/ARCHITECTURE/ROADMAP updated.
 
 **Step 15 — image-based lighting / IBL (2026-07-03):**
@@ -335,7 +335,7 @@ runtime flag in the light UBO's `ambient.w` lane (key **9**). The precompute mat
 metal sphere (roughness 0.08) is the showcase. Verified: clean build (4 new shaders compile
 GLSL→SPIR-V→MSL), **59 doctest cases pass**, `KOI_MAX_FRAMES` shows no GPU validation errors (IBL bakes
 at load), and a `KOI_CAPTURE` A/B (IBL on vs off) confirms the metal sphere goes from dark → reflecting
-the sky. New tutorial `documentation/docs/16-image-based-lighting.html` + nav/index links (586/586 doc
+the sky. New tutorial `docs/tuts/16-image-based-lighting.html` + nav/index links (586/586 doc
 links resolve); README/ARCHITECTURE/ROADMAP updated. Deferred: SDL3 GPU compute-based baking, real
 HDR/equirectangular environments.
 
@@ -361,7 +361,7 @@ transforms). Verified: clean build (no warnings; `triangle.frag` recompiles GLSL
 doctest cases pass**, `KOI_MAX_FRAMES` shows **zero GPU validation errors** (9 samplers, sRGB formats,
 larger material UBO), and a `KOI_CAPTURE` frame shows the helmet with correct sRGB base colour, sky
 reflections (IBL on its imported MR map), normal-mapped relief, AO, and glowing emissive vents. New
-tutorial `documentation/docs/17-gltf-pbr-import.html` + nav/index links (641/641 doc links resolve);
+tutorial `docs/tuts/17-gltf-pbr-import.html` + nav/index links (641/641 doc links resolve);
 README/ARCHITECTURE/ROADMAP updated. Deferred: OBJ `.mtl`, multi-primitive/multi-material meshes, glTF
 node hierarchy, data-URI images, per-texture samplers, Sponza.
 
@@ -387,7 +387,7 @@ Lifetime hazard handled via `onShutdown` (the app frees its GPU-backed scene whi
 alive). Verified: clean strict-warning build, **all doctests pass** (added `tests/test_application.cpp`
 for the boundary), a `KOI_MAX_FRAMES=3` run exits cleanly with zero GPU validation errors, and — the key
 proof — a `KOI_CAPTURE` frame is **byte-identical (same MD5)** to Step 16, so the refactor is provably
-behaviour-preserving. New tutorial `documentation/docs/18-engine-app-separation.html` + nav/index links;
+behaviour-preserving. New tutorial `docs/tuts/18-engine-app-separation.html` + nav/index links;
 README/ARCHITECTURE/ROADMAP/CLAUDE.md updated (capture cmd → `./build/koi-demo`). Deferred: semantic
 versioning, a dedicated API-reference doc, multiple sample apps, CI + golden images (the next move).
 
@@ -412,7 +412,7 @@ the behaviour-preservation check `fromEuler(e).toMat4() == Rz·Ry·Rx`, composit
 inverse, and slerp endpoints/midpoint/shortest-arc). `KOI_CAPTURE` frame is **visually identical** to
 Step 17 (only ~484 edge/highlight pixels differ, max delta 33/255 — last-bit FP noise from rebuilding
 the rotation matrix via a quaternion; not byte-identical, and that's expected for a representation swap).
-New tutorial `documentation/docs/19-quaternions.html` + nav/index links (and Step 17's forward reference
+New tutorial `docs/tuts/19-quaternions.html` + nav/index links (and Step 17's forward reference
 now links it); README/ARCHITECTURE/ROADMAP updated (quaternions ✅). Deferred: `Mat4` inverse, camera
 quaternions, and wiring `slerp` into the demo (kept for the skeletal-animation step).
 
@@ -439,7 +439,7 @@ inside/outside/straddle, and normal-matrix perpendicularity under non-uniform sc
 uniform-scale, so the `KOI_CAPTURE` frame is **visually unchanged** (helmet/sphere/cube/torus all correct) —
 measured vs a stashed pre-change capture: not byte-identical but only 240/3.69M bytes differ, max delta 23/255
 (last-bit FP noise from the CPU normal-matrix inverse, same class as Step 18). New tutorial
-`documentation/docs/20-geometry-utilities.html` + nav/index links;
+`docs/tuts/20-geometry-utilities.html` + nav/index links;
 README/ARCHITECTURE/ROADMAP updated (geometry utils ✅, normal matrix ✅, `Mat4` inverse ✅). Deferred:
 render-queue extraction + actual draw-culling, ray-cast picking UI, ray-plane/ray-sphere tests.
 
@@ -461,13 +461,13 @@ is **byte-for-byte identical** (same MD5) to Step 19 — the proof it's behaviou
 fire by temporarily yawing the camera 180° (`drew 0 / 9 (culled 9)`). Verified: warning-clean build, **all 96
 doctests pass** (new `tests/test_render_queue.cpp`: bounds computation + cull filter — in-view kept,
 behind/beside culled, straddling kept, order preserved, output cleared). New tutorial
-`documentation/docs/21-render-queue-and-frustum-culling.html` + nav/index-card links;
+`docs/tuts/21-render-queue-and-frustum-culling.html` + nav/index-card links;
 README/ARCHITECTURE/ROADMAP updated (render-queue pivot ✅, frustum culling ✅). Also **deprioritized
 cross-platform CI + golden images** across ROADMAP (still a 1.0 requirement, but deferred to after the learning
 tracks). Deferred: sorting the queue by material/pipeline, instancing, culling the shadow pass to the light
 frustum, ray-cast picking.
 
-> The tutorial pages under documentation/docs/ have inconsistent, stale navigation bars: newer steps were
+> The tutorial pages under docs/tuts/ have inconsistent, stale navigation bars: newer steps were
 > never backfilled (00-getting-started stops at Step 17; 18/19 never link to 20). Make every page's
 > `<nav class="site-nav">` the full, identical ordered navlink list (Home, Getting Started, 01…21) matching
 > `21-render-queue-and-frustum-culling.html`; keep `aria-current="page"` on each page's own self-link; don't
@@ -491,7 +491,7 @@ same shaders, but **blending on** (over operator) and **depth-write off** — an
 resolved background). New pure `partitionByBlend` (`RenderQueue.cpp`) splits the culled list and sorts the
 transparent items **back-to-front**; extracted `bindFrameLighting` to re-bind shadow/IBL after the pipeline
 switch. Demo gains two overlapping glass panes + a `T` toggle (sort on/off) to expose the artifact. Four new
-`partitionByBlend` tests (100 cases pass). New tutorial `documentation/docs/22-transparency-and-alpha-blending.html`
+`partitionByBlend` tests (100 cases pass). New tutorial `docs/tuts/22-transparency-and-alpha-blending.html`
 (+ nav backfilled across all pages, index card). Verified with `KOI_CAPTURE`: glass see-through + correct
 overlap compositing, no GPU errors, opaque scene unchanged. **Deferred:** solid shadows from translucent
 casters, per-object sort (mis-orders interpenetrating meshes → OIT), glTF alpha import.
@@ -508,7 +508,7 @@ of `recordScene`; vertices cross the boundary via a new `FrameView::debugLines` 
 **transient**, rebuilt-per-frame buffer (`uploadDebugLines`), so lines appear in `KOI_CAPTURE` too.
 `lastCameraViewProjection()` lets the demo **freeze** the culling frustum. Demo keys **`G`**/`L`/`F` +
 `KOI_DEBUG_DRAW` for headless captures; 7 new tests (**107 pass**). New tutorial
-`documentation/docs/23-debug-draw.html` (+ nav backfilled on all 24 pages, index card); README/ARCHITECTURE/ROADMAP
+`docs/tuts/23-debug-draw.html` (+ nav backfilled on all 24 pages, index card); README/ARCHITECTURE/ROADMAP
 updated. Verified: `KOI_DEBUG_DRAW` capture shows depth-occluded overlays; debug-**off** capture is **byte-identical
 to Step 21** (git-stash baseline). **Deferred:** x-ray (depth-off) mode, per-vertex normals viz, text labels.
 
@@ -526,7 +526,7 @@ so glyphs stay **crisp**, unlike the HDR-pass debug lines. Vertices cross the bo
 `FrameView::hudVertices` span, uploaded into a **transient** per-frame buffer (`uploadHud` / `recordHud`); threaded
 through both `renderFrame` and `captureFrame`. Demo `buildHud()` shows a live panel (FPS/frame-time, camera pos,
 debug toggles, legend); key **`H`** + `KOI_HUD` for headless captures. 11 new tests (**118 pass**, 2723 assertions).
-New tutorial `documentation/docs/24-hud-and-text.html` (+ nav backfilled on all 25 pages, index card);
+New tutorial `docs/tuts/24-hud-and-text.html` (+ nav backfilled on all 25 pages, index card);
 README/ARCHITECTURE/ROADMAP updated. Verified: `KOI_HUD` capture shows crisp text over the post-processed scene;
 HUD-**off** capture is **byte-identical to Step 22** (lower 86% of the frame identical HUD-on vs off; overlay pass
 skipped when empty). **Deferred:** SDF/proportional fonts, scissor clip, Unicode.
@@ -544,7 +544,7 @@ moved from a per-draw uniform into **per-instance vertex attributes**: `triangle
 + `mat4 inNormalMatrix` (9–12) with the UBO shrunk to shared `viewProj`; `shadow.vert` gains `mat4 inModel` + a
 `lightViewProj` uniform. Colour pass batches on `(material, mesh)`, shadow on **mesh alone**. Demo HUD gains a live
 `Draws N (M items)` line via a new `lastDrawStats()`; 6 new tests (**124 pass**). New tutorial
-`documentation/docs/25-instancing-and-draw-call-sorting.html` (+ nav backfill on all pages, index card);
+`docs/tuts/25-instancing-and-draw-call-sorting.html` (+ nav backfill on all pages, index card);
 README/ARCHITECTURE/ROADMAP updated. Verified: batching log shows colour **11→8**, shadow **11→5** draws; a git-stash
 before/after capture is **visually identical** (68/3,686,538 bytes differ, ≤5/255 — the harmless opaque reorder).
 **Deferred:** GPU-driven/indirect culling, deferred shading, render graph; transparent still one-per-call.

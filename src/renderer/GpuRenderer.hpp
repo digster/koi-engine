@@ -12,8 +12,8 @@
 //  world transform. This decouples "how to talk to the GPU" (here) from "what's
 //  in the world" (scene/Node).
 //
-//  See documentation/docs/01-window-and-render-loop.html for the GPU concepts named below and
-//  documentation/docs/06-meshes-and-scene-graph.html for meshes + the scene graph.
+//  See docs/tuts/01-window-and-render-loop.html for the GPU concepts named below and
+//  docs/tuts/06-meshes-and-scene-graph.html for meshes + the scene graph.
 // ============================================================================
 #pragma once
 
@@ -393,7 +393,7 @@ private:
     // Ensure the depth texture exists and matches (w, h), recreating it on resize.
     // Returns false (after logging) if creation fails. Called each frame before
     // the render pass, since the window — and thus the needed depth size — can
-    // change. See documentation/docs/04 for what a depth buffer is and why we need one.
+    // change. See docs/tuts/04 for what a depth buffer is and why we need one.
     bool ensureDepthTexture(Uint32 width, Uint32 height);
 
     // ----- Post-processing (Step 10) ---------------------------------------

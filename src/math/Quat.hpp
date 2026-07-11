@@ -34,7 +34,7 @@
 //
 //  Header-only and pure (no SDL), like Vec.hpp / Mat4.hpp, so it is trivially
 //  unit-testable (tests/test_quat.cpp). Concepts explained in the tutorial at
-//  documentation/docs/19-quaternions.html.
+//  docs/tuts/19-quaternions.html.
 // ============================================================================
 #pragma once
 

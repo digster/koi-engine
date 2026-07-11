@@ -23,7 +23,7 @@
 //  coloured vertices. That keeps it fully unit-testable (tests/test_debug_draw.cpp)
 //  and lets the GPU side (the line pipeline + per-frame upload in GpuRenderer)
 //  stay a thin consumer. Concepts are explained in
-//  documentation/docs/23-debug-draw.html.
+//  docs/tuts/23-debug-draw.html.
 // ============================================================================
 #pragma once
 

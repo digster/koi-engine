@@ -21,14 +21,14 @@ project-specific preferences stated by the project owner; global preferences in
 - Clean, performant, modern C++. RAII for resource ownership.
 - All engine code lives under `namespace koi`.
 
-## Documentation (`documentation/docs/`)
+## Documentation (`docs/tuts/`)
 
-- Every step has a tutorial in `documentation/docs/`.
+- Every step has a tutorial in `docs/tuts/`.
 - **Format: standalone HTML, no build step.** Docs are plain `.html` files that
   open directly in a browser (`file://`) — no static-site generator, Markdown
-  compiler, or bundler. Share one relatively-linked `documentation/docs/style.css`; keep it
+  compiler, or bundler. Share one relatively-linked `docs/tuts/style.css`; keep it
   **offline-friendly** (no CDNs, web fonts, or JavaScript). New tutorials are
-  authored as HTML following the existing pages, and `documentation/docs/index.html` links them.
+  authored as HTML following the existing pages, and `docs/tuts/index.html` links them.
 - **Crucial:** the docs are written **as a guide for a graphics-programming
   beginner**, not merely as code commentary. Wherever a graphics concept appears
   (swapchain, command buffer, render pass, present, depth buffer, MVP matrix,
@@ -52,7 +52,7 @@ project-specific preferences stated by the project owner; global preferences in
 ## Workflow
 
 - Update `ARCHITECTURE.md` on any architectural change; keep `README.md` and
-  `documentation/docs/` current.
+  `docs/tuts/` current.
 - Tests live in `tests/` (doctest). Add tests with new features and run them.
 - Append each prompt to `PROMPT.md`; write a session summary to `memory/YYYY-MM-DD.md`.
 - Generate a commit message after each change; **do not commit automatically.**

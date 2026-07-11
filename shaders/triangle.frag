@@ -14,19 +14,19 @@
 //
 //  Each light's contribution is summed; the ambient term is then added ONCE. Only the
 //  directional sun (light 0) casts a shadow. The three BRDF terms mirror renderer/Pbr.hpp.
-//  See the D/G/F helpers below and documentation/docs/13-pbr-materials.html.
+//  See the D/G/F helpers below and docs/tuts/13-pbr-materials.html.
 //
 //  Step 15 upgrades that ambient term from a flat constant into IMAGE-BASED LIGHTING: the
 //  surface is lit by the environment (the baked skybox) via a diffuse irradiance map and a
 //  specular prefiltered map + BRDF LUT (the split-sum approximation). This is what finally
 //  makes metals reflect their surroundings instead of looking dark. A runtime flag
-//  (ambient.w) switches between IBL and the old flat fill. See documentation/docs/16-image-based-lighting.html.
+//  (ambient.w) switches between IBL and the old flat fill. See docs/tuts/16-image-based-lighting.html.
 //
 //  Step 13 drives the material PER PIXEL from texture maps instead of scalars: an
 //  albedo map, a packed metallic-roughness map (glTF G=roughness, B=metallic), an AO
 //  map, and — the conceptually new part — a tangent-space NORMAL map. The normal map is
 //  applied via the TBN basis built from the interpolated normal + tangent, adding fine
-//  surface relief without extra geometry. See documentation/docs/14-texture-and-normal-maps.html.
+//  surface relief without extra geometry. See docs/tuts/14-texture-and-normal-maps.html.
 // ============================================================================
 #version 450
 
