@@ -9,16 +9,19 @@ in [`documentation/docs/`](documentation/docs/index.html) that explains the unde
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`documentation/docs/index.html`](documentation/docs/index.html) in a browser.
 
-> **Current status — Step 23:** **HUD & text**. The engine can now draw **text** on screen. An embedded
-> **8×8 bitmap font** is baked into a **texture atlas**, and a new pure [`Hud`](src/renderer/Hud.hpp) collector
-> turns strings and panels into **screen-space textured quads** (pixels → clip space in `hud.vert`). Crucially,
-> the HUD draws in its **own pass, last, onto the final LDR image** — *after* tone-mapping and FXAA — so glyphs
-> stay **pixel-crisp** (contrast the debug lines, which live in the HDR pass). One reserved solid-white atlas cell
-> lets filled panels share the text pipeline. The demo shows a live HUD (FPS/frame-time, camera position, debug
-> toggles, controls legend), toggled with `H`. *(Known deferrals: fixed-width bitmap font only — SDF/proportional
-> fonts, a scissor clip, and Unicode are future steps.)*
-> *(Step 22 added **debug draw** — immediate-mode line-list wireframes of AABBs, light icons and the camera
-> frustum, drawn into the HDR scene pass.)*
+> **Current status — Step 24:** **instancing & draw-call sorting**. The engine now draws the same scene with
+> **fewer, cheaper draw calls**. The flat render queue is **sorted** by batch key so identical work is adjacent,
+> then **instanced** — a run of identical objects collapses into a *single* draw call (`num_instances = N`). The
+> per-object transform moves out of a per-draw uniform into a **per-instance vertex buffer** the GPU walks itself
+> (`triangle.vert`/`shadow.vert` gained `mat4` instance attributes; the uniform shrinks to the shared `viewProj`).
+> The **colour pass** batches on `(material, mesh)`; the depth-only **shadow pass** batches on **mesh alone** (bigger
+> runs). Pure `sortByMaterialMesh`/`coalesceBatches` helpers in [`RenderQueue`](src/renderer/RenderQueue.hpp) plan
+> the batches (unit-tested); `GpuRenderer::buildFrameBatches` packs the instance buffers before the passes. The HUD
+> shows a live **Draws N (M items)** readout — the batching win. The rendered image is unchanged. *(Known deferrals:
+> CPU-side batching only — GPU-driven/indirect culling, deferred shading, and a render graph are future steps;
+> transparent objects still draw one-per-call.)*
+> *(Step 23 added **HUD & text** — an embedded 8×8 bitmap font baked into a texture atlas, drawn as a crisp
+> screen-space overlay after post-processing.)*
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.
@@ -134,12 +137,16 @@ Full instructions, controls, and tests: [documentation/docs/00-getting-started.h
   **bitmap font** and a **texture atlas** are, **screen-space** (pixel → clip) projection, and why UI is a separate
   **overlay pass in LDR** drawn *after* post-processing so glyphs stay crisp — plus the pure `Hud` collector and
   the half-texel **atlas-bleed** fix, mapped to the Step 23 code.
+- [documentation/docs/25-instancing-and-draw-call-sorting.html](documentation/docs/25-instancing-and-draw-call-sorting.html)
+  — **draw-call batching**: what a draw call costs (CPU submit + state changes), **sorting** by material to cut
+  redundant binds, **instanced** rendering (one call, many copies) via per-**instance** vertex attributes and
+  `gl_InstanceIndex`, and why the transform moves from a uniform to an instance buffer — mapped to the Step 24 code.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — the big-picture design and the *why* behind it.
 
 ## Roadmap
 
 The engine grows one runnable milestone at a time. See **[ROADMAP.md](ROADMAP.md)** for the full
-picture — every completed step (0–23) and the phased plan beyond: numbered next steps, then themed
+picture — every completed step (0–24) and the phased plan beyond: numbered next steps, then themed
 tracks across rendering, animation, physics, audio, tooling, and gameplay.
 
 ## Requirements

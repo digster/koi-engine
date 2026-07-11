@@ -3,7 +3,7 @@
 This document captures the **big-picture design** of Koi Engine — the parts you
 can't see by reading a single file — and the reasoning behind the structural
 choices. It evolves as the engine grows; right now it describes the foundation
-through Step 23 (window & render loop, the first triangle, geometry in GPU
+through Step 24 (window & render loop, the first triangle, geometry in GPU
 vertex/index buffers, a 3D cube with hand-rolled math + MVP uniform + depth
 buffer, a fly camera driven by keyboard/mouse input with delta-time, a **mesh**
 abstraction drawn through a **scene graph** of parent/child transforms,
@@ -28,8 +28,10 @@ matrix** for correct lighting under non-uniform scale, and a **render-queue** ex
 scene-graph walk into a flat draw list — the architecture pivot behind **frustum culling** (skip off-screen
 draws), **transparency** — a second blend-on/depth-write-off pipeline with a back-to-front sort for see-through
 surfaces — and **debug draw**, an immediate-mode **line** overlay (bounding boxes, light icons, the camera
-frustum) that makes the otherwise-invisible geometry layer visible on screen, and a **HUD / text** overlay —
-an embedded bitmap-font atlas drawn as crisp screen-space quads in a final pass after post-processing).
+frustum) that makes the otherwise-invisible geometry layer visible on screen, a **HUD / text** overlay —
+an embedded bitmap-font atlas drawn as crisp screen-space quads in a final pass after post-processing — and
+**instanced rendering**, which sorts that draw list by batch key and collapses identical objects into single
+instanced draw calls across the colour and shadow passes).
 
 ## Guiding principles
 
@@ -88,7 +90,7 @@ bundle. See the *Engine / app separation (Step 17)* section below.
 | `Light` | [src/scene/Light.hpp](src/scene/Light.hpp) | Header-only, SDL-free (Step 11): a `Light` struct (type = directional/point/spot, position, direction, colour, intensity, range, spot-cone cosines, an `enabled` flag) plus pure helpers (`attenuation`, `spotFactor`, `activeLightCount`) that mirror the shader math for headless tests (`tests/test_light.cpp`). The **app** (`DemoApp`) owns a `std::vector<Light>` and hands it to the renderer each frame via `FrameView`, exactly like the camera + `PostSettings`. `MAX_LIGHTS` matches the shader's fixed array size. |
 | `ModelLoader` | [src/renderer/ModelLoader.*](src/renderer/) | `loadModel(path)` reads a model file into a **`LoadedModel`** (a `Mesh` **+** an optional `Material`): `.obj` via **tinyobjloader** (de-duplicating its separate v/vt/vn indices; geometry only — material null), `.glb/.gltf` via **cgltf**, which since **Step 16** also imports the file's PBR **material** (base-colour / metallic-roughness / normal / occlusion / **emissive** maps + factors). Its images (PNG/JPG) are decoded by **stb_image** — embedded `.glb` `buffer_view`s straight from memory, external URIs via `loadTexture` — with colour maps flagged **sRGB**. The single TU that pulls in those three third-party headers (defines their `*_IMPLEMENTATION`) — compiled warning-free (`-w`). |
 | `Mesh` | [src/renderer/Mesh.*](src/renderer/) | RAII owner of one shape's vertex + index buffers (+ index count + element size: 16-bit for primitives, 32-bit for big loaded models). Also caches a **model-space `Aabb`** (Step 20), computed from the vertices in `createMesh` — the box frustum culling transforms + tests. Holds a **non-owning** device pointer used only to release those buffers — so every `Mesh` must die before the renderer's device. Created via `GpuRenderer::createMesh`; held by `shared_ptr` so many nodes share one. Non-copyable/non-movable. |
-| `RenderQueue` | [src/renderer/RenderQueue.*](src/renderer/) | The Step 20 flat draw list. `RenderItem { mesh, material, world, worldBounds }`; `computeLocalBounds` (a mesh's model-space box), `buildRenderQueue` (walk the node tree once → flat list), `cullToFrustum` (keep items whose world bounds hit the camera `Frustum`), and (Step 21) `partitionByBlend` (split the culled list by `Material::alphaMode` into opaque + a **back-to-front-sorted** transparent bucket). The pure helpers are unit-tested with no GPU (`tests/test_render_queue.cpp`); the *traverse → list → submit* split is the pivot behind culling/sorting/instancing/transparency. |
+| `RenderQueue` | [src/renderer/RenderQueue.*](src/renderer/) | The Step 20 flat draw list. `RenderItem { mesh, material, world, worldBounds }`; `computeLocalBounds` (a mesh's model-space box), `buildRenderQueue` (walk the node tree once → flat list), `cullToFrustum` (keep items whose world bounds hit the camera `Frustum`), and (Step 21) `partitionByBlend` (split the culled list by `Material::alphaMode` into opaque + a **back-to-front-sorted** transparent bucket), plus (Step 24) `DrawBatch` + `sortByMaterialMesh`/`sortByMesh` (stable pointer-key sorts) + `coalesceBatches` (runs of equal key → one instanced draw). The pure helpers are unit-tested with no GPU (`tests/test_render_queue.cpp`); the *traverse → list → submit* split is the pivot that culling/sorting/**instancing**/transparency all build on. |
 | `DebugDraw` | [src/renderer/DebugDraw.*](src/renderer/) | The Step 22 immediate-mode line overlay. A pure, GPU-free collector: `DebugVertex { position, color }` plus `line`/`box`/`frustum`/`ray`/`cross` building a flat **line-list** vertex array (`box` and `frustum` share a 12-edge topology; `frustum` unprojects the NDC cube through `inverse(viewProj)`). Rebuilt every frame by the app and handed over via `FrameView::debugLines`; the renderer uploads it into a **transient** vertex buffer (recreated per frame) and draws it through a minimal unlit `debugLinePipeline_` (LINELIST, depth-test on / **write off**) in `recordDebug` at the end of `recordScene`. Unit-tested with no GPU (`tests/test_debug_draw.cpp`). |
 | `Hud` / `Font` | [src/renderer/Hud.*](src/renderer/), [src/renderer/Font.hpp](src/renderer/Font.hpp) | The Step 23 immediate-mode **HUD / text** overlay. `Font.hpp` is the embedded public-domain **8×8 bitmap font** table + atlas layout (`glyphCell`/`cellUV` with a half-texel inset), the single source of truth shared by the collector and the atlas bake. `Hud` is a pure, GPU-free collector: `HudVertex { pos, uv, color }` plus `text` (one 6-vertex quad per glyph, `\n`-aware, `?` fallback) and `rect` (a panel sampling the reserved solid-white cell) building a flat **triangle-list** in **pixel** coordinates. Rebuilt every frame by the app and handed over via `FrameView::hudVertices`; the renderer bakes the atlas once (`createHudResources`, nearest sampler), uploads the vertices into a **transient** buffer (`uploadHud`), and draws them through a textured, alpha-blended, depth-less `hudPipeline_` (`hud.vert`/`hud.frag`) in a **final overlay pass on the LDR image, after post** (`recordHud`) — so text stays crisp. Unit-tested with no GPU (`tests/test_hud.cpp`). |
 | `Texture` | [src/renderer/Texture.*](src/renderer/) | RAII owner of one `SDL_GPUTexture` (sampled image). Same non-owning-device lifetime rule as `Mesh`. Created via `GpuRenderer::loadTexture` (BMP → SDL; PNG/JPG → **stb_image**; decode → upload) or `createTextureFromRGBA` (already-decoded bytes, e.g. embedded glTF images), with an **sRGB** option for colour maps (Step 16); held by `shared_ptr`. A *sampler* (how to read it) is separate, reusable device state owned by the renderer. |
@@ -794,6 +796,34 @@ boundary — but it draws **text**, in **screen space**, and (crucially) in its 
   the debug-toggle states, and a controls legend; **`H`** toggles it, `KOI_HUD` enables it for a headless capture.
   **Documented deferrals:** fixed-width bitmap font only (no SDF/proportional), no scissor clip, ASCII only. With
   nothing queued the overlay pass is skipped and the frame is byte-identical to Step 22.
+
+### Draw-call batching (Step 24)
+
+The render queue (Step 20) existed to enable this: with drawing split into a flat *list*, the frame can now
+**sort** that list to cut state changes and **instance** identical items into single draw calls. It's the engine's
+first performance step, and it moves per-object transforms out of a uniform and into a per-instance vertex buffer:
+
+- **Prepare, then submit.** `GpuRenderer::buildFrameBatches` runs the whole plan **before any render pass begins**
+  (so the instance-buffer uploads, which each submit their own command buffer, finish before the passes draw): cull
+  → `partitionByBlend` → `sortByMaterialMesh(opaqueItems_)` → pack every visible transform into a transient
+  **instance buffer** → `coalesceBatches`. The record passes (`recordScene`, `renderShadowPass`) then just bind + draw
+  the prepared `DrawBatch`es. This deepens the *traverse → list → submit* split into *traverse → list → **batch** →
+  submit*.
+- **Instance-rate attributes.** The per-object matrices left the per-draw uniform and became **instance-rate vertex
+  attributes** at a second buffer slot (advanced once per instance, not per vertex). `triangle.vert` reads
+  `mat4 inModel` (locations 5–8) + `mat4 inNormalMatrix` (9–12) and its UBO shrinks to the shared `viewProj` (the MVP
+  is formed in-shader as `viewProj * inModel`); `shadow.vert` reads `mat4 inModel` + a `lightViewProj` uniform. The
+  color pipeline packs `InstanceData { model, normalMatrix }` (128 B); the depth-only shadow pipeline needs just the
+  `model` matrix (64 B).
+- **Two batch keys.** The color pass keys on **(material, mesh)** — a run must share the bound textures *and* the
+  geometry. The shadow pass is depth-only, so it keys on **mesh alone** (material-blind → bigger runs) and, as before,
+  is never camera-culled. Transparent items keep their back-to-front order (blending isn't commutative), so they are
+  *not* material-batched — each draws as a single instance at its own slot in the color instance buffer.
+- **Correctness + measurement.** Opaque reordering is safe (the depth buffer resolves visibility), so the image is
+  **visually identical** to Step 23 — only a handful of pixels differ, from float rounding under the new draw order.
+  `GpuRenderer::lastDrawStats()` exposes items-vs-draw-calls, which `DemoApp::buildHud` shows as a live **Draws N
+  (M items)** line. **Documented deferrals:** CPU-side batching only (no GPU-driven/indirect culling, deferred
+  shading, or render graph yet); transparent objects still draw one-per-call.
 
 ## Lifecycle & ownership
 

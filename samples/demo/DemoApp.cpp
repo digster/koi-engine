@@ -367,10 +367,16 @@ void DemoApp::setupLights() {
     KOI_INFO("Lights: 1 directional sun (shadow caster) + 2 point + 1 spot.");
 }
 
-void DemoApp::onUpdate(Engine& /*engine*/, float dt) {
+void DemoApp::onUpdate(Engine& engine, float dt) {
     // Continuous input: read the CURRENT keyboard state (not key-down events) so held
     // keys produce smooth, repeat-rate-independent movement.
     camera_.processKeyboard(SDL_GetKeyboardState(nullptr), dt);
+
+    // Cache the previous frame's draw-call stats (Step 24) for the HUD. These reflect
+    // the frame just rendered — one frame stale, imperceptible on screen.
+    const GpuRenderer::DrawStats stats = engine.renderer().lastDrawStats();
+    drawItems_ = stats.items;
+    drawCalls_ = stats.drawCalls;
 
     // Smooth the frame rate for a steady HUD readout: a raw 1/dt jitters every frame,
     // so blend it into an exponential moving average (90% history, 10% new sample).
@@ -458,20 +464,23 @@ void DemoApp::buildHud() {
     const Vec3 cam = camera_.position();
     char title[48];
     char fpsLine[48];
+    char batchLine[48];
     char camLine[64];
     char toggleLine[80];
     char helpLine[64];
-    std::snprintf(title, sizeof(title), "Koi Engine - Step 23 HUD");
+    std::snprintf(title, sizeof(title), "Koi Engine - Step 24 HUD");
     std::snprintf(fpsLine, sizeof(fpsLine), "FPS %3.0f  (%.2f ms)",
                   fps_, fps_ > 0.0f ? 1000.0f / fps_ : 0.0f);
+    // Step 24: the batching win — drawables submitted vs actual GPU draw calls.
+    std::snprintf(batchLine, sizeof(batchLine), "Draws %u  (%u items)", drawCalls_, drawItems_);
     std::snprintf(camLine, sizeof(camLine), "Cam %6.2f %6.2f %6.2f", cam.x, cam.y, cam.z);
     std::snprintf(toggleLine, sizeof(toggleLine), "G bounds:%-3s  L lights:%-3s  F frustum:%-3s",
                   debugBounds_ ? "on" : "off", debugLights_ ? "on" : "off",
                   debugFrustum_ ? "on" : "off");
     std::snprintf(helpLine, sizeof(helpLine), "WASD move   mouse look   H hud");
 
-    const char* lines[] = {title, fpsLine, camLine, toggleLine, helpLine};
-    constexpr int kLineCount = 5;
+    const char* lines[] = {title, fpsLine, batchLine, camLine, toggleLine, helpLine};
+    constexpr int kLineCount = 6;
 
     // Size a translucent backing panel to the widest line so the text stays readable
     // over any scene. Draw the panel FIRST (behind) then the text — draw order is the

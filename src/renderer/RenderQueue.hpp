@@ -30,6 +30,7 @@
 #pragma once
 
 #include <cstddef>  // size_t
+#include <cstdint>  // uint32_t — DrawBatch instance indices
 #include <span>
 #include <vector>
 
@@ -114,5 +115,41 @@ void partitionByBlend(const std::vector<const RenderItem*>& visible,
                       const Vec3& cameraPos, bool sortTransparent,
                       std::vector<const RenderItem*>& opaqueOut,
                       std::vector<const RenderItem*>& transparentOut);
+
+// ---------------------------------------------------------------------------
+//  Draw-call batching (Step 24) — the second thing the render queue unlocks.
+// ---------------------------------------------------------------------------
+//  Drawing every item as its own call re-binds the material + mesh and pushes a
+//  fresh transform each time — pure per-draw overhead. If we SORT the list so
+//  identical work is adjacent, we can (a) skip the redundant binds and (b)
+//  collapse a run of identical items into ONE instanced draw. These pure helpers
+//  produce that plan; the renderer consumes it. No GPU here → unit-tested.
+
+// One instanced draw: `count` copies of `mesh` (with `material`), whose per-copy
+// transforms occupy instance-buffer slots [first, first + count). `material` is
+// null for the shadow pass, which batches by mesh alone (depth is material-blind).
+struct DrawBatch {
+    const Mesh*     mesh     = nullptr;
+    const Material* material = nullptr;
+    std::uint32_t   first    = 0;  // first instance index in the frame's instance buffer
+    std::uint32_t   count    = 0;  // number of instances (copies) in this batch
+};
+
+// STABLE-sort `items` so identical draws are adjacent, ready to coalesce. The main
+// color pass keys on (material, mesh) — a batch must share BOTH the bound textures
+// and the geometry. The shadow pass is depth-only, so material is irrelevant and it
+// keys on mesh ALONE (bigger runs). Stable so equal-key items keep their queue order
+// (deterministic frame to frame). Pointer identity is the key: meshes/materials are
+// shared by shared_ptr, so same pointer ⇒ same GPU state.
+void sortByMaterialMesh(std::vector<const RenderItem*>& items);
+void sortByMesh(std::vector<const RenderItem*>& items);
+
+// Walk an ALREADY-SORTED list and emit one DrawBatch per maximal run of items that
+// share the batch key: (mesh AND material) when `byMaterial` is true, mesh alone
+// otherwise. `first` is the run's start index in the list (which the renderer mirrors
+// when it packs the instance buffer in the same order), `count` its length. Clears
+// `out` first. Pure → tested headlessly in tests/test_render_queue.cpp.
+void coalesceBatches(const std::vector<const RenderItem*>& sorted, bool byMaterial,
+                     std::vector<DrawBatch>& out);
 
 }  // namespace koi

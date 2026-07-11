@@ -1,6 +1,7 @@
 #include "renderer/RenderQueue.hpp"
 
-#include <algorithm>  // std::stable_sort — the back-to-front transparency sort
+#include <algorithm>   // std::stable_sort — the back-to-front transparency sort
+#include <functional>  // std::less<const void*> — a defined total order over pointers
 
 #include "renderer/Mesh.hpp"   // Mesh::localBounds()
 #include "scene/Material.hpp"  // Material::alphaMode — the opaque/blend split
@@ -72,6 +73,48 @@ void partitionByBlend(const std::vector<const RenderItem*>& visible,
                          return distanceSqToCamera(*a, cameraPos) >
                                 distanceSqToCamera(*b, cameraPos);
                      });
+}
+
+void sortByMaterialMesh(std::vector<const RenderItem*>& items) {
+    // std::less<const void*> gives a well-defined TOTAL ORDER over unrelated pointers
+    // (raw `<` on pointers into different objects is not portably ordered). We only
+    // need *an* order that puts equal keys together — the values are meaningless.
+    std::less<const void*> before;
+    std::stable_sort(items.begin(), items.end(),
+                     [&before](const RenderItem* a, const RenderItem* b) {
+                         if (a->material != b->material) {
+                             return before(a->material, b->material);
+                         }
+                         return before(a->mesh, b->mesh);
+                     });
+}
+
+void sortByMesh(std::vector<const RenderItem*>& items) {
+    std::less<const void*> before;
+    std::stable_sort(items.begin(), items.end(),
+                     [&before](const RenderItem* a, const RenderItem* b) {
+                         return before(a->mesh, b->mesh);
+                     });
+}
+
+void coalesceBatches(const std::vector<const RenderItem*>& sorted, bool byMaterial,
+                     std::vector<DrawBatch>& out) {
+    out.clear();
+    for (std::size_t i = 0; i < sorted.size(); ++i) {
+        const RenderItem* item = sorted[i];
+        // Extend the current run if this item shares its key with the previous one;
+        // otherwise start a new batch. (Only valid because the list is pre-sorted, so
+        // all items with a given key are contiguous.)
+        const bool extends = !out.empty() && out.back().mesh == item->mesh &&
+                             (!byMaterial || out.back().material == item->material);
+        if (extends) {
+            out.back().count += 1;
+        } else {
+            out.push_back(DrawBatch{item->mesh,
+                                    byMaterial ? item->material : nullptr,
+                                    static_cast<std::uint32_t>(i), 1});
+        }
+    }
 }
 
 }  // namespace koi

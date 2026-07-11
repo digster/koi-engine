@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instancing &amp; Draw-call Sorting · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
+    <a class="navlink" href="16-image-based-lighting.html">Image-based Lighting</a>
+    <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
+    <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
+    <a class="navlink" href="19-quaternions.html">Quaternions</a>
+    <a class="navlink" href="20-geometry-utilities.html">Geometry Utilities</a>
+    <a class="navlink" href="21-render-queue-and-frustum-culling.html">Render Queue &amp; Culling</a>
+    <a class="navlink" href="22-transparency-and-alpha-blending.html">Transparency &amp; Blending</a>
+    <a class="navlink" href="23-debug-draw.html">Debug Draw</a>
+    <a class="navlink" href="24-hud-and-text.html">HUD &amp; Text</a>
+    <a class="navlink" href="25-instancing-and-draw-call-sorting.html" aria-current="page">Instancing &amp; Sorting</a>
+  </div>
+</nav>
+
+<main>
+  <h1>Instancing &amp; Draw-call Sorting</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 24:</strong> draw the same picture with <em>fewer, cheaper</em> draw calls. Until now the
+    renderer has issued <strong>one draw call per object</strong>, and each one re-binds that object's textures and
+    mesh and pushes a fresh transform — a per-draw tax we've paid since the first cube. This step spends the
+    <a href="21-render-queue-and-frustum-culling.html">render queue</a> the way its own header promised: <strong>sort</strong>
+    the draw list so identical work is adjacent (killing redundant state changes), then <strong>instance</strong> —
+    collapse a run of identical objects into a <em>single</em> draw call that stamps the mesh once per copy.</p>
+    <p>It's the engine's first real <em>performance</em> step, and it changes how every object is drawn: the
+    per-object transform moves out of a uniform and into a per-instance buffer the GPU walks itself.</p>
+  </blockquote>
+
+  <h2>1. What a draw call actually costs</h2>
+
+  <p>A "draw call" (<code>SDL_DrawGPUIndexedPrimitives</code>) looks cheap — one function call — but each one makes
+  the driver do real work: validate the bound state, translate it into GPU commands, and flush any
+  <strong>state changes</strong> you made first (a new pipeline, new textures, a new vertex buffer, a pushed
+  uniform). Ten thousand objects means ten thousand of these, and the <strong>CPU</strong> — not the GPU — becomes
+  the bottleneck, spending all its time <em>describing</em> work instead of the GPU <em>doing</em> it. The two
+  classic cures are complementary:</p>
+
+  <pre class="diagram">SORT    reorder draws so identical state is adjacent   → stop re-binding what didn't change
+INSTANCE collapse identical draws into ONE call        → one "draw N copies" instead of N draws</pre>
+
+  <p>Both only became possible at <a href="21-render-queue-and-frustum-culling.html">Step 20</a>, when drawing was
+  split from traversal into a flat <strong>list</strong> of <code>RenderItem</code>s. You can reorder a list; you
+  can't reorder a recursive tree walk mid-drawing.</p>
+
+  <h2>2. Sorting: make identical work adjacent</h2>
+
+  <p>Opaque objects can be drawn in <em>any</em> order — the <a href="04-3d-cube-mvp-and-depth.html">depth buffer</a>
+  resolves what's visible regardless. That freedom is the opening: if we <strong>sort</strong> the opaque list by
+  what state each draw needs, all the draws sharing a texture set and a mesh end up next to each other, and the
+  renderer can bind that state <em>once</em> for the whole run instead of re-binding it for every object. Koi sorts
+  the opaque items by a <strong>batch key</strong> of <code>(material, mesh)</code> — a <strong>stable</strong> sort,
+  so equal-key items keep their order and the frame stays deterministic.</p>
+
+  <p>One caveat: <strong>transparent</strong> objects can <em>not</em> be reordered. Alpha blending is
+  order-dependent (Step 21's <a href="22-transparency-and-alpha-blending.html">back-to-front rule</a>), so the
+  translucent panes keep their far→near order and are drawn one at a time. Only the opaque pass is batched.</p>
+
+  <h2>3. Instancing: one draw, many copies</h2>
+
+  <p>Sorting sets up the bigger win. <strong>Instanced rendering</strong> tells the GPU: "draw this mesh
+  <strong>N times</strong>." A single call renders every copy, and inside the vertex shader a built-in counter,
+  <code>gl_InstanceIndex</code>, runs <code>0, 1, 2, …</code> so each copy can look up its own data. The mesh's
+  vertices and indices are read once; only the <em>per-copy</em> data changes.</p>
+
+  <p>Where does that per-copy data come from? A second vertex buffer — but bound at a different <strong>input
+  rate</strong>. A normal vertex attribute advances <em>once per vertex</em>; an <strong>instance</strong>-rate
+  attribute advances <em>once per instance</em>. So the GPU fetches a fresh transform each time it moves to the next
+  copy, while re-reading the same mesh vertices underneath.</p>
+
+  <pre class="diagram">buffer slot 0  (per-VERTEX)     position, colour, uv, normal, tangent   → advances every vertex
+buffer slot 1  (per-INSTANCE)   this copy's model + normal matrix        → advances every instance
+
+  DrawIndexed(indexCount, num_instances = N)     ← N copies, ONE call</pre>
+
+  <h2>4. Why the vertex shader had to change</h2>
+
+  <p>Here is the conceptual shift. Before this step, each draw pushed a <strong>uniform</strong> holding that one
+  object's matrices (<code>mvp</code>, <code>model</code>, <code>normalMatrix</code>). A uniform is <em>constant for
+  the whole draw</em> — which is fine when a draw is one object, but useless when a single draw now covers <em>many</em>
+  objects that each need a <em>different</em> transform. So the transform moves out of the uniform and into the
+  per-instance buffer, and the uniform shrinks to the one thing every copy really does share — the camera:</p>
+
+  <pre class="diagram">before (per draw):  UBO { mat4 mvp; mat4 model; mat4 normalMatrix; }   // one object's transforms
+after  (Step 24):   UBO { mat4 viewProj; }                             // the camera, shared by all
+                    in  mat4 inModel;         // per-instance attribute (locations 5–8)
+                    in  mat4 inNormalMatrix;  // per-instance attribute (locations 9–12)
+                    → gl_Position = viewProj * inModel * position;      // MVP formed in-shader</pre>
+
+  <p>A <code>mat4</code> attribute occupies <strong>four</strong> consecutive attribute locations (one per column),
+  so <code>inModel</code> takes 5–8 and <code>inNormalMatrix</code> takes 9–12, right after the mesh's five
+  per-vertex attributes (0–4). The <a href="19-quaternions.html">normal matrix</a> is still
+  <code>transpose(inverse(model))</code>, precomputed <em>on the CPU</em> per instance — inverting a matrix in the
+  shader would be wasteful, and it's needed because the demo's satellites are <strong>non-uniformly scaled</strong>.</p>
+
+  <h2>5. Two passes, two batch keys</h2>
+
+  <p>The engine draws the scene <em>twice</em>: once for the <a href="10-models-and-shadows.html">shadow map</a>
+  (depth from the light's view) and once for the lit image. Both get instanced — but they batch on
+  <strong>different keys</strong>, and the reason is instructive:</p>
+
+  <pre class="diagram">COLOUR pass   key = (material, mesh)   a batch must share BOTH textures AND geometry
+SHADOW pass   key = (mesh)             depth writes no colour — MATERIAL is irrelevant, so mesh alone</pre>
+
+  <p>The shadow pass ignoring material means it forms <em>bigger</em> batches: in the demo it draws every cube
+  (whatever its material) in one call and every plane in another. It's also the pass that draws the <em>whole</em>
+  scene — it is deliberately <strong>never camera-culled</strong>, because an object behind the camera can still cast
+  a shadow into view.</p>
+
+  <h2>6. In the engine</h2>
+
+  <p>The logic that decides <em>what</em> to draw is separated from the code that <em>submits</em> it — the same
+  spirit as the render queue. A new <strong>prepare</strong> phase runs <em>before</em> any render pass begins:</p>
+
+  <ul>
+    <li><strong>Pure helpers</strong> in <a href="21-render-queue-and-frustum-culling.html"><code>RenderQueue</code></a>:
+    <code>sortByMaterialMesh</code> / <code>sortByMesh</code> (stable sorts by pointer key) and
+    <code>coalesceBatches</code>, which walks the sorted list and emits one <code>DrawBatch {mesh, material, first,
+    count}</code> per run of equal keys. No GPU state → unit-tested headlessly (<code>tests/test_render_queue.cpp</code>).</li>
+    <li><strong><code>GpuRenderer::buildFrameBatches</code></strong> ties it together each frame: cull → partition
+    (opaque/transparent) → sort → pack every visible transform into a transient <strong>instance buffer</strong> →
+    coalesce the batches. It runs up front, so the instance-buffer upload (which submits on its own command buffer)
+    is finished before the passes draw.</li>
+    <li><strong>The record passes</strong> then just bind + draw: for each opaque <code>DrawBatch</code>, bind the
+    material + mesh once and issue <code>DrawIndexed(indexCount, num_instances = batch.count)</code>, pointing the
+    instance buffer at that batch's slice via a byte offset.</li>
+  </ul>
+
+  <p>The instance buffers are <strong>transient</strong> — rebuilt and re-uploaded every frame (the transforms change
+  as things animate), released-and-recreated exactly like the <a href="23-debug-draw.html">debug</a> and
+  <a href="24-hud-and-text.html">HUD</a> buffers, so no two frames ever share one and nothing needs hand-syncing.</p>
+
+  <h2>7. Seeing the win</h2>
+
+  <p>The <a href="24-hud-and-text.html">HUD</a> from the last step earns its keep here: it shows a live
+  <strong>Draws N (M items)</strong> readout — the gap is exactly what batching saved. In the demo the four cubes that
+  share a mesh <em>and</em> a material collapse into one instanced draw, so the colour pass reports <strong>8 draws for
+  11 items</strong>; the shadow pass, batching by mesh alone, folds all five cubes and all three planes together and
+  reports <strong>5 draws for 11 items</strong>. Small numbers here — but the <em>mechanism</em> is the one that scales
+  to thousands of copies for the cost of one call. And because the image is unchanged, this is a pure win: a Step-24
+  frame is visually identical to Step 23 (differing only in a handful of pixels, from the harmless reordering of
+  opaque draws changing float rounding by a bit).</p>
+
+  <h2>8. Honest limitations</h2>
+
+  <p>This is CPU-side batching, and it's the first rung. Each object is still <em>an</em> item the CPU visits — we've
+  cut the draw <em>calls</em>, not the per-object bookkeeping. The next rungs on the scaling track push the work onto
+  the GPU: <strong>GPU-driven culling</strong> (a compute shader decides visibility), an <strong>indirect</strong>
+  draw that reads its parameters from a GPU buffer, and eventually a <strong>render graph</strong> to manage the
+  growing web of passes. Transparent objects also still draw one-per-call (order-dependent blending forbids batching
+  them) — a limitation order-independent transparency would lift.</p>
+
+  <h2>9. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Watch the counter.</strong> <code>cmake --build build &amp;&amp; ./build/koi-demo</code>, press
+    <kbd>H</kbd> for the HUD, and read the <strong>Draws / items</strong> line. Fly around: as objects leave the view
+    they're <a href="21-render-queue-and-frustum-culling.html">culled</a>, so both numbers drop together.</li>
+    <li><strong>Read the batching log.</strong> The renderer logs <code>Batching: N items → M color draws … shadow
+    N → K draws</code> — the same numbers, plus the shadow pass's bigger mesh-only batches.</li>
+    <li><strong>Confirm parity.</strong> <code>KOI_CAPTURE=out.bmp ./build/koi-demo</code> renders the same scene as
+    before this step — instancing changes <em>how</em> it's drawn, not <em>what</em> is drawn.</li>
+  </ol>
+
+  <h2>10. What's next</h2>
+
+  <p>➡️ With sorting + instancing in place, the scaling track opens up: <strong>GPU-driven culling</strong> and
+  <strong>indirect draws</strong> (move the per-object work off the CPU entirely), <strong>deferred / clustered
+  shading</strong> (decouple lighting cost from geometry so many lights stay cheap), and a <strong>render graph</strong>
+  to tame the pass wiring. The instance buffer built here is also the natural home for a future
+  <strong>particle system</strong>'s per-billboard data. See the <a href="../../ROADMAP.md">roadmap</a> for the
+  sequenced plan.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

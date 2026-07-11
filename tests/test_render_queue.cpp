@@ -11,6 +11,8 @@
 // ============================================================================
 #include <doctest/doctest.h>
 
+#include <algorithm>  // std::find — locating an item in the sorted pointer list
+#include <cstdint>    // std::uint32_t — DrawBatch counts
 #include <vector>
 
 #include "math/Geometry.hpp"
@@ -232,4 +234,147 @@ TEST_CASE("partitionByBlend clears both outputs before filling them") {
 
     CHECK(opaqueOut.size() == 1);
     CHECK(transparentOut.size() == 1);
+}
+
+// ----------------------------------------------------------------------------
+//  Draw-call batching (Step 24) — sortByMaterialMesh / sortByMesh / coalesceBatches.
+//  The helpers only COMPARE the mesh/material pointers (never dereference them), so
+//  distinct sentinel addresses stand in for real GPU meshes/materials — no device.
+// ----------------------------------------------------------------------------
+namespace {
+int meshTokenA, meshTokenB, meshTokenC;
+const Mesh* const kMeshA = reinterpret_cast<const Mesh*>(&meshTokenA);
+const Mesh* const kMeshB = reinterpret_cast<const Mesh*>(&meshTokenB);
+const Mesh* const kMeshC = reinterpret_cast<const Mesh*>(&meshTokenC);
+int matTokenA, matTokenB;
+const Material* const kMatA = reinterpret_cast<const Material*>(&matTokenA);
+const Material* const kMatB = reinterpret_cast<const Material*>(&matTokenB);
+
+RenderItem batchItem(const Mesh* mesh, const Material* material) {
+    RenderItem it;
+    it.mesh     = mesh;
+    it.material = material;
+    return it;
+}
+
+// Find the batch for a given (mesh, material) key, or a null-mesh sentinel if absent.
+DrawBatch findBatch(const std::vector<DrawBatch>& batches, const Mesh* mesh,
+                    const Material* material) {
+    for (const DrawBatch& b : batches) {
+        if (b.mesh == mesh && b.material == material) return b;
+    }
+    return DrawBatch{};
+}
+}  // namespace
+
+TEST_CASE("coalesceBatches groups a sorted list by (mesh, material)") {
+    // A pre-sorted list: two (A,0), then one (B,0) — material changes — then one (B,1)
+    // — mesh changes. Three batches, contiguous by first index.
+    std::vector<RenderItem> items = {
+        batchItem(kMeshA, kMatA), batchItem(kMeshA, kMatA),
+        batchItem(kMeshA, kMatB), batchItem(kMeshB, kMatB),
+    };
+    const std::vector<const RenderItem*> sorted = asPointers(items);
+
+    std::vector<DrawBatch> batches;
+    coalesceBatches(sorted, /*byMaterial=*/true, batches);
+
+    REQUIRE(batches.size() == 3);
+    CHECK(batches[0].mesh == kMeshA); CHECK(batches[0].material == kMatA);
+    CHECK(batches[0].first == 0);     CHECK(batches[0].count == 2);
+    CHECK(batches[1].mesh == kMeshA); CHECK(batches[1].material == kMatB);
+    CHECK(batches[1].first == 2);     CHECK(batches[1].count == 1);
+    CHECK(batches[2].mesh == kMeshB); CHECK(batches[2].first == 3);
+    CHECK(batches[2].count == 1);
+}
+
+TEST_CASE("coalesceBatches by mesh alone ignores material (the shadow pass)") {
+    // Same items, but byMaterial=false: the two mesh-A items batch together even though
+    // their materials differ, and the batch carries a null material.
+    std::vector<RenderItem> items = {
+        batchItem(kMeshA, kMatA), batchItem(kMeshA, kMatB),
+        batchItem(kMeshA, kMatA), batchItem(kMeshB, kMatB),
+    };
+    const std::vector<const RenderItem*> sorted = asPointers(items);
+
+    std::vector<DrawBatch> batches;
+    coalesceBatches(sorted, /*byMaterial=*/false, batches);
+
+    REQUIRE(batches.size() == 2);
+    CHECK(batches[0].mesh == kMeshA);   CHECK(batches[0].count == 3);
+    CHECK(batches[0].material == nullptr);
+    CHECK(batches[1].mesh == kMeshB);   CHECK(batches[1].count == 1);
+}
+
+TEST_CASE("coalesceBatches handles empty, all-same, and all-distinct inputs") {
+    std::vector<DrawBatch> batches;
+
+    coalesceBatches({}, true, batches);
+    CHECK(batches.empty());
+
+    std::vector<RenderItem> same = {
+        batchItem(kMeshA, kMatA), batchItem(kMeshA, kMatA), batchItem(kMeshA, kMatA)};
+    coalesceBatches(asPointers(same), true, batches);
+    REQUIRE(batches.size() == 1);
+    CHECK(batches[0].count == 3);
+    CHECK(batches[0].first == 0);
+
+    std::vector<RenderItem> distinct = {
+        batchItem(kMeshA, kMatA), batchItem(kMeshB, kMatA), batchItem(kMeshC, kMatA)};
+    coalesceBatches(asPointers(distinct), true, batches);
+    REQUIRE(batches.size() == 3);
+    for (const DrawBatch& b : batches) CHECK(b.count == 1);
+}
+
+TEST_CASE("sortByMaterialMesh makes identical draws adjacent so they coalesce") {
+    // Interleaved keys: (A,0),(B,0),(A,0),(B,1). Sorting must gather the two (A,0)s
+    // together, so coalescing yields exactly three batches for four items.
+    std::vector<RenderItem> items = {
+        batchItem(kMeshA, kMatA), batchItem(kMeshA, kMatB),
+        batchItem(kMeshA, kMatA), batchItem(kMeshB, kMatB),
+    };
+    std::vector<const RenderItem*> list = asPointers(items);
+
+    sortByMaterialMesh(list);
+    std::vector<DrawBatch> batches;
+    coalesceBatches(list, /*byMaterial=*/true, batches);
+
+    CHECK(batches.size() == 3);  // (A,0)x2, (A,1)x1, (B,1)x1 — NOT 4
+    const DrawBatch a0 = findBatch(batches, kMeshA, kMatA);
+    CHECK(a0.count == 2);
+    std::uint32_t total = 0;
+    for (const DrawBatch& b : batches) total += b.count;
+    CHECK(total == 4);
+}
+
+TEST_CASE("sortByMaterialMesh is stable within a key") {
+    // Two items share the key (A, matA); a stable sort must keep items[0] before
+    // items[2] in the output (their input order), never swap equal-key items.
+    std::vector<RenderItem> items = {
+        batchItem(kMeshA, kMatA),  // 0
+        batchItem(kMeshB, kMatB),  // 1
+        batchItem(kMeshA, kMatA),  // 2
+    };
+    std::vector<const RenderItem*> list = asPointers(items);
+    sortByMaterialMesh(list);
+
+    const auto pos0 = std::find(list.begin(), list.end(), &items[0]) - list.begin();
+    const auto pos2 = std::find(list.begin(), list.end(), &items[2]) - list.begin();
+    CHECK(pos0 < pos2);  // equal-key items keep their relative order
+}
+
+TEST_CASE("sortByMesh groups by mesh regardless of material") {
+    std::vector<RenderItem> items = {
+        batchItem(kMeshA, kMatA), batchItem(kMeshB, kMatB),
+        batchItem(kMeshA, kMatB), batchItem(kMeshB, kMatA),
+    };
+    std::vector<const RenderItem*> list = asPointers(items);
+
+    sortByMesh(list);
+    std::vector<DrawBatch> batches;
+    coalesceBatches(list, /*byMaterial=*/false, batches);
+
+    REQUIRE(batches.size() == 2);  // one per mesh
+    CHECK(findBatch(batches, kMeshA, nullptr).count == 2);
+    CHECK(findBatch(batches, kMeshB, nullptr).count == 2);
 }

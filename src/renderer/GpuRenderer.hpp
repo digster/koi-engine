@@ -44,6 +44,17 @@ class Texture;  // manufactured by loadTexture; full definition in renderer/Text
 // don't handle. Used by GpuRenderer::captureFrame.
 [[nodiscard]] SDL_PixelFormat gpuColorFormatToPixelFormat(SDL_GPUTextureFormat format);
 
+// Per-instance data for instanced draws (Step 24): the transforms that used to be
+// pushed as a per-draw uniform, now packed one-per-copy into the color pass's
+// instance vertex buffer. The field layout is a binding contract with triangle.vert's
+// instance attributes — `model` feeds locations 5–8, `normalMatrix` feeds 9–12. Mat4
+// is a column-major float[16] (64 bytes), so this packs to 128 bytes with no padding.
+// (The shadow pass, being depth-only, uses a bare Mat4 model array instead.)
+struct InstanceData {
+    Mat4 model;         // this copy's world matrix
+    Mat4 normalMatrix;  // transpose(inverse(model)) — keeps normals perpendicular
+};
+
 class GpuRenderer {
 public:
     // Construction creates a GPU "device" (our handle to the graphics card),
@@ -156,6 +167,16 @@ public:
     // frustum, drawing a wireframe of the volume that was culled against. Identity
     // until the first frame has been recorded.
     [[nodiscard]] Mat4 lastCameraViewProjection() const { return lastCameraViewProj_; }
+
+    // Per-frame draw-call accounting (Step 24). `items` is how many drawables the
+    // main color pass submitted this frame (after culling); `drawCalls` is how many
+    // actual GPU draws that took — fewer once instancing collapses identical runs.
+    // The gap between them is the batching win, which the demo HUD displays.
+    struct DrawStats {
+        Uint32 items     = 0;
+        Uint32 drawCalls = 0;
+    };
+    [[nodiscard]] DrawStats lastDrawStats() const { return lastDrawStats_; }
 
     // Render exactly one frame from a FrameView `fv`: acquire a swapchain image,
     // draw every mesh in `fv.root` (each through its own world matrix and its node's
@@ -309,14 +330,27 @@ private:
     void recordSkybox(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                       const Mat4& view, const Mat4& projection) const;
 
+    // Build this frame's draw batches + instance buffers (Step 24), BEFORE any render
+    // pass begins. Culls the queue to the camera → sorts the opaque survivors by
+    // (material, mesh) and the whole queue (for shadows) by mesh → packs each item's
+    // transform into a transient instance buffer → coalesces the sorted lists into
+    // instanced DrawBatches. Uploads both buffers here (their copy runs on its own
+    // command buffer, submitted before the frame's), so the record passes just draw.
+    // Non-const: it fills the scratch/batch members and recreates the instance buffers.
+    void buildFrameBatches(const Mat4& projView, const Vec3& cameraPos);
+
+    // Recreate a transient per-frame instance buffer (release last frame's, upload the
+    // new data) — the color pass's InstanceData[] and the shadow pass's Mat4[]. Same
+    // immediate-mode pattern as uploadDebugLines: no two frames share a buffer.
+    void uploadColorInstances(std::span<const InstanceData> instances);
+    void uploadShadowInstances(std::span<const Mat4> models);
+
     // PASS 1 of shadow mapping: render the scene's depth from the light's point of
-    // view into the shadow map. Begins its own depth-only render pass and draws
-    // EVERY item in `queue` (pushing lightViewProj·world per item), ends. The full
-    // queue is used — never camera-culled — because a caster outside the camera
-    // frustum can still drop a shadow into view. Done before the main pass.
-    void renderShadowPass(SDL_GPUCommandBuffer* cmd,
-                          const std::vector<RenderItem>& queue,
-                          const Mat4& lightViewProj) const;
+    // view into the shadow map. Begins its own depth-only render pass and draws the
+    // shadow batches built by buildFrameBatches (the WHOLE queue, never camera-culled —
+    // a caster outside the camera frustum can still drop a shadow into view), pushing
+    // `lightViewProj` once. Done before the main pass.
+    void renderShadowPass(SDL_GPUCommandBuffer* cmd, const Mat4& lightViewProj) const;
 
     // Bind the per-frame lighting inputs the scene shader reads, and push the light
     // uniform: the shadow map (fragment slot 4), the three IBL maps (slots 5–7), and
@@ -330,24 +364,31 @@ private:
                            const Vec3& cameraPos, std::span<const Light> lights,
                            const Mat4& lightViewProj) const;
 
-    // Record the whole scene into an already-begun (main) render pass from the flat
-    // `queue` (Step 20): frustum-cull it (when enabled), then split it by material
-    // alpha mode (Step 21) and draw OPAQUE items (depth-write on) → the skybox →
-    // TRANSPARENT items back-to-front through the blend pipeline (depth-write off).
-    // Builds the projection from `aspect` and packs the per-frame lighting from
-    // `lights`/`cameraPos`/`lightViewProj`. Shared by the live (renderFrame) and
-    // off-screen (captureFrame) paths so they can't drift.
+    // Record the whole scene into an already-begun (main) render pass from the batches
+    // built by buildFrameBatches (Step 24): push the shared `viewProj` uniform, draw the
+    // OPAQUE batches (depth-write on) → the skybox → the TRANSPARENT items back-to-front
+    // through the blend pipeline (depth-write off). Takes `projection`/`view` for the
+    // skybox and packs the per-frame lighting from `lights`/`cameraPos`/`lightViewProj`.
+    // Shared by the live (renderFrame) and off-screen (captureFrame) paths so they can't
+    // drift.
     void recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                     const std::vector<RenderItem>& queue, const Mat4& view,
-                     float aspect, const Vec3& cameraPos, std::span<const Light> lights,
-                     const Mat4& lightViewProj) const;
+                     const Mat4& projection, const Mat4& view, const Vec3& cameraPos,
+                     std::span<const Light> lights, const Mat4& lightViewProj) const;
 
-    // Submit ONE draw item into the already-begun main render pass, using the
-    // already-combined `projView`: bind the item's material maps + mesh buffers and
-    // push its {mvp, model, normalMatrix} + material uniforms. The per-item worker
-    // recordScene loops over — the "submit" half of traverse → list → submit.
-    void submitItem(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                    const RenderItem& item, const Mat4& projView) const;
+    // Bind a material's five maps (albedo/metal-rough/normal/AO at fragment slots 0–3,
+    // emissive at slot 8) + push its PBR/emissive/opacity params (fragment slot 1).
+    // Shared by the opaque batches and the transparent items — the state a batch key
+    // groups on. (Missing maps fall back to the neutral 1×1 textures.)
+    void bindMaterial(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                      const Material& material) const;
+
+    // Submit ONE instanced draw into the already-begun main render pass: bind the
+    // material + the mesh's buffers + the color instance buffer at `firstInstance`, then
+    // draw `count` instances. `count` is the batch length for an opaque run, or 1 for a
+    // single transparent item — the "submit" half of traverse → list → batch → submit.
+    void submitBatch(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                     const Mesh& mesh, const Material& material,
+                     Uint32 firstInstance, Uint32 count) const;
 
     // Ensure the depth texture exists and matches (w, h), recreating it on resize.
     // Returns false (after logging) if creation fails. Called each frame before
@@ -491,16 +532,33 @@ private:
     // vectors are members (not locals) so their capacity is REUSED frame to frame —
     // no per-frame allocation. frustumCullingEnabled_ is the runtime A/B toggle.
     std::vector<RenderItem>        renderQueue_;                // flat draw list, rebuilt per frame
-    // `mutable`: recordScene is const (it issues GPU work but owns no state), yet it
-    // fills these reused scratch buffers while culling + partitioning — the classic
-    // const-method cache. visibleItems_ holds the frustum survivors; partitionByBlend
-    // (Step 21) then splits those into the opaque + (back-to-front) transparent lists.
-    // All three are members so their capacity is REUSED frame to frame (no allocation).
+    // These reused scratch buffers are filled each frame by buildFrameBatches (Step 24):
+    // visibleItems_ holds the frustum survivors; partitionByBlend (Step 21) splits those
+    // into opaque + (back-to-front) transparent lists; opaqueItems_ is then sorted by
+    // (material, mesh) for batching. Members so their capacity is REUSED frame to frame.
     mutable std::vector<const RenderItem*> visibleItems_;      // scratch: items that passed culling
-    mutable std::vector<const RenderItem*> opaqueItems_;       // scratch: opaque survivors (queue order)
-    mutable std::vector<const RenderItem*> transparentItems_;  // scratch: blend survivors (sorted)
+    mutable std::vector<const RenderItem*> opaqueItems_;       // scratch: opaque survivors (sorted by batch key)
+    mutable std::vector<const RenderItem*> transparentItems_;  // scratch: blend survivors (back-to-front)
     bool                          frustumCullingEnabled_ = true;
     bool                          transparentSortEnabled_ = true;  // Step 21 back-to-front A/B toggle
+
+    // Instancing / draw-call batching (Step 24). buildFrameBatches sorts the visible
+    // items by batch key, packs each one's transform into a transient INSTANCE buffer,
+    // and coalesces the sorted lists into instanced draws. Two buffers: the color pass
+    // needs model + normalMatrix per instance (InstanceData), the shadow pass just the
+    // model matrix (depth is material-blind). Rebuilt every frame like the overlays; the
+    // CPU scratch vectors + batch lists reuse their capacity. lastDrawStats_ records the
+    // items-vs-draw-calls gap the demo HUD shows.
+    SDL_GPUBuffer* colorInstanceBuffer_  = nullptr;  // owned; recreated per frame (InstanceData[])
+    SDL_GPUBuffer* shadowInstanceBuffer_ = nullptr;  // owned; recreated per frame (Mat4[])
+    Uint32         colorInstanceCount_   = 0;        // instances uploaded this frame (opaque + transparent)
+    Uint32         shadowInstanceCount_  = 0;        // instances uploaded this frame (whole queue)
+    mutable std::vector<InstanceData>      colorInstances_;   // scratch: opaque(sorted)+transparent transforms
+    mutable std::vector<Mat4>              shadowInstances_;  // scratch: whole-queue model matrices
+    mutable std::vector<const RenderItem*> shadowOrder_;      // scratch: the queue sorted by mesh
+    mutable std::vector<DrawBatch>         opaqueBatches_;    // scratch: coalesced (material,mesh) runs
+    mutable std::vector<DrawBatch>         shadowBatches_;    // scratch: coalesced mesh runs
+    mutable DrawStats                      lastDrawStats_;
 
     // Debug draw (Step 22). An unlit line pipeline overlays throwaway wireframes
     // (AABBs, the camera frustum, light icons) on the scene. The vertex buffer is

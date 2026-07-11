@@ -37,6 +37,7 @@
     <a class="navlink" href="22-transparency-and-alpha-blending.html">Transparency &amp; Blending</a>
     <a class="navlink" href="23-debug-draw.html">Debug Draw</a>
     <a class="navlink" href="24-hud-and-text.html">HUD &amp; Text</a>
+    <a class="navlink" href="25-instancing-and-draw-call-sorting.html">Instancing &amp; Sorting</a>
   </div>
 </nav>
 
@@ -194,6 +195,13 @@
       <strong>texture atlas</strong>, <strong>screen-space</strong> (pixel→clip) quads, and a final
       <strong>overlay pass in LDR</strong> — drawn after post-processing so glyphs stay crisp — powering a live demo
       HUD (FPS, camera, toggles).</p>
+    </a>
+    <a class="card" href="25-instancing-and-draw-call-sorting.html">
+      <h3>Instancing &amp; Sorting →</h3>
+      <p>The first performance step: <strong>sort</strong> the draw list by <code>(material, mesh)</code> to cut
+      redundant state changes, then <strong>instance</strong> identical runs into one draw call — the per-object
+      transform moving from a uniform into a per-<strong>instance</strong> vertex buffer, batched across both the
+      colour and shadow passes.</p>
     </a>
   </div>
 

@@ -9,11 +9,17 @@
 //  Since Step 7 it also prepares LIGHTING: it outputs each vertex's WORLD-space
 //  position and normal (using the separate `model` matrix), which the fragment
 //  shader needs to shade in world space. See documentation/docs/08-lighting-and-normals.html.
+//
+//  INSTANCED (Step 24). The per-object matrices used to be pushed as a uniform per
+//  draw. Now they arrive as PER-INSTANCE vertex attributes, so many copies of a mesh
+//  draw in ONE call — the GPU advances to the next instance's matrices once per copy
+//  (not once per vertex). Only the camera's view-projection — the same for every
+//  object this frame — stays a shared uniform, and we form the MVP here in-shader.
 // ============================================================================
 #version 450
 
-// --- Per-vertex inputs (from the vertex buffer) ----------------------------
-// inPosition is now a vec3: the cube lives in real 3D space.
+// --- Per-vertex inputs (from the mesh vertex buffer, slot 0) ----------------
+// inPosition is a vec3: the cube lives in real 3D space.
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inColor;
 // Step 6: a 2D texture coordinate per vertex. The rasterizer interpolates it across
@@ -26,19 +32,23 @@ layout(location = 3) in vec3 inNormal;
 // Together with the normal it forms the basis that orients a tangent-space normal map.
 layout(location = 4) in vec3 inTangent;
 
-// --- Per-draw uniform (the same for every vertex this draw) ----------------
-// A uniform buffer holds values constant across the whole draw call, unlike the
-// per-vertex `in` attributes above. SDL3's GPU API places VERTEX-stage uniform
-// buffers in descriptor set 1 (set 0 is for textures/storage); we upload this each
-// frame with SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, ...). All mat4s are
-// column-major, matching koi::Mat4. Step 7 added `model` (the world matrix) on its
-// own: lighting happens in WORLD space, so we need the world position and world
-// normal, which the combined `mvp` alone can't give us. Step 19 added
-// `normalMatrix` = transpose(inverse(model)) so normals survive a non-uniform scale.
+// --- Per-INSTANCE inputs (from the instance buffer, slot 1) -----------------
+// Step 24: this copy's transforms. Each mat4 attribute occupies FOUR consecutive
+// locations (one per column), bound from a second vertex buffer at INSTANCE rate so
+// it advances once per instance rather than once per vertex. `inModel` places this
+// copy in the world; `inNormalMatrix` = transpose(inverse(model)) keeps its normals
+// perpendicular under a non-uniform scale (Step 19) — precomputed on the CPU per
+// instance, since inverting a matrix in the shader would be wasteful.
+layout(location = 5) in mat4 inModel;         // occupies locations 5,6,7,8
+layout(location = 9) in mat4 inNormalMatrix;  // occupies locations 9,10,11,12
+
+// --- Shared uniform (the same for every vertex AND every instance) ----------
+// SDL3's GPU API places VERTEX-stage uniform buffers in descriptor set 1 (set 0 is
+// for textures/storage); we push this once per pass with SDL_PushGPUVertexUniformData
+// (slot 0). It is now just the camera's projection * view — the MVP is formed below
+// as viewProj * inModel, so the per-object part comes from the instance attributes.
 layout(set = 1, binding = 0) uniform UBO {
-    mat4 mvp;           // proj * view * model — straight to clip space
-    mat4 model;         // model (world) matrix — places this object in the world
-    mat4 normalMatrix;  // transpose(inverse(model)) — the correct transform for normals
+    mat4 viewProj;  // projection * view — the camera, shared by all instances
 };
 
 layout(location = 0) out vec3 vColor;
@@ -48,12 +58,14 @@ layout(location = 3) out vec3 vWorldNormal;  // for diffuse/specular dot product
 layout(location = 4) out vec3 vWorldTangent; // for building the TBN (normal mapping)
 
 void main() {
-    // Promote the 3D position to homogeneous coordinates (w = 1, marking it a
-    // point) and transform it into clip space. The GPU does the w-divide next.
+    // Form this instance's MVP from the shared camera matrix and its own model
+    // matrix, then transform the model-space position to clip space (the GPU does
+    // the w-divide next). Promote to homogeneous coords (w = 1, marking it a point).
+    mat4 mvp = viewProj * inModel;
     gl_Position = mvp * vec4(inPosition, 1.0);
 
     // World-space position of this vertex (drop the homogeneous w, which is 1).
-    vWorldPos = vec3(model * vec4(inPosition, 1.0));
+    vWorldPos = vec3(inModel * vec4(inPosition, 1.0));
 
     // Carry the normal into world space with the NORMAL MATRIX, not `model`.
     // A normal is a covector (it must stay perpendicular to the surface), so under
@@ -61,13 +73,13 @@ void main() {
     // off the surface. transpose(inverse(model)) is the transform that keeps it
     // perpendicular; for a pure rotation/uniform scale it reduces to mat3(model)
     // up to a length the fragment shader's normalize() discards anyway.
-    vWorldNormal = mat3(normalMatrix) * inNormal;
+    vWorldNormal = mat3(inNormalMatrix) * inNormal;
 
     // The TANGENT, unlike the normal, IS an ordinary surface direction, so it
     // rides the plain `model` matrix (mat3). The fragment shader then re-
     // orthonormalizes it against the interpolated normal and rebuilds the TBN
     // basis from the pair — so a tangent-space normal map can be lit in world space.
-    vWorldTangent = mat3(model) * inTangent;
+    vWorldTangent = mat3(inModel) * inTangent;
 
     vColor = inColor;
     vUV = inUV;  // pass the texture coordinate straight through to the fragment stage

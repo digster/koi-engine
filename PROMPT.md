@@ -530,3 +530,21 @@ New tutorial `documentation/docs/24-hud-and-text.html` (+ nav backfilled on all 
 README/ARCHITECTURE/ROADMAP updated. Verified: `KOI_HUD` capture shows crisp text over the post-processed scene;
 HUD-**off** capture is **byte-identical to Step 22** (lower 86% of the frame identical HUD-on vs off; overlay pass
 skipped when empty). **Deferred:** SDF/proportional fonts, scissor clip, Unicode.
+
+> show options from the roadmap to work on next. [chose: Sort queue + instancing]
+
+Step 24 — **instancing & draw-call sorting** (chosen from four roadmap candidates: glTF node hierarchy/Sponza,
+alpha-tested cutout, sort queue + instancing, profiler/picking labels). Scope confirmed: **instance only the existing
+cubes** (no new demo grid), and **instance BOTH the colour and shadow passes**. The same scene now draws with fewer,
+cheaper draw calls: the flat render queue is **sorted** by batch key and identical objects are **instanced** into
+single draws. New pure helpers in `RenderQueue` (`DrawBatch`, `sortByMaterialMesh`/`sortByMesh`, `coalesceBatches`);
+`GpuRenderer::buildFrameBatches` runs the whole prepare phase (cull → sort → pack a **transient instance buffer** →
+coalesce) BEFORE any render pass, leaving `recordScene`/`renderShadowPass` as pure bind+draw. The per-object transform
+moved from a per-draw uniform into **per-instance vertex attributes**: `triangle.vert` gains `mat4 inModel` (locs 5–8)
++ `mat4 inNormalMatrix` (9–12) with the UBO shrunk to shared `viewProj`; `shadow.vert` gains `mat4 inModel` + a
+`lightViewProj` uniform. Colour pass batches on `(material, mesh)`, shadow on **mesh alone**. Demo HUD gains a live
+`Draws N (M items)` line via a new `lastDrawStats()`; 6 new tests (**124 pass**). New tutorial
+`documentation/docs/25-instancing-and-draw-call-sorting.html` (+ nav backfill on all pages, index card);
+README/ARCHITECTURE/ROADMAP updated. Verified: batching log shows colour **11→8**, shadow **11→5** draws; a git-stash
+before/after capture is **visually identical** (68/3,686,538 bytes differ, ≤5/255 — the harmless opaque reorder).
+**Deferred:** GPU-driven/indirect culling, deferred shading, render graph; transparent still one-per-call.

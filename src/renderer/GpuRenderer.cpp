@@ -273,36 +273,54 @@ bool GpuRenderer::createTrianglePipeline() {
     //      its byte `offset` within the vertex. These MUST match koi::Vertex and
     //      the `layout(location=N) in` declarations in triangle.vert.
     // ------------------------------------------------------------------------
-    SDL_GPUVertexBufferDescription vertexBufferDesc = {};
-    vertexBufferDesc.slot       = 0;
-    vertexBufferDesc.pitch      = static_cast<Uint32>(sizeof(Vertex));
-    vertexBufferDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    // Step 24: TWO vertex buffers now. Slot 0 is the per-vertex mesh data (as before);
+    // slot 1 is the per-INSTANCE transforms, advanced once per instance so a run of
+    // identical items draws in a single instanced call. Both are described here; the
+    // instance buffer is bound (with a per-batch offset) at draw time.
+    SDL_GPUVertexBufferDescription vertexBufferDescs[2] = {};
+    vertexBufferDescs[0].slot       = 0;
+    vertexBufferDescs[0].pitch      = static_cast<Uint32>(sizeof(Vertex));
+    vertexBufferDescs[0].input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    vertexBufferDescs[1].slot       = 1;
+    vertexBufferDescs[1].pitch      = static_cast<Uint32>(sizeof(InstanceData));
+    vertexBufferDescs[1].input_rate = SDL_GPU_VERTEXINPUTRATE_INSTANCE;
 
-    const SDL_GPUVertexAttribute vertexAttributes[5] = {
-        // location 0: inPosition (vec3) at the start of the vertex.
+    // A mat4 instance attribute occupies FOUR consecutive locations (one FLOAT4 per
+    // column, 16 bytes apart). model → locations 5–8, normalMatrix → 9–12, both from
+    // buffer slot 1. Locations 0–4 remain the per-vertex mesh attributes.
+    const Uint32 modelOff  = static_cast<Uint32>(offsetof(InstanceData, model));
+    const Uint32 normalOff = static_cast<Uint32>(offsetof(InstanceData, normalMatrix));
+    const SDL_GPUVertexAttribute vertexAttributes[13] = {
+        // --- per-vertex (slot 0) -------------------------------------------------
         { /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
           offsetof(Vertex, position) },
-        // location 1: inColor (vec3) right after the 3-float position.
         { /*location=*/1, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
           offsetof(Vertex, color) },
-        // location 2: inUV (vec2) right after the color — Step 6's texture coords.
         { /*location=*/2, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
           offsetof(Vertex, uv) },
-        // location 3: inNormal (vec3) right after the uv — Step 7's surface normal.
         { /*location=*/3, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
           offsetof(Vertex, normal) },
-        // location 4: inTangent (vec3) right after the normal — Step 13's TBN basis.
         { /*location=*/4, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
           offsetof(Vertex, tangent) },
+        // --- per-instance model matrix (slot 1), columns at locations 5–8 --------
+        { /*location=*/5, /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, modelOff +  0 },
+        { /*location=*/6, /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, modelOff + 16 },
+        { /*location=*/7, /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, modelOff + 32 },
+        { /*location=*/8, /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, modelOff + 48 },
+        // --- per-instance normal matrix (slot 1), columns at locations 9–12 ------
+        { /*location=*/9,  /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, normalOff +  0 },
+        { /*location=*/10, /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, normalOff + 16 },
+        { /*location=*/11, /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, normalOff + 32 },
+        { /*location=*/12, /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, normalOff + 48 },
     };
 
     SDL_GPUGraphicsPipelineCreateInfo pipelineInfo = {};
     pipelineInfo.vertex_shader   = vertexShader;
     pipelineInfo.fragment_shader = fragmentShader;
-    pipelineInfo.vertex_input_state.vertex_buffer_descriptions = &vertexBufferDesc;
-    pipelineInfo.vertex_input_state.num_vertex_buffers         = 1;
+    pipelineInfo.vertex_input_state.vertex_buffer_descriptions = vertexBufferDescs;
+    pipelineInfo.vertex_input_state.num_vertex_buffers         = 2;
     pipelineInfo.vertex_input_state.vertex_attributes          = vertexAttributes;
-    pipelineInfo.vertex_input_state.num_vertex_attributes      = 5;
+    pipelineInfo.vertex_input_state.num_vertex_attributes      = 13;
     // TRIANGLELIST = every 3 vertices form one independent triangle.
     pipelineInfo.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
 
@@ -717,21 +735,36 @@ bool GpuRenderer::createShadowResources() {
         return false;
     }
 
-    SDL_GPUVertexBufferDescription vbDesc = {};
-    vbDesc.slot       = 0;
-    vbDesc.pitch      = static_cast<Uint32>(sizeof(Vertex));
-    vbDesc.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-    const SDL_GPUVertexAttribute posAttr = {
-        /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
-        offsetof(Vertex, position)};
+    // Step 24: like the color pipeline, a second (INSTANCE-rate) buffer at slot 1
+    // supplies each copy's model matrix, so same-mesh items batch into one instanced
+    // depth draw. The shadow pass is depth-only, so it needs ONLY the model matrix
+    // (64 bytes/instance) — not the color pipeline's model + normalMatrix.
+    SDL_GPUVertexBufferDescription vbDescs[2] = {};
+    vbDescs[0].slot       = 0;
+    vbDescs[0].pitch      = static_cast<Uint32>(sizeof(Vertex));
+    vbDescs[0].input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    vbDescs[1].slot       = 1;
+    vbDescs[1].pitch      = static_cast<Uint32>(sizeof(Mat4));  // one model matrix per instance
+    vbDescs[1].input_rate = SDL_GPU_VERTEXINPUTRATE_INSTANCE;
+
+    // location 0: per-vertex position (slot 0). locations 1–4: the per-instance model
+    // matrix's four columns (slot 1), matching shadow.vert's `in mat4 inModel`.
+    const SDL_GPUVertexAttribute shadowAttrs[5] = {
+        { /*location=*/0, /*buffer_slot=*/0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+          offsetof(Vertex, position) },
+        { /*location=*/1, /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,  0 },
+        { /*location=*/2, /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 16 },
+        { /*location=*/3, /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 32 },
+        { /*location=*/4, /*buffer_slot=*/1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 48 },
+    };
 
     SDL_GPUGraphicsPipelineCreateInfo info = {};
     info.vertex_shader   = vs;
     info.fragment_shader = fs;
-    info.vertex_input_state.vertex_buffer_descriptions = &vbDesc;
-    info.vertex_input_state.num_vertex_buffers         = 1;
-    info.vertex_input_state.vertex_attributes          = &posAttr;
-    info.vertex_input_state.num_vertex_attributes      = 1;
+    info.vertex_input_state.vertex_buffer_descriptions = vbDescs;
+    info.vertex_input_state.num_vertex_buffers         = 2;
+    info.vertex_input_state.vertex_attributes          = shadowAttrs;
+    info.vertex_input_state.num_vertex_attributes      = 5;
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.depth_stencil_state.enable_depth_test  = true;
     info.depth_stencil_state.enable_depth_write = true;
@@ -1104,7 +1137,6 @@ void GpuRenderer::bakeIbl() {
 }
 
 void GpuRenderer::renderShadowPass(SDL_GPUCommandBuffer* cmd,
-                                   const std::vector<RenderItem>& queue,
                                    const Mat4& lightViewProj) const {
     // PASS 1: render the scene's depth into the shadow map, from the light's view.
     // A render pass with a depth target but NO color target. STORE the result — the
@@ -1122,25 +1154,126 @@ void GpuRenderer::renderShadowPass(SDL_GPUCommandBuffer* cmd,
         SDL_BeginGPURenderPass(cmd, /*color_targets=*/nullptr, /*num_color=*/0, &depthTarget);
     SDL_BindGPUGraphicsPipeline(pass, shadowPipeline_);
 
-    // Draw EVERY item's depth (material/texture irrelevant here — depth only). This
-    // loop is deliberately NOT frustum-culled to the camera: geometry the camera
-    // can't see may still cast a shadow onto geometry it can. Culling here would
-    // make shadows blink as their casters cross the camera frustum edge.
-    for (const RenderItem& item : queue) {
-        SDL_GPUBufferBinding vertexBinding = {};
-        vertexBinding.buffer = item.mesh->vertexBuffer();
-        SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vertexBinding, /*num_bindings=*/1);
-        SDL_GPUBufferBinding indexBinding = {};
-        indexBinding.buffer = item.mesh->indexBuffer();
-        SDL_BindGPUIndexBuffer(pass, &indexBinding, item.mesh->indexElementSize());
+    // The light's view-projection is the same for every object, so push it ONCE (the
+    // per-object model matrices ride the instance buffer). Depth is material-blind, so
+    // buildFrameBatches coalesced the WHOLE queue by MESH — never camera-culled, since a
+    // caster the camera can't see may still shadow something it can.
+    SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, lightViewProj.m, sizeof(lightViewProj.m));
 
-        const Mat4 lightMvp = lightViewProj * item.world;
-        SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &lightMvp, sizeof(lightMvp));
-        SDL_DrawGPUIndexedPrimitives(pass, item.mesh->indexCount(), /*num_instances=*/1,
-                                     /*first_index=*/0, /*vertex_offset=*/0,
-                                     /*first_instance=*/0);
+    for (const DrawBatch& batch : shadowBatches_) {
+        // Bind the mesh vertices (slot 0) + this batch's slice of the instance buffer
+        // (slot 1, offset to its first model matrix), then draw all its copies at once.
+        SDL_GPUBufferBinding bindings[2] = {};
+        bindings[0].buffer = batch.mesh->vertexBuffer();
+        bindings[1].buffer = shadowInstanceBuffer_;
+        bindings[1].offset = batch.first * static_cast<Uint32>(sizeof(Mat4));
+        SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, bindings, /*num_bindings=*/2);
+
+        SDL_GPUBufferBinding indexBinding = {};
+        indexBinding.buffer = batch.mesh->indexBuffer();
+        SDL_BindGPUIndexBuffer(pass, &indexBinding, batch.mesh->indexElementSize());
+
+        SDL_DrawGPUIndexedPrimitives(pass, batch.mesh->indexCount(), /*num_instances=*/batch.count,
+                                     /*first_index=*/0, /*vertex_offset=*/0, /*first_instance=*/0);
     }
     SDL_EndGPURenderPass(pass);
+}
+
+void GpuRenderer::uploadColorInstances(std::span<const InstanceData> instances) {
+    // Same immediate-mode strategy as uploadDebugLines: release last frame's buffer and
+    // build a fresh one, so no synchronisation is needed against a draw the previous
+    // frame might still be reading. SDL defers the free until the GPU is done.
+    if (colorInstanceBuffer_ != nullptr) {
+        SDL_ReleaseGPUBuffer(device_, colorInstanceBuffer_);
+        colorInstanceBuffer_ = nullptr;
+    }
+    colorInstanceCount_ = 0;
+    if (instances.empty()) {
+        return;  // nothing visible this frame — recordScene draws no batches
+    }
+    const Uint32 bytes = static_cast<Uint32>(instances.size_bytes());
+    colorInstanceBuffer_ = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_VERTEX, instances.data(), bytes);
+    if (colorInstanceBuffer_ != nullptr) {
+        colorInstanceCount_ = static_cast<Uint32>(instances.size());
+    }
+}
+
+void GpuRenderer::uploadShadowInstances(std::span<const Mat4> models) {
+    if (shadowInstanceBuffer_ != nullptr) {
+        SDL_ReleaseGPUBuffer(device_, shadowInstanceBuffer_);
+        shadowInstanceBuffer_ = nullptr;
+    }
+    shadowInstanceCount_ = 0;
+    if (models.empty()) {
+        return;  // empty queue — the shadow pass just clears the map
+    }
+    const Uint32 bytes = static_cast<Uint32>(models.size_bytes());
+    shadowInstanceBuffer_ = uploadToGpuBuffer(SDL_GPU_BUFFERUSAGE_VERTEX, models.data(), bytes);
+    if (shadowInstanceBuffer_ != nullptr) {
+        shadowInstanceCount_ = static_cast<Uint32>(models.size());
+    }
+}
+
+void GpuRenderer::buildFrameBatches(const Mat4& projView, const Vec3& cameraPos) {
+    // The whole preparation phase (Step 24), run BEFORE any render pass begins so the
+    // instance-buffer uploads (which submit their own command buffer) land ahead of the
+    // frame's draws. Leaves the record passes as pure "bind + draw the batches".
+    lastCameraViewProj_ = projView;  // Step 22: the freezeable culling frustum
+
+    // ---- COLOR pass: cull → partition → sort by (material,mesh) → pack → coalesce ---
+    const Frustum cameraFrustum = Frustum::fromViewProjection(projView);
+    visibleItems_.clear();
+    for (const RenderItem& item : renderQueue_) {
+        if (!frustumCullingEnabled_ || cameraFrustum.intersectsAabb(item.worldBounds)) {
+            visibleItems_.push_back(&item);
+        }
+    }
+    partitionByBlend(visibleItems_, cameraPos, transparentSortEnabled_,
+                     opaqueItems_, transparentItems_);
+    sortByMaterialMesh(opaqueItems_);  // group identical opaque draws so they coalesce
+
+    // Pack transforms in DRAW ORDER — opaque (sorted) first, then transparent
+    // (back-to-front). Each item's slot index here is exactly what its batch (or its
+    // single transparent draw) references via the instance-buffer offset.
+    colorInstances_.clear();
+    colorInstances_.reserve(opaqueItems_.size() + transparentItems_.size());
+    for (const RenderItem* item : opaqueItems_) {
+        colorInstances_.push_back(InstanceData{item->world, transpose(inverse(item->world))});
+    }
+    for (const RenderItem* item : transparentItems_) {
+        colorInstances_.push_back(InstanceData{item->world, transpose(inverse(item->world))});
+    }
+    uploadColorInstances(colorInstances_);
+    coalesceBatches(opaqueItems_, /*byMaterial=*/true, opaqueBatches_);
+
+    // ---- SHADOW pass: the WHOLE queue (uncSulled), sorted + coalesced by MESH -------
+    shadowOrder_.clear();
+    shadowOrder_.reserve(renderQueue_.size());
+    for (const RenderItem& item : renderQueue_) {
+        shadowOrder_.push_back(&item);
+    }
+    sortByMesh(shadowOrder_);
+    shadowInstances_.clear();
+    shadowInstances_.reserve(shadowOrder_.size());
+    for (const RenderItem* item : shadowOrder_) {
+        shadowInstances_.push_back(item->world);  // depth only needs the model matrix
+    }
+    uploadShadowInstances(shadowInstances_);
+    coalesceBatches(shadowOrder_, /*byMaterial=*/false, shadowBatches_);
+
+    // ---- Stats + throttled culling log --------------------------------------------
+    const Uint32 items = static_cast<Uint32>(opaqueItems_.size() + transparentItems_.size());
+    const Uint32 draws = static_cast<Uint32>(opaqueBatches_.size() + transparentItems_.size());
+    lastDrawStats_ = DrawStats{items, draws};
+
+    if (!renderQueue_.empty()) {
+        static Uint64 tick = 0;
+        if ((tick++ % 120) == 0) {
+            KOI_DEBUG("Batching: %u items → %u color draws (culled %zu/%zu); shadow %zu → %zu draws",
+                      items, draws, renderQueue_.size() - visibleItems_.size(),
+                      renderQueue_.size(), shadowOrder_.size(), shadowBatches_.size());
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -1419,6 +1552,15 @@ void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* 
     renderQueue_.clear();
     buildRenderQueue(sceneRoot, renderQueue_);
 
+    // PREPARE (Step 24). Cull, sort by batch key, pack the per-instance transforms, and
+    // upload the instance buffers — all BEFORE any render pass begins, so the uploads
+    // (which run on their own command buffer) are ready when the passes draw. The camera
+    // view-projection built here is the same one both the culler and the shaders use.
+    const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
+    const Mat4 projection = perspective(radians(60.0f), aspect, 0.1f, 100.0f);
+    const Mat4 projView   = projection * view;
+    buildFrameBatches(projView, cameraPos);
+
     // The shadow map follows the SUN — the directional light at index 0 (by
     // convention). Its direction drives both passes so the shadows line up with the
     // shading, even as the sun is reconfigured. (Only this one light casts a shadow.)
@@ -1426,10 +1568,11 @@ void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* 
                             ? lights[0].direction
                             : kFallbackSunDir;
 
-    // PASS 1 — shadow depth from the sun's view. Draws the WHOLE queue (no camera
-    // culling: an off-screen caster can still shadow something in view).
+    // PASS 1 — shadow depth from the sun's view. Draws the WHOLE queue as mesh-batched
+    // instanced draws (no camera culling: an off-screen caster can still shadow something
+    // in view).
     const Mat4 lightViewProj = computeLightViewProj(sunDir);
-    renderShadowPass(cmd, renderQueue_, lightViewProj);
+    renderShadowPass(cmd, lightViewProj);
 
     // PASS 2 — the scene, into the off-screen HDR target (NOT the swapchain).
     SDL_GPUColorTargetInfo colorTarget = {};
@@ -1450,8 +1593,7 @@ void GpuRenderer::renderSceneAndPost(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* 
 
     SDL_GPURenderPass* pass =
         SDL_BeginGPURenderPass(cmd, &colorTarget, /*num_color_targets=*/1, &depthTarget);
-    const float aspect = (height > 0) ? static_cast<float>(width) / static_cast<float>(height) : 1.0f;
-    recordScene(cmd, pass, renderQueue_, view, aspect, cameraPos, lights, lightViewProj);
+    recordScene(cmd, pass, projection, view, cameraPos, lights, lightViewProj);
     SDL_EndGPURenderPass(pass);
 
     // PASSES 3+ — the fullscreen post-processing chain, ending in `finalColor`.
@@ -2014,55 +2156,26 @@ void GpuRenderer::bindFrameLighting(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass
 }
 
 void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                              const std::vector<RenderItem>& queue, const Mat4& view,
-                              float aspect, const Vec3& cameraPos,
-                              std::span<const Light> lights,
+                              const Mat4& projection, const Mat4& view,
+                              const Vec3& cameraPos, std::span<const Light> lights,
                               const Mat4& lightViewProj) const {
-    // The projection depends only on the viewport, and the view only on the
-    // camera, so combine them ONCE here. Each item then only adds one multiply by
-    // its own world matrix: mvp = (proj * view) * world.
-    const Mat4 projection = perspective(radians(60.0f), aspect, 0.1f, 100.0f);
-    const Mat4 projView   = projection * view;
+    // The camera view-projection: shared by every instance (each instance adds only its
+    // own model matrix, which now rides the instance buffer instead of a per-draw
+    // uniform). The culling / sorting / instance packing already happened in
+    // buildFrameBatches; this function is pure "bind + draw the prepared batches".
+    const Mat4 projView = projection * view;
 
-    // Remember this frame's camera view-projection (Step 22) so the app can freeze
-    // it and draw the culling frustum as a wireframe (see lastCameraViewProjection).
-    lastCameraViewProj_ = projView;
-
-    // CULL (Step 20). Extract the six camera-frustum planes from the SAME projView the
-    // shader uses (so what we cull matches what's on screen), then keep only the items
-    // whose world bounds intersect it. With culling off, every item survives (the
-    // pre-Step-20 behaviour). visibleItems_ is a reused scratch vector.
-    const Frustum cameraFrustum = Frustum::fromViewProjection(projView);
-    visibleItems_.clear();
-    for (const RenderItem& item : queue) {
-        if (!frustumCullingEnabled_ || cameraFrustum.intersectsAabb(item.worldBounds)) {
-            visibleItems_.push_back(&item);
-        }
-    }
-
-    // Log what culling bought this frame (throttled to avoid spamming the console).
-    // Off-screen objects never reach a draw call — CPU submit + GPU work both saved.
-    if (frustumCullingEnabled_ && !queue.empty()) {
-        static Uint64 tick = 0;
-        if ((tick++ % 120) == 0) {
-            KOI_DEBUG("Frustum culling: drew %zu / %zu (culled %zu)",
-                      visibleItems_.size(), queue.size(),
-                      queue.size() - visibleItems_.size());
-        }
-    }
-
-    // PARTITION (Step 21). Split the survivors into opaque + transparent lists; the
-    // transparent list is ordered back-to-front (unless the runtime toggle is off) so
-    // alpha blending composites correctly. Reused scratch vectors, like visibleItems_.
-    partitionByBlend(visibleItems_, cameraPos, transparentSortEnabled_,
-                     opaqueItems_, transparentItems_);
-
-    // --- OPAQUE PASS: depth-write ON, no blending ----------------------------------
-    // Order among opaque items doesn't matter — the depth buffer resolves visibility.
+    // --- OPAQUE PASS: depth-write ON, instanced batches ----------------------------
+    // Order among opaque items doesn't matter (the depth buffer resolves visibility),
+    // so buildFrameBatches sorted them by (material, mesh) — each opaqueBatches_ entry
+    // is now a run of identical draws collapsed into ONE instanced call.
     SDL_BindGPUGraphicsPipeline(pass, trianglePipeline_);
     bindFrameLighting(cmd, pass, cameraPos, lights, lightViewProj);
-    for (const RenderItem* item : opaqueItems_) {
-        submitItem(cmd, pass, *item, projView);
+    // viewProj is the same for all instances, so push it ONCE per pipeline (the shader's
+    // UBO is just this matrix now). Re-pushed after each pipeline switch below.
+    SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, projView.m, sizeof(projView.m));
+    for (const DrawBatch& batch : opaqueBatches_) {
+        submitBatch(cmd, pass, *batch.mesh, *batch.material, batch.first, batch.count);
     }
 
     // --- SKYBOX (Step 14) ----------------------------------------------------------
@@ -2076,14 +2189,19 @@ void GpuRenderer::recordScene(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass
     }
 
     // --- TRANSPARENT PASS: blending ON, depth-write OFF ----------------------------
-    // Draw the sorted (far → near) translucent items so each composites over what's
-    // already there. Binding the transparent pipeline reset the pass's sampler bindings,
-    // so re-establish the per-frame shadow/IBL maps (and re-push the light uniform).
+    // Translucent items MUST stay back-to-front (blending isn't commutative), so they
+    // are NOT material-batched — each draws as a single instance at its own slot in the
+    // instance buffer, right after the opaque block. Binding the transparent pipeline
+    // reset the pass's sampler bindings, so re-establish the lighting + re-push viewProj.
     if (!transparentItems_.empty()) {
         SDL_BindGPUGraphicsPipeline(pass, transparentPipeline_);
         bindFrameLighting(cmd, pass, cameraPos, lights, lightViewProj);
-        for (const RenderItem* item : transparentItems_) {
-            submitItem(cmd, pass, *item, projView);
+        SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, projView.m, sizeof(projView.m));
+        const Uint32 opaqueCount = static_cast<Uint32>(opaqueItems_.size());
+        for (std::size_t i = 0; i < transparentItems_.size(); ++i) {
+            const RenderItem* item = transparentItems_[i];
+            submitBatch(cmd, pass, *item->mesh, *item->material,
+                        opaqueCount + static_cast<Uint32>(i), /*count=*/1);
         }
     }
 
@@ -2219,73 +2337,62 @@ void GpuRenderer::recordHud(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
                           /*first_vertex=*/0, /*first_instance=*/0);
 }
 
-void GpuRenderer::submitItem(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
-                             const RenderItem& item, const Mat4& projView) const {
-    // buildRenderQueue only ever enqueues drawables, so both are guaranteed non-null
-    // here — the mesh/material presence check that recordNode used to do now lives in
-    // the traversal (RenderQueue.cpp), leaving this "submit" half to just bind + draw.
-    const Mesh*     mesh     = item.mesh;
-    const Material* material = item.material;
-    {
-        // Bind THIS material's four maps (+ the shared sampler) at fragment slots 0–3
-        // for the upcoming draw: albedo, metallic-roughness, normal, AO. Each node can
-        // use different maps, so they're (re)bound per draw — the same per-node rhythm
-        // we already use for the mesh buffers below. A map the material omits falls
-        // back to a neutral 1×1 texture (white for MR/AO, a flat normal), which makes
-        // the shader reduce to the scalar-only look with no branching.
-        const SDL_GPUTextureSamplerBinding maps[4] = {
-            { material->albedo->handle(), sampler_ },
-            { material->metalRough ? material->metalRough->handle() : whiteTex_,      sampler_ },
-            { material->normalMap  ? material->normalMap->handle()  : flatNormalTex_, sampler_ },
-            { material->ao         ? material->ao->handle()         : whiteTex_,      sampler_ },
-        };
-        SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, maps, /*num_bindings=*/4);
+void GpuRenderer::bindMaterial(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                               const Material& material) const {
+    // Bind the material's four maps (+ the shared sampler) at fragment slots 0–3:
+    // albedo, metallic-roughness, normal, AO. A map the material omits falls back to a
+    // neutral 1×1 texture (white for MR/AO, a flat normal), which makes the shader
+    // reduce to the scalar-only look with no branching. This is the state a batch key
+    // groups on — an instanced run shares one material, so it's bound ONCE per batch.
+    const SDL_GPUTextureSamplerBinding maps[4] = {
+        { material.albedo->handle(), sampler_ },
+        { material.metalRough ? material.metalRough->handle() : whiteTex_,      sampler_ },
+        { material.normalMap  ? material.normalMap->handle()  : flatNormalTex_, sampler_ },
+        { material.ao         ? material.ao->handle()         : whiteTex_,      sampler_ },
+    };
+    SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/0, maps, /*num_bindings=*/4);
 
-        // The EMISSIVE map (Step 16) sits at slot 8 — slots 5–7 are the shared IBL maps,
-        // bound once per frame — so it's bound on its own rather than extending maps[].
-        // No emissive map ⇒ the white fallback, which (with a zero factor) adds nothing.
-        const SDL_GPUTextureSamplerBinding emissiveBinding = {
-            material->emissive ? material->emissive->handle() : whiteTex_, sampler_ };
-        SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/8, &emissiveBinding, /*num_bindings=*/1);
+    // The EMISSIVE map (Step 16) sits at slot 8 — slots 5–7 are the shared IBL maps,
+    // bound once per frame — so it's bound on its own rather than extending maps[].
+    // No emissive map ⇒ the white fallback, which (with a zero factor) adds nothing.
+    const SDL_GPUTextureSamplerBinding emissiveBinding = {
+        material.emissive ? material.emissive->handle() : whiteTex_, sampler_ };
+    SDL_BindGPUFragmentSamplers(pass, /*first_slot=*/8, &emissiveBinding, /*num_bindings=*/1);
 
-        // Push this material's parameters (fragment set=3, binding 1), matching the two
-        // vec4s of MaterialUBO in triangle.frag: {metallic, roughness, -, opacity} then
-        // the emissive factor {r, g, b, -}. Per draw, so each object's PBR + glow + alpha
-        // is its own. `opacity` lands in material.w — the shader multiplies it by the
-        // albedo map's alpha to form outColor.a (only the transparent pipeline blends it).
-        const float materialParams[8] = {
-            material->metallic, material->roughness, 0.0f, material->opacity,
-            material->emissiveFactor[0], material->emissiveFactor[1],
-            material->emissiveFactor[2], 0.0f };
-        SDL_PushGPUFragmentUniformData(cmd, /*slot=*/1, materialParams, sizeof(materialParams));
+    // Push this material's parameters (fragment set=3, binding 1), matching the two
+    // vec4s of MaterialUBO in triangle.frag: {metallic, roughness, -, opacity} then
+    // the emissive factor {r, g, b, -}. `opacity` lands in material.w — the shader
+    // multiplies it by the albedo map's alpha to form outColor.a (only the transparent
+    // pipeline blends it).
+    const float materialParams[8] = {
+        material.metallic, material.roughness, 0.0f, material.opacity,
+        material.emissiveFactor[0], material.emissiveFactor[1],
+        material.emissiveFactor[2], 0.0f };
+    SDL_PushGPUFragmentUniformData(cmd, /*slot=*/1, materialParams, sizeof(materialParams));
+}
 
-        // Bind THIS mesh's geometry. Different meshes (e.g. cube vs. ground plane)
-        // live in different buffers, so we (re)bind per drawn node.
-        SDL_GPUBufferBinding vertexBinding = {};
-        vertexBinding.buffer = mesh->vertexBuffer();
-        SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, &vertexBinding, /*num_bindings=*/1);
-        SDL_GPUBufferBinding indexBinding = {};
-        indexBinding.buffer = mesh->indexBuffer();
-        SDL_BindGPUIndexBuffer(pass, &indexBinding, mesh->indexElementSize());
+void GpuRenderer::submitBatch(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass,
+                              const Mesh& mesh, const Material& material,
+                              Uint32 firstInstance, Uint32 count) const {
+    // One instanced draw. Bind the material once (shared by every copy), then the mesh
+    // vertices (slot 0) + this batch's slice of the color instance buffer (slot 1,
+    // offset to its first InstanceData), and draw `count` copies at once. The vertex
+    // shader forms each copy's MVP from the shared viewProj (pushed once by recordScene)
+    // and that copy's model matrix pulled from the instance buffer.
+    bindMaterial(cmd, pass, material);
 
-        // Push the three matrices the vertex shader needs: the full MVP (proj·view·
-        // world, to clip space), the model/world matrix on its own (so the fragment
-        // shader can light in world space), and the NORMAL MATRIX. `model` is the
-        // item's world matrix, cached by updateWorldTransforms — world already folds
-        // in every ancestor's transform, so parented objects move as a group for free.
-        //
-        // normalMatrix = transpose(inverse(model)) is the transform that keeps
-        // surface normals perpendicular under a non-uniform scale (Step 19). The
-        // shader takes its mat3() — for an affine matrix the translation part lands
-        // outside that 3x3 block, so this is exactly the classic 3x3 normal matrix.
-        struct VertexUniform { Mat4 mvp; Mat4 model; Mat4 normalMatrix; };
-        const Mat4 model = item.world;
-        const VertexUniform u = { projView * model, model, transpose(inverse(model)) };
-        SDL_PushGPUVertexUniformData(cmd, /*slot=*/0, &u, sizeof(u));
-        SDL_DrawGPUIndexedPrimitives(pass, mesh->indexCount(), /*num_instances=*/1,
-                                     /*first_index=*/0, /*vertex_offset=*/0,
-                                     /*first_instance=*/0);
-    }
+    SDL_GPUBufferBinding bindings[2] = {};
+    bindings[0].buffer = mesh.vertexBuffer();                     // slot 0: per-vertex mesh data
+    bindings[1].buffer = colorInstanceBuffer_;                   // slot 1: per-instance transforms
+    bindings[1].offset = firstInstance * static_cast<Uint32>(sizeof(InstanceData));
+    SDL_BindGPUVertexBuffers(pass, /*first_slot=*/0, bindings, /*num_bindings=*/2);
+
+    SDL_GPUBufferBinding indexBinding = {};
+    indexBinding.buffer = mesh.indexBuffer();
+    SDL_BindGPUIndexBuffer(pass, &indexBinding, mesh.indexElementSize());
+
+    SDL_DrawGPUIndexedPrimitives(pass, mesh.indexCount(), /*num_instances=*/count,
+                                 /*first_index=*/0, /*vertex_offset=*/0, /*first_instance=*/0);
 }
 
 GpuRenderer::~GpuRenderer() {
@@ -2401,6 +2508,16 @@ GpuRenderer::~GpuRenderer() {
         if (debugVertexBuffer_ != nullptr) {
             SDL_ReleaseGPUBuffer(device_, debugVertexBuffer_);
             debugVertexBuffer_ = nullptr;
+        }
+        // Instancing (Step 24): this frame's transient instance buffers (null unless a
+        // frame ran). Release tolerates null.
+        if (colorInstanceBuffer_ != nullptr) {
+            SDL_ReleaseGPUBuffer(device_, colorInstanceBuffer_);
+            colorInstanceBuffer_ = nullptr;
+        }
+        if (shadowInstanceBuffer_ != nullptr) {
+            SDL_ReleaseGPUBuffer(device_, shadowInstanceBuffer_);
+            shadowInstanceBuffer_ = nullptr;
         }
         // HUD / text overlay (Step 23). hudAtlas_ is a member shared_ptr<Texture>, so
         // (like skyboxMesh_) it must be dropped HERE while the device is still alive —

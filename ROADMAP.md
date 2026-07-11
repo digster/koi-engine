@@ -51,7 +51,7 @@ Three principles shape the plan:
 
 ---
 
-## ✅ Completed — Steps 0–23
+## ✅ Completed — Steps 0–24
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
 post-processed shading of loaded models under many lights, with per-pixel texture + normal maps,
@@ -62,8 +62,10 @@ by replacing Euler rotations with quaternions (Step 18), given a geometry layer 
 restructured around a **render queue** with **frustum culling** (Step 20 — the scaling-track pivot),
 given see-through surfaces via **alpha blending** with a sorted back-to-front transparent pass (Step 21),
 given a **debug-draw** line overlay (AABBs, light icons, the camera frustum) that finally makes the
-Step 19/20 geometry visible on screen (Step 22), and given on-screen **text + a HUD** via an embedded
-bitmap-font atlas drawn as a crisp screen-space overlay after post-processing (Step 23).
+Step 19/20 geometry visible on screen (Step 22), given on-screen **text + a HUD** via an embedded
+bitmap-font atlas drawn as a crisp screen-space overlay after post-processing (Step 23), and given
+**instanced rendering** — the draw list sorted by batch key and identical objects collapsed into single
+instanced draw calls across both the colour and shadow passes (Step 24 — the scaling track's first payoff).
 Each step has a concept-first tutorial —
 linked per row below (note how the doc number runs one ahead of the step), and all collected in
 [`documentation/docs/index.html`](documentation/docs/index.html).
@@ -290,6 +292,25 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** it's the natural payoff on top of debug draw (same immediate-mode collector shape) and the first
   on-screen text — the foundation every later tool (profiler, picking labels, editor panels, console) needs.
 
+### ✅ Step 24 — Instancing & draw-call sorting *(done — [tutorial](documentation/docs/25-instancing-and-draw-call-sorting.html))*
+- **Shipped:** the scaling track's first payoff — the same image with **fewer, cheaper draw calls**. New pure helpers
+  in [`RenderQueue`](src/renderer/RenderQueue.hpp) — `DrawBatch`, `sortByMaterialMesh`/`sortByMesh` (stable pointer-key
+  sorts) and `coalesceBatches` (runs of equal key → one instanced draw) — plan the batches; `GpuRenderer::buildFrameBatches`
+  runs them each frame **before any render pass**: cull → sort → pack every visible transform into a **transient
+  instance buffer** → coalesce. The per-object transform moved OUT of a per-draw uniform into **per-instance vertex
+  attributes**: [`triangle.vert`](shaders/triangle.vert) gains `mat4 inModel` (locs 5–8) + `mat4 inNormalMatrix`
+  (9–12) and its UBO shrinks to the shared `viewProj`; [`shadow.vert`](shaders/shadow.vert) gains `mat4 inModel` and
+  a `lightViewProj` uniform. The **colour pass** batches on `(material, mesh)`, the depth-only **shadow pass** on
+  **mesh alone** (bigger runs). The Step 23 HUD shows a live **Draws N (M items)** readout; unit-tested in
+  [`tests/test_render_queue.cpp`](tests/test_render_queue.cpp). In the demo the four shared cubes fold to one draw
+  (colour **11 items → 8 draws**; shadow **11 → 5**), and the frame is **visually identical** to Step 23 (a handful of
+  pixels differ from the harmless opaque reorder).
+- **Deliberately deferred:** it's CPU-side batching — **GPU-driven culling** + **indirect** draws (parameters from a
+  GPU buffer), **deferred/clustered** shading, and a **render graph** are the next scaling rungs; transparent objects
+  still draw one-per-call (order-dependent blending forbids batching them).
+- **Why here:** the render queue (Step 20) existed precisely to enable this; instancing is also the mechanism a future
+  particle system reuses, and the HUD (Step 23) is what makes the win legible.
+
 ---
 
 ## ⚠️ Architecture pivots — decide early, build late
@@ -341,8 +362,13 @@ tracks are first-class peers of the rendering ones.
   track builds on — see the pivots section) — *done, Step 20* ([`RenderQueue.hpp`](src/renderer/RenderQueue.hpp)).
 - ✅ Bounding volumes + **frustum culling** (skip what the camera can't see) — *done, Step 20*: each `Mesh`
   carries an `Aabb`, the camera pass tests it against the `Frustum` (consuming the Step 19 geometry layer).
-- **Instanced rendering** (one draw call for many copies).
-- Sort the draw list by **pipeline / material** (kill the per-draw rebinding cost known since Step 8).
+- ✅ **Instanced rendering** (one draw call for many copies) — *done, Step 24*
+  ([tutorial](documentation/docs/25-instancing-and-draw-call-sorting.html)): per-instance vertex attributes
+  (`model` + `normalMatrix`) fed from a transient instance buffer, `num_instances` batched draws in both the colour
+  and shadow passes.
+- ✅ Sort the draw list by **pipeline / material** (kill the per-draw rebinding cost known since Step 8) — *done,
+  Step 24*: opaque items stable-sorted by `(material, mesh)` then coalesced into runs, so state is bound once per
+  batch. *Still to come:* sorting by pipeline once there are more than the two (opaque/transparent) pipelines.
 - **Deferred / clustered / tiled** shading (decouple lighting cost from geometry; scale to many
   lights — the known ceiling of forward shading, flagged in `ARCHITECTURE.md`).
 - A **render graph** (declare passes + dependencies; derive order, targets, reuse — see pivots).
@@ -516,9 +542,11 @@ Step 22  debug draw (line overlay: AABBs/frustum/light icons — makes Step 19/2
    │
 Step 23  HUD / text (bitmap-font atlas, screen-space LDR overlay — builds on debug draw)   ✅ done
    │
+Step 24  instancing + sort by material (consumes Step 20 queue; colour + shadow passes)    ✅ done
+   │
 glTF node hierarchy / Sponza ──▶ alpha-tested cutout        ◀── next (learning thread leads)
    │
-sort queue by material / instancing ──▶ cascaded shadows
+cascaded shadows ──▶ GPU-driven / indirect culling (build on Step 24 instancing)
    │
 skeletal animation ──▶ particles ──▶ profiler / picking labels (build on HUD text)
    │

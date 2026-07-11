@@ -103,6 +103,12 @@ private:
     bool  showHud_ = false;
     float fps_     = 0.0f;
 
+    // Draw-call accounting from the LAST rendered frame (Step 24), read from the
+    // renderer in onUpdate and shown in the HUD — the visible payoff of batching:
+    // `drawItems_` drawables submitted, collapsed into `drawCalls_` actual GPU draws.
+    unsigned drawItems_ = 0;
+    unsigned drawCalls_ = 0;
+
     // Angle accumulators (radians) for the animated Y-spins: the hub, the inner
     // pivot ("spinner"), and the one orbiting point light. Transform stores a
     // quaternion now, so we track each spin angle here and rebuild it per frame.
