@@ -135,14 +135,16 @@ struct DrawBatch {
     std::uint32_t   count    = 0;  // number of instances (copies) in this batch
 };
 
-// STABLE-sort `items` so identical draws are adjacent, ready to coalesce. The main
-// color pass keys on (material, mesh) — a batch must share BOTH the bound textures
-// and the geometry. The shadow pass is depth-only, so material is irrelevant and it
-// keys on mesh ALONE (bigger runs). Stable so equal-key items keep their queue order
-// (deterministic frame to frame). Pointer identity is the key: meshes/materials are
-// shared by shared_ptr, so same pointer ⇒ same GPU state.
-void sortByMaterialMesh(std::vector<const RenderItem*>& items);
-void sortByMesh(std::vector<const RenderItem*>& items);
+// STABLE-sort `items` by (mesh, material) — mesh primary, material secondary — so
+// identical draws are adjacent, ready to coalesce. ONE sort serves BOTH passes: the
+// color pass coalesces by (mesh, material) (a batch shares the bound textures AND the
+// geometry), and the depth-only shadow pass coalesces by mesh ALONE (material is
+// irrelevant to depth) — and because mesh is the PRIMARY key, each mesh's items are
+// contiguous for the shadow pass while each (mesh, material) group is contiguous for
+// the color pass. Stable so equal-key items keep their queue order (deterministic
+// frame to frame). Pointer identity is the key: meshes/materials are shared by
+// shared_ptr, so same pointer ⇒ same GPU state.
+void sortByMeshMaterial(std::vector<const RenderItem*>& items);
 
 // Walk an ALREADY-SORTED list and emit one DrawBatch per maximal run of items that
 // share the batch key: (mesh AND material) when `byMaterial` is true, mesh alone

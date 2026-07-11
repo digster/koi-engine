@@ -75,25 +75,20 @@ void partitionByBlend(const std::vector<const RenderItem*>& visible,
                      });
 }
 
-void sortByMaterialMesh(std::vector<const RenderItem*>& items) {
+void sortByMeshMaterial(std::vector<const RenderItem*>& items) {
     // std::less<const void*> gives a well-defined TOTAL ORDER over unrelated pointers
     // (raw `<` on pointers into different objects is not portably ordered). We only
     // need *an* order that puts equal keys together — the values are meaningless.
+    // Mesh is the PRIMARY key so the shadow pass (which groups by mesh alone) sees
+    // contiguous mesh runs; material is the secondary key so the color pass's
+    // (mesh, material) groups are contiguous too.
     std::less<const void*> before;
     std::stable_sort(items.begin(), items.end(),
                      [&before](const RenderItem* a, const RenderItem* b) {
-                         if (a->material != b->material) {
-                             return before(a->material, b->material);
+                         if (a->mesh != b->mesh) {
+                             return before(a->mesh, b->mesh);
                          }
-                         return before(a->mesh, b->mesh);
-                     });
-}
-
-void sortByMesh(std::vector<const RenderItem*>& items) {
-    std::less<const void*> before;
-    std::stable_sort(items.begin(), items.end(),
-                     [&before](const RenderItem* a, const RenderItem* b) {
-                         return before(a->mesh, b->mesh);
+                         return before(a->material, b->material);
                      });
 }
 

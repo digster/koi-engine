@@ -237,7 +237,7 @@ TEST_CASE("partitionByBlend clears both outputs before filling them") {
 }
 
 // ----------------------------------------------------------------------------
-//  Draw-call batching (Step 24) — sortByMaterialMesh / sortByMesh / coalesceBatches.
+//  Draw-call batching (Step 24) — sortByMeshMaterial / coalesceBatches.
 //  The helpers only COMPARE the mesh/material pointers (never dereference them), so
 //  distinct sentinel addresses stand in for real GPU meshes/materials — no device.
 // ----------------------------------------------------------------------------
@@ -326,7 +326,7 @@ TEST_CASE("coalesceBatches handles empty, all-same, and all-distinct inputs") {
     for (const DrawBatch& b : batches) CHECK(b.count == 1);
 }
 
-TEST_CASE("sortByMaterialMesh makes identical draws adjacent so they coalesce") {
+TEST_CASE("sortByMeshMaterial makes identical draws adjacent so they coalesce") {
     // Interleaved keys: (A,0),(B,0),(A,0),(B,1). Sorting must gather the two (A,0)s
     // together, so coalescing yields exactly three batches for four items.
     std::vector<RenderItem> items = {
@@ -335,11 +335,11 @@ TEST_CASE("sortByMaterialMesh makes identical draws adjacent so they coalesce") 
     };
     std::vector<const RenderItem*> list = asPointers(items);
 
-    sortByMaterialMesh(list);
+    sortByMeshMaterial(list);
     std::vector<DrawBatch> batches;
     coalesceBatches(list, /*byMaterial=*/true, batches);
 
-    CHECK(batches.size() == 3);  // (A,0)x2, (A,1)x1, (B,1)x1 — NOT 4
+    CHECK(batches.size() == 3);  // (A,matA)x2, (A,matB)x1, (B,matB)x1 — NOT 4
     const DrawBatch a0 = findBatch(batches, kMeshA, kMatA);
     CHECK(a0.count == 2);
     std::uint32_t total = 0;
@@ -347,7 +347,7 @@ TEST_CASE("sortByMaterialMesh makes identical draws adjacent so they coalesce") 
     CHECK(total == 4);
 }
 
-TEST_CASE("sortByMaterialMesh is stable within a key") {
+TEST_CASE("sortByMeshMaterial is stable within a key") {
     // Two items share the key (A, matA); a stable sort must keep items[0] before
     // items[2] in the output (their input order), never swap equal-key items.
     std::vector<RenderItem> items = {
@@ -356,21 +356,23 @@ TEST_CASE("sortByMaterialMesh is stable within a key") {
         batchItem(kMeshA, kMatA),  // 2
     };
     std::vector<const RenderItem*> list = asPointers(items);
-    sortByMaterialMesh(list);
+    sortByMeshMaterial(list);
 
     const auto pos0 = std::find(list.begin(), list.end(), &items[0]) - list.begin();
     const auto pos2 = std::find(list.begin(), list.end(), &items[2]) - list.begin();
     CHECK(pos0 < pos2);  // equal-key items keep their relative order
 }
 
-TEST_CASE("sortByMesh groups by mesh regardless of material") {
+TEST_CASE("sortByMeshMaterial groups by mesh for the shadow pass (material-blind)") {
+    // Mesh is the PRIMARY key, so items of the same mesh are contiguous regardless of
+    // material — exactly what the shadow pass needs to batch by mesh alone.
     std::vector<RenderItem> items = {
         batchItem(kMeshA, kMatA), batchItem(kMeshB, kMatB),
         batchItem(kMeshA, kMatB), batchItem(kMeshB, kMatA),
     };
     std::vector<const RenderItem*> list = asPointers(items);
 
-    sortByMesh(list);
+    sortByMeshMaterial(list);
     std::vector<DrawBatch> batches;
     coalesceBatches(list, /*byMaterial=*/false, batches);
 

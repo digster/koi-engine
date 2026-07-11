@@ -142,13 +142,15 @@ SHADOW pass   key = (mesh)             depth writes no colour — MATERIAL is ir
 
   <ul>
     <li><strong>Pure helpers</strong> in <a href="21-render-queue-and-frustum-culling.html"><code>RenderQueue</code></a>:
-    <code>sortByMaterialMesh</code> / <code>sortByMesh</code> (stable sorts by pointer key) and
+    <code>sortByMeshMaterial</code> (one stable sort by pointer key — mesh primary, material secondary) and
     <code>coalesceBatches</code>, which walks the sorted list and emits one <code>DrawBatch {mesh, material, first,
     count}</code> per run of equal keys. No GPU state → unit-tested headlessly (<code>tests/test_render_queue.cpp</code>).</li>
-    <li><strong><code>GpuRenderer::buildFrameBatches</code></strong> ties it together each frame: cull → partition
-    (opaque/transparent) → sort → pack every visible transform into a transient <strong>instance buffer</strong> →
-    coalesce the batches. It runs up front, so the instance-buffer upload (which submits on its own command buffer)
-    is finished before the passes draw.</li>
+    <li><strong><code>GpuRenderer::buildFrameBatches</code></strong> ties it together each frame. It sorts the whole
+    queue <strong>once</strong> by <code>(mesh, material)</code> and derives <em>both</em> passes from that single
+    sorted list — the shadow pass coalesces it by mesh, the colour pass culls it (survivors stay grouped) then
+    coalesces by <code>(mesh, material)</code> — packing every visible transform into a transient
+    <strong>instance buffer</strong>. It runs up front, so the instance-buffer upload (which submits on its own command
+    buffer) is finished before the passes draw.</li>
     <li><strong>The record passes</strong> then just bind + draw: for each opaque <code>DrawBatch</code>, bind the
     material + mesh once and issue <code>DrawIndexed(indexCount, num_instances = batch.count)</code>, pointing the
     instance buffer at that batch's slice via a byte offset.</li>

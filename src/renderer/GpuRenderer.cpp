@@ -1220,19 +1220,46 @@ void GpuRenderer::buildFrameBatches(const Mat4& projView, const Vec3& cameraPos)
     // frame's draws. Leaves the record passes as pure "bind + draw the batches".
     lastCameraViewProj_ = projView;  // Step 22: the freezeable culling frustum
 
-    // ---- COLOR pass: cull → partition → sort by (material,mesh) → pack → coalesce ---
+    // ---- ONE sort, shared by both passes ------------------------------------------
+    // Sort the WHOLE queue once by (mesh, material). Mesh is the primary key, so the
+    // shadow pass sees contiguous per-mesh runs; material is secondary, so the color
+    // pass sees contiguous per-(mesh, material) runs. This is the only sort here (the
+    // transparent back-to-front sort lives inside partitionByBlend).
+    sortedItems_.clear();
+    sortedItems_.reserve(renderQueue_.size());
+    for (const RenderItem& item : renderQueue_) {
+        sortedItems_.push_back(&item);
+    }
+    sortByMeshMaterial(sortedItems_);
+
+    // ---- SHADOW pass: the WHOLE sorted queue, coalesced by MESH --------------------
+    // Never camera-culled — an off-screen caster can still shadow in-view geometry.
+    // Depth is material-blind, so it batches by mesh alone (bigger runs).
+    shadowInstances_.clear();
+    shadowInstances_.reserve(sortedItems_.size());
+    for (const RenderItem* item : sortedItems_) {
+        shadowInstances_.push_back(item->world);  // depth only needs the model matrix
+    }
+    uploadShadowInstances(shadowInstances_);
+    coalesceBatches(sortedItems_, /*byMaterial=*/false, shadowBatches_);
+
+    // ---- COLOR pass: cull the sorted list → partition → pack → coalesce ------------
+    // Culling FILTERS the (mesh, material)-sorted list, which preserves order — so the
+    // visible survivors of each (mesh, material) group stay contiguous and coalesce
+    // directly, no separate opaque sort needed. (This is exactly why the color pass
+    // keeps its own visible-packed buffer instead of sharing the shadow buffer: a
+    // whole-queue buffer would leave culling GAPS that fragment these runs.)
     const Frustum cameraFrustum = Frustum::fromViewProjection(projView);
     visibleItems_.clear();
-    for (const RenderItem& item : renderQueue_) {
-        if (!frustumCullingEnabled_ || cameraFrustum.intersectsAabb(item.worldBounds)) {
-            visibleItems_.push_back(&item);
+    for (const RenderItem* item : sortedItems_) {
+        if (!frustumCullingEnabled_ || cameraFrustum.intersectsAabb(item->worldBounds)) {
+            visibleItems_.push_back(item);
         }
     }
     partitionByBlend(visibleItems_, cameraPos, transparentSortEnabled_,
                      opaqueItems_, transparentItems_);
-    sortByMaterialMesh(opaqueItems_);  // group identical opaque draws so they coalesce
 
-    // Pack transforms in DRAW ORDER — opaque (sorted) first, then transparent
+    // Pack transforms in DRAW ORDER — opaque (already grouped) first, then transparent
     // (back-to-front). Each item's slot index here is exactly what its batch (or its
     // single transparent draw) references via the instance-buffer offset.
     colorInstances_.clear();
@@ -1246,21 +1273,6 @@ void GpuRenderer::buildFrameBatches(const Mat4& projView, const Vec3& cameraPos)
     uploadColorInstances(colorInstances_);
     coalesceBatches(opaqueItems_, /*byMaterial=*/true, opaqueBatches_);
 
-    // ---- SHADOW pass: the WHOLE queue (uncSulled), sorted + coalesced by MESH -------
-    shadowOrder_.clear();
-    shadowOrder_.reserve(renderQueue_.size());
-    for (const RenderItem& item : renderQueue_) {
-        shadowOrder_.push_back(&item);
-    }
-    sortByMesh(shadowOrder_);
-    shadowInstances_.clear();
-    shadowInstances_.reserve(shadowOrder_.size());
-    for (const RenderItem* item : shadowOrder_) {
-        shadowInstances_.push_back(item->world);  // depth only needs the model matrix
-    }
-    uploadShadowInstances(shadowInstances_);
-    coalesceBatches(shadowOrder_, /*byMaterial=*/false, shadowBatches_);
-
     // ---- Stats + throttled culling log --------------------------------------------
     const Uint32 items = static_cast<Uint32>(opaqueItems_.size() + transparentItems_.size());
     const Uint32 draws = static_cast<Uint32>(opaqueBatches_.size() + transparentItems_.size());
@@ -1271,7 +1283,7 @@ void GpuRenderer::buildFrameBatches(const Mat4& projView, const Vec3& cameraPos)
         if ((tick++ % 120) == 0) {
             KOI_DEBUG("Batching: %u items → %u color draws (culled %zu/%zu); shadow %zu → %zu draws",
                       items, draws, renderQueue_.size() - visibleItems_.size(),
-                      renderQueue_.size(), shadowOrder_.size(), shadowBatches_.size());
+                      renderQueue_.size(), sortedItems_.size(), shadowBatches_.size());
         }
     }
 }

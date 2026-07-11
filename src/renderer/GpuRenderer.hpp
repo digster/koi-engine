@@ -555,8 +555,8 @@ private:
     Uint32         shadowInstanceCount_  = 0;        // instances uploaded this frame (whole queue)
     mutable std::vector<InstanceData>      colorInstances_;   // scratch: opaque(sorted)+transparent transforms
     mutable std::vector<Mat4>              shadowInstances_;  // scratch: whole-queue model matrices
-    mutable std::vector<const RenderItem*> shadowOrder_;      // scratch: the queue sorted by mesh
-    mutable std::vector<DrawBatch>         opaqueBatches_;    // scratch: coalesced (material,mesh) runs
+    mutable std::vector<const RenderItem*> sortedItems_;      // scratch: whole queue sorted by (mesh,material), shared by both passes
+    mutable std::vector<DrawBatch>         opaqueBatches_;    // scratch: coalesced (mesh,material) runs
     mutable std::vector<DrawBatch>         shadowBatches_;    // scratch: coalesced mesh runs
     mutable DrawStats                      lastDrawStats_;
 

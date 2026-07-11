@@ -548,3 +548,16 @@ moved from a per-draw uniform into **per-instance vertex attributes**: `triangle
 README/ARCHITECTURE/ROADMAP updated. Verified: batching log shows colour **11→8**, shadow **11→5** draws; a git-stash
 before/after capture is **visually identical** (68/3,686,538 bytes differ, ≤5/255 — the harmless opaque reorder).
 **Deferred:** GPU-driven/indirect culling, deferred shading, render graph; transparent still one-per-call.
+
+> Work on your suggestion. [chose: shadow-buffer dedup → scope: unify the prep, keep 2 buffers]
+
+Step 24 follow-up — **unify the two passes' batch preparation**. Resolved the "shadow buffer re-packs model matrices
+the colour buffer already has" note I'd flagged. Analysis showed a full single-buffer merge would fragment colour
+batches under culling (colour draws a camera-culled subset, shadow the whole queue), so the buffers are kept separate
+(documented). What's deduped is the CPU prep: `buildFrameBatches` now sorts the whole queue **once** by
+`(mesh, material)` and derives both passes from that single sorted list — the shadow pass coalesces by mesh, the
+colour pass culls it (survivors stay grouped) then coalesces by `(mesh, material)`. Replaced `sortByMaterialMesh` +
+`sortByMesh` with one `sortByMeshMaterial` (mesh primary, material secondary); renamed the member `shadowOrder_` →
+`sortedItems_`; removed the redundant second sort + separate pointer-list. Tests updated (124 pass). Verified
+**byte-identical** to committed Step 24 (git-stash before/after: 0/3,686,538 bytes differ); batching log unchanged
+(colour 11→8, shadow 11→5). ARCHITECTURE + tutorial §6 + memory updated. No new step/README-status change.
