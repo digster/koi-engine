@@ -1,0 +1,57 @@
+{
+  // ==========================================================================
+  //  clangd — C++ language server for Koi
+  // --------------------------------------------------------------------------
+  //  clangd learns each file's exact compile flags from build/compile_commands.json
+  //  (CMake emits it because CMAKE_EXPORT_COMPILE_COMMANDS is ON). The root .clangd
+  //  file already tells clangd that database lives in build/, so there's nothing to
+  //  configure about *where* the flags come from here — only *how* clangd runs.
+  // ==========================================================================
+
+  // Use the Apple clangd that ships with the Xcode Command Line Tools. It's the
+  // exact-version match to /usr/bin/c++ (the compiler in compile_commands.json),
+  // so it understands Apple Clang's flags and built-in headers without surprises.
+  // Cross-platform contributors can override this in their user settings.
+  "clangd.path": "/usr/bin/clangd",
+
+  "clangd.arguments": [
+    // Index the whole project in the background so go-to-definition and
+    // find-references work across files, not just the ones you've opened.
+    "--background-index",
+    // Surface clang-tidy lints inline. The repo has no .clang-tidy, so clangd's
+    // sensible defaults apply.
+    "--clang-tidy",
+    // Richer completion items (shows types/qualifiers, not just names).
+    "--completion-style=detailed",
+    // Don't auto-insert #include directives when accepting a completion — the
+    // engine is deliberate about its include structure.
+    "--header-insertion=never",
+    // THE macOS fix: clangd won't run a compiler to discover its built-in and
+    // SDK header paths unless that driver is explicitly allow-listed. Apple Clang
+    // keeps <stddef.h>, SIMD intrinsics, and the macOS SDK path *inside the driver*
+    // (not in compile_commands.json), so without this clangd reports bogus
+    // "file not found" errors on system headers.
+    "--query-driver=/usr/bin/c++",
+    // Keep precompiled-header data in RAM instead of writing it to .cache/ —
+    // faster, and avoids disk churn on a small project.
+    "--pch-storage=memory"
+  ],
+
+  // If the Microsoft C/C++ extension is installed anyway, stop its IntelliSense
+  // engine from running so it doesn't double up on clangd's diagnostics.
+  "C_Cpp.intelliSenseEngine": "disabled",
+
+  // Language hints for files VS Code might otherwise mislabel: our headers are
+  // C++ (.hpp), and the GLSL shaders under shaders/ get GLSL highlighting if a
+  // GLSL extension is installed (harmless otherwise).
+  "files.associations": {
+    "*.hpp": "cpp",
+    "*.vert": "glsl",
+    "*.frag": "glsl"
+  },
+
+  // Don't reformat on save: the repo has no .clang-format, so clangd would impose
+  // LLVM defaults and churn the codebase's hand-tuned style. Format explicitly
+  // (or add a .clang-format later) instead.
+  "editor.formatOnSave": false
+}

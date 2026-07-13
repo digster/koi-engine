@@ -1,0 +1,41 @@
+{
+  // Build/configure/test tasks that reuse the CMake presets defined in
+  // CMakePresets.json (the "debug" preset → Unix Makefiles into build/). Running
+  // through presets keeps the editor and the command line building identically.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // One-time (or after CMakeLists.txt changes) generation of the build system.
+      // This is also what (re)writes build/compile_commands.json for clangd.
+      "label": "CMake: configure (debug)",
+      "type": "shell",
+      "command": "cmake --preset debug",
+      "problemMatcher": []
+    },
+    {
+      // Default build task — triggered by Cmd+Shift+B and by the debug configs'
+      // preLaunchTask. Builds koi_core, koi-demo, and koi-tests.
+      "label": "CMake: build (debug)",
+      "type": "shell",
+      "command": "cmake --build --preset debug",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      // $gcc parses clang/gcc-style "file:line:col: error/warning:" output into
+      // the Problems panel (Apple Clang emits this format too).
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      // Default test task — runs the doctest suite via CTest.
+      "label": "CMake: run tests (debug)",
+      "type": "shell",
+      "command": "ctest --preset debug",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

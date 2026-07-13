@@ -561,3 +561,19 @@ colour pass culls it (survivors stay grouped) then coalesces by `(mesh, material
 `sortedItems_`; removed the redundant second sort + separate pointer-list. Tests updated (124 pass). Verified
 **byte-identical** to committed Step 24 (git-stash before/after: 0/3,686,538 bytes differ); batching log unchanged
 (colour 11→8, shadow 11→5). ARCHITECTURE + tutorial §6 + memory updated. No new step/README-status change.
+
+> Setup the repo for vscode(with clangd extension instead of the default)
+
+Tooling, not a Step. Wired up VS Code to use **clangd** (`llvm-vs-code-extensions.vscode-clangd`) for C++
+IntelliSense instead of Microsoft's `ms-vscode.cpptools`, so the editor reads the exact compile flags from the
+already-exported `build/compile_commands.json` (the root `.clangd` already points there). Added a committed `.vscode/`
+folder — `extensions.json` (recommend clangd + CodeLLDB, mark cpptools *unwanted*), `settings.json` (Apple
+`/usr/bin/clangd`, `--background-index`/`--clang-tidy`/`--query-driver=/usr/bin/c++`, disable cpptools' engine,
+`formatOnSave` off since there's no `.clang-format`), `tasks.json` (build/configure/test via the existing `debug`
+CMake preset; `$gcc` problem matcher), and `launch.json` (CodeLLDB launch configs for `koi-demo` + `koi-tests`,
+`preLaunchTask` = build, commented `KOI_CAPTURE` env). `.gitignore` changed from ignoring all of `.vscode/` to
+`.vscode/*` + negation exceptions so only the four shared config files are tracked. The **`--query-driver`** flag is
+the macOS linchpin: it lets clangd interrogate `/usr/bin/c++` for the Apple SDK/builtin header paths, avoiding bogus
+"file not found" on system/SDL3 headers. Verified headlessly: `git add -n` tracks exactly the 4 files, all JSONC
+parses, `cmake --build --preset debug` succeeds, and `clangd --check src/core/Engine.cpp` reports **0 errors** with the
+Xcode `-isysroot`, libc++, `/opt/homebrew/include` (SDL3) and `src/` all resolved.

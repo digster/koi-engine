@@ -1,0 +1,20 @@
+{
+  // Extensions VS Code will offer to install when this repo is opened.
+  //
+  // Koi uses clangd for C++ IntelliSense (see settings.json for why) instead of
+  // Microsoft's C/C++ extension. clangd reads build/compile_commands.json — the
+  // exact compiler flags CMake used — so completions and diagnostics match the
+  // real build. CodeLLDB is the debugger that pairs with clangd on macOS (the
+  // Microsoft debugger ships inside cpptools, which we deliberately don't use).
+  "recommendations": [
+    "llvm-vs-code-extensions.vscode-clangd",
+    "vadimcn.vscode-lldb"
+  ],
+
+  // Actively discourage the Microsoft C/C++ extension: its IntelliSense engine
+  // runs in parallel with clangd and produces duplicate, often-conflicting
+  // squiggles. Listing it here makes VS Code prompt the user to disable it.
+  "unwantedRecommendations": [
+    "ms-vscode.cpptools"
+  ]
+}

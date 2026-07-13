@@ -37,7 +37,14 @@ assets/DamagedHelmet.glb
 # ----------------------------------------------------------------------------
 #  Editor / IDE
 # ----------------------------------------------------------------------------
-.vscode/
+# Track the *shared* VS Code config (clangd, build tasks, debug) so a clone gets
+# a working editor setup, but keep ignoring the per-user files VS Code drops in
+# .vscode/ (workspace state, per-machine overrides, etc.).
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
 .idea/
 .cache/             # clangd
 *.swp

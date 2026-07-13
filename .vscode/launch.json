@@ -1,0 +1,30 @@
+{
+  // Debug configurations using CodeLLDB (type: "lldb"). CodeLLDB drives the
+  // system LLDB, which is the right debugger for our Apple Clang builds and pairs
+  // with clangd instead of the Microsoft C/C++ debugger.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug koi-demo",
+      "program": "${workspaceFolder}/build/koi-demo",
+      "args": [],
+      // Run from the repo root, matching the documented `./build/koi-demo`
+      // invocation so relative asset paths resolve the same way.
+      "cwd": "${workspaceFolder}",
+      // To debug the off-screen single-frame capture (see CLAUDE.md), uncomment:
+      // "env": { "KOI_CAPTURE": "${workspaceFolder}/out.bmp" },
+      "preLaunchTask": "CMake: build (debug)"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug koi-tests",
+      "program": "${workspaceFolder}/build/koi-tests",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "CMake: build (debug)"
+    }
+  ]
+}
