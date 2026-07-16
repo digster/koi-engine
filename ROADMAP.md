@@ -51,7 +51,7 @@ Three principles shape the plan:
 
 ---
 
-## ✅ Completed — Steps 0–24
+## ✅ Completed — Steps 0–25
 
 The forward-rendering fundamentals are done: from a blank window to physically-based, shadowed,
 post-processed shading of loaded models under many lights, with per-pixel texture + normal maps,
@@ -165,9 +165,9 @@ provides, and both build toward "metals that reflect their surroundings."
   (`Material.emissive`/`emissiveFactor`, a 9th fragment sampler + a second material-UBO `vec4`, added after
   shading in [`shaders/triangle.frag`](shaders/triangle.frag) so it also feeds the Step 10 bloom). The
   **Damaged Helmet** loads as the hero, verified via `KOI_CAPTURE`.
-- **Deliberately deferred:** OBJ `.mtl` import; multi-primitive / multi-material meshes; base64 **data-URI**
-  images; the full glTF **node hierarchy** (we import raw primitive geometry, so the app rotates the Z-up
-  helmet upright itself); engine-wide colour management beyond colour textures; **Sponza**.
+- **Deliberately deferred:** OBJ `.mtl` import; base64 **data-URI** images; glTF **samplers/wrap modes**;
+  engine-wide colour management beyond colour textures; **Sponza**. *(Multi-primitive / multi-material meshes and
+  the full glTF **node hierarchy** landed in **Step 25**.)*
 - **Why here:** it pays off the Step 13 IOU (that step built the per-pixel map machinery but fed it
   generated BMPs), and it puts every Step 12–15 subsystem to work on a single real asset.
 
@@ -311,6 +311,24 @@ provides, and both build toward "metals that reflect their surroundings."
 - **Why here:** the render queue (Step 20) existed precisely to enable this; instancing is also the mechanism a future
   particle system reuses, and the HUD (Step 23) is what makes the win legible.
 
+### ✅ Step 25 — glTF node hierarchy & multi-material meshes *(done — [tutorial](docs/tuts/26-gltf-node-hierarchy.html))*
+- **Shipped:** the loader can import a whole glTF **scene**, not just its first mesh. A new
+  `loadModelHierarchy(path)` in [`ModelLoader`](src/renderer/ModelLoader.cpp) walks the file's **node tree** and
+  returns a [`Node`](src/scene/Node.hpp) subtree: each glTF node → a group node with its local transform; each mesh
+  **primitive** → one child draw-node (a glTF mesh is a bag of primitives, one **material** each). Node transforms
+  are read as **TRS** (the rotation's `xyzw` already matches our `Quat`) or **decomposed** from a raw matrix via new
+  pure-math **`Transform::fromMatrix`** + **`Quat::fromRotationMatrix`** (trace-based; round-trips unit-tested in
+  [`tests/test_transform.cpp`](tests/test_transform.cpp) / [`test_quat.cpp`](tests/test_quat.cpp)). A per-import
+  **texture cache** (`cgltf_image*` → `Texture`) uploads each shared image **once**. The per-primitive geometry read
+  was extracted into a shared `loadPrimitiveMesh`, so the single-mesh `loadModel` and the hierarchy path share it.
+  Verified on a generated [`assets/multimesh.glb`](tools/gen_multimesh.py) via `KOI_CAPTURE`.
+- **Nothing downstream changed:** `Node`, the render queue, and Step 24's instancing already draw a deep,
+  many-material tree — this step just fills that tree from a file.
+- **Deliberately deferred:** glTF **samplers / wrap modes** (tiled textures need REPEAT — the first thing **Sponza**
+  forces), base64 **data-URI** images, and material **alpha-mode** import; **Sponza** itself is the next milestone.
+- **Why here:** it's the roadmap's `◀── next` (the learning thread leads), and it's the prerequisite for Sponza and
+  for skeletal animation (which imports a node/joint hierarchy the same way).
+
 ---
 
 ## ⚠️ Architecture pivots — decide early, build late
@@ -401,8 +419,10 @@ first blend-enabled pipeline; smoke, foliage cutouts, and particles are still to
 
 **Geometry & content**
 - ✅ Full **glTF PBR material import** — read base-color / metallic-roughness / normal / AO / emissive
-  from the file *(Step 16, via cgltf + stb_image)*. Still to do: honour glTF **samplers**,
-  multi-primitive/multi-material meshes, and data-URI images.
+  from the file *(Step 16, via cgltf + stb_image)*.
+- ✅ **glTF node hierarchy + multi-primitive/multi-material meshes** — import a whole scene as a `Node` subtree,
+  one child per primitive, decomposing raw node matrices to TRS *(Step 25)*. Still to do: honour glTF **samplers**
+  (wrap modes) and **data-URI** images.
 - **Standard test scenes** — load the Khronos glTF samples: ✅ **Damaged Helmet** (materials) *loads as of
   Step 16*; **Sponza** (culling/lighting stress) still to come, as recurring verification + benchmarking.
 - **Terrain**: heightmap-based, chunked; **noise** utilities (Perlin/simplex) to generate it — and
@@ -544,7 +564,9 @@ Step 23  HUD / text (bitmap-font atlas, screen-space LDR overlay — builds on d
    │
 Step 24  instancing + sort by material (consumes Step 20 queue; colour + shadow passes)    ✅ done
    │
-glTF node hierarchy / Sponza ──▶ alpha-tested cutout        ◀── next (learning thread leads)
+Step 25  glTF node hierarchy + multi-primitive/multi-material meshes (Node subtree import)  ✅ done
+   │
+Sponza (samplers/wrap modes + culling/lighting stress) ──▶ alpha-tested cutout   ◀── next (learning thread leads)
    │
 cascaded shadows ──▶ GPU-driven / indirect culling (build on Step 24 instancing)
    │

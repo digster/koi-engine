@@ -9,19 +9,19 @@ in [`docs/tuts/`](docs/tuts/index.html) that explains the underlying graphics co
 first principles, for readers new to graphics programming. The docs are plain HTML
 (no build step) — open [`docs/tuts/index.html`](docs/tuts/index.html) in a browser.
 
-> **Current status — Step 24:** **instancing & draw-call sorting**. The engine now draws the same scene with
-> **fewer, cheaper draw calls**. The flat render queue is **sorted** by batch key so identical work is adjacent,
-> then **instanced** — a run of identical objects collapses into a *single* draw call (`num_instances = N`). The
-> per-object transform moves out of a per-draw uniform into a **per-instance vertex buffer** the GPU walks itself
-> (`triangle.vert`/`shadow.vert` gained `mat4` instance attributes; the uniform shrinks to the shared `viewProj`).
-> The **colour pass** batches on `(material, mesh)`; the depth-only **shadow pass** batches on **mesh alone** (bigger
-> runs). Pure `sortByMaterialMesh`/`coalesceBatches` helpers in [`RenderQueue`](src/renderer/RenderQueue.hpp) plan
-> the batches (unit-tested); `GpuRenderer::buildFrameBatches` packs the instance buffers before the passes. The HUD
-> shows a live **Draws N (M items)** readout — the batching win. The rendered image is unchanged. *(Known deferrals:
-> CPU-side batching only — GPU-driven/indirect culling, deferred shading, and a render graph are future steps;
-> transparent objects still draw one-per-call.)*
-> *(Step 23 added **HUD & text** — an embedded 8×8 bitmap font baked into a texture atlas, drawn as a crisp
-> screen-space overlay after post-processing.)*
+> **Current status — Step 25:** **glTF node hierarchy & multi-material meshes**. The loader can now import a whole
+> glTF **scene**, not just its first mesh. A new `loadModelHierarchy(path)` walks the file's **node tree** and returns
+> a ready-to-render [`Node`](src/scene/Node.hpp) subtree: each glTF node becomes a group node carrying its local
+> transform, and because a glTF mesh is a **bag of primitives** (one material each) it fans into **one child draw-node
+> per primitive**. Node transforms arrive as **TRS or a raw matrix** — the matrix is **decomposed** back to
+> translation/rotation/scale via new pure-math `Transform::fromMatrix` + `Quat::fromRotationMatrix` (unit-tested). A
+> per-import **texture cache** uploads each shared image only **once**. Nothing downstream changed — `Node`, the render
+> queue, and Step 24's instancing already draw such a tree. Verified on a generated `assets/multimesh.glb`
+> (`tools/gen_multimesh.py`). *(Known deferrals: glTF **samplers/wrap modes**, **data-URI** images, and material
+> **alpha mode** are not imported yet, and **Sponza** is the next step — that's where wrap modes and draw-call stress
+> start to matter.)*
+> *(Step 24 added **instancing & draw-call sorting** — the flat render queue sorted by batch key, then identical runs
+> collapsed into a single instanced draw across the colour and shadow passes.)*
 >
 > **Controls:** `W`/`A`/`S`/`D` move, `E`/`Q` up/down, mouse to look, `Esc` to quit.
 > Post-processing: `1` tone-map, `2` bloom, `3` FXAA, `4` vignette, `[` / `]` exposure.

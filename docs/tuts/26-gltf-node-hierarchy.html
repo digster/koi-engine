@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>glTF Node Hierarchy · Koi Engine</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <a class="brand" href="index.html">🐟 Koi Engine</a>
+    <a class="navlink" href="index.html">Home</a>
+    <a class="navlink" href="00-getting-started.html">Getting Started</a>
+    <a class="navlink" href="01-window-and-render-loop.html">Window &amp; Render Loop</a>
+    <a class="navlink" href="02-first-triangle.html">First Triangle</a>
+    <a class="navlink" href="03-vertex-and-index-buffers.html">Vertex &amp; Index Buffers</a>
+    <a class="navlink" href="04-3d-cube-mvp-and-depth.html">3D Cube: MVP &amp; Depth</a>
+    <a class="navlink" href="05-camera-and-input.html">Camera &amp; Input</a>
+    <a class="navlink" href="06-meshes-and-scene-graph.html">Meshes &amp; Scene Graph</a>
+    <a class="navlink" href="07-textures-and-samplers.html">Textures &amp; Samplers</a>
+    <a class="navlink" href="08-lighting-and-normals.html">Lighting &amp; Normals</a>
+    <a class="navlink" href="09-materials.html">Materials</a>
+    <a class="navlink" href="10-models-and-shadows.html">Models &amp; Shadows</a>
+    <a class="navlink" href="11-post-processing.html">Post-processing</a>
+    <a class="navlink" href="12-multiple-lights.html">Multiple Lights</a>
+    <a class="navlink" href="13-pbr-materials.html">PBR Materials</a>
+    <a class="navlink" href="14-texture-and-normal-maps.html">Texture &amp; Normal Maps</a>
+    <a class="navlink" href="15-skybox-and-cubemaps.html">Skybox &amp; Cubemaps</a>
+    <a class="navlink" href="16-image-based-lighting.html">Image-based Lighting</a>
+    <a class="navlink" href="17-gltf-pbr-import.html">glTF PBR Import</a>
+    <a class="navlink" href="18-engine-app-separation.html">Engine / App Separation</a>
+    <a class="navlink" href="19-quaternions.html">Quaternions</a>
+    <a class="navlink" href="20-geometry-utilities.html">Geometry Utilities</a>
+    <a class="navlink" href="21-render-queue-and-frustum-culling.html">Render Queue &amp; Culling</a>
+    <a class="navlink" href="22-transparency-and-alpha-blending.html">Transparency &amp; Blending</a>
+    <a class="navlink" href="23-debug-draw.html">Debug Draw</a>
+    <a class="navlink" href="24-hud-and-text.html">HUD &amp; Text</a>
+    <a class="navlink" href="25-instancing-and-draw-call-sorting.html">Instancing &amp; Sorting</a>
+    <a class="navlink" href="26-gltf-node-hierarchy.html" aria-current="page">glTF Node Hierarchy</a>
+  </div>
+</nav>
+
+<main>
+  <h1>glTF Node Hierarchy &amp; Multi-material Meshes</h1>
+
+  <blockquote>
+    <p><strong>Goal of Step 25:</strong> import a whole glTF <em>scene</em>, not just one mesh. Back at
+    <a href="17-gltf-pbr-import.html">Step 16</a> we loaded a single object — the Damaged Helmet — by reading the
+    file's <em>first mesh's first primitive</em> and its one material. Real glTF files are richer: a <strong>tree of
+    nodes</strong>, meshes made of <strong>several primitives</strong> that each carry their <strong>own
+    material</strong>, and textures <strong>shared</strong> across those materials. This step teaches the loader to
+    honour all of that and hand back a ready-to-render <a href="06-meshes-and-scene-graph.html">scene-graph</a>
+    subtree.</p>
+    <p>The lovely part: the engine already has everything to <em>draw</em> such a subtree. This is almost entirely a
+    <strong>loader</strong> step — plus one small piece of new math.</p>
+  </blockquote>
+
+  <h2>1. A glTF file is a scene, not a mesh</h2>
+
+  <p>It's tempting to picture a model file as "a bag of triangles." glTF is more structured than that — it's a small
+  <strong>scene description</strong>. The pieces, from the top down:</p>
+
+  <pre class="diagram">scene     a list of root NODES to show
+node      a placement (transform) + optional mesh + child nodes   ← a TREE
+mesh      a name + a list of PRIMITIVES                           ← NOT a single blob
+primitive one draw: vertex attributes + indices + ONE material
+material  base colour / metallic-roughness / normal / … maps + factors
+texture   an image + a sampler (how to filter/wrap it)
+image     the actual PNG/JPG bytes (embedded, or an external file)</pre>
+
+  <p>Step 16 walked straight to <code>meshes[0].primitives[0]</code> and ignored the rest — fine for a one-piece
+  asset, but it drops the node tree, every extra mesh, and every extra primitive on the floor. To load a real scene we
+  have to visit all of it.</p>
+
+  <h2>2. A mesh is a <em>bag of primitives</em> — and why</h2>
+
+  <p>The surprising word above is <strong>primitive</strong>. In glTF a "mesh" is not one lump of geometry; it's a
+  <em>list</em> of primitives, and the reason is <strong>materials</strong>. A single draw call can only bind
+  <em>one</em> material at a time (one set of textures, one set of factors). So an object that needs several materials
+  — say a character whose body, eyes, and armour look different — is split into one primitive <em>per material</em>.
+  A car body and its glass windows are two primitives of the same mesh.</p>
+
+  <p>Our <a href="06-meshes-and-scene-graph.html"><code>koi::Node</code></a> draws exactly one
+  <code>(mesh, material)</code> pair. That's not a limitation to work around — it maps the concept perfectly. A glTF
+  mesh with N primitives simply becomes <strong>N child nodes</strong>, one per primitive, each with its own geometry
+  and material, all sharing the parent node's placement:</p>
+
+  <pre class="diagram">glTF:  node "car"  ─ mesh ─ primitive 0 (body   material)
+                            └ primitive 1 (glass  material)
+
+koi:   Node "car" (group, holds the transform)
+         ├─ Node (body mesh,  body material)     ← drawable
+         └─ Node (glass mesh, glass material)    ← drawable</pre>
+
+  <h2>3. The node graph <em>is</em> our scene graph</h2>
+
+  <p>A glTF node carries a <strong>local transform</strong> and a list of <strong>child</strong> nodes — a child's
+  placement is expressed relative to its parent. That is exactly the scene graph we built in
+  <a href="06-meshes-and-scene-graph.html">Step 5</a>, where <code>world(node) = world(parent) · local(node)</code>.
+  So importing the hierarchy is a direct translation: each glTF node becomes a <code>koi::Node</code> carrying its
+  transform, its primitives hang off it as child draw-nodes, and its glTF children recurse the same way.</p>
+
+  <p>Because the mapping is one-to-one, <em>nothing downstream changes</em>. Once the subtree exists, the app's
+  per-frame <code>updateWorldTransforms()</code> pass propagates matrices down it, and
+  <a href="21-render-queue-and-frustum-culling.html">Step 20</a>'s <code>buildRenderQueue</code> flattens it into draw
+  items — the same code that already draws the hand-built demo scene. Even
+  <a href="25-instancing-and-draw-call-sorting.html">Step 24</a>'s instancing "just works": each imported sub-mesh is
+  its own unique geometry, so it renders as a batch of one, sorted next to anything that shares its material.</p>
+
+  <h2>4. Two ways to write a transform: TRS or a matrix</h2>
+
+  <p>How does a glTF node store its placement? In one of two forms, and a loader must handle both:</p>
+
+  <pre class="diagram">TRS     translation[3] + rotation[4] (a quaternion, x,y,z,w) + scale[3]
+MATRIX  a single 4×4 matrix (column-major) that already bakes T, R, S together</pre>
+
+  <p>The <strong>TRS</strong> form drops straight into our <a href="19-quaternions.html"><code>Transform</code></a>.
+  This is a quiet payoff from the quaternion step: glTF stores a rotation as <code>(x, y, z, w)</code> — vector part
+  first, scalar last — which is <em>exactly</em> our <code>Quat</code>'s memory order, so the four numbers copy over
+  with no shuffling.</p>
+
+  <p>The <strong>matrix</strong> form is the interesting one. Our <code>Transform</code> stores separate T, R, and S,
+  but the file handed us a single baked matrix — so we must run the bake <em>backwards</em>, recovering the three
+  parts. This is called <strong>decomposition</strong>:</p>
+
+  <pre class="diagram">TRANSLATION  the last column (the matrix's 12th–14th floats)
+SCALE        the LENGTH of each of the three basis columns
+             (a pure rotation's columns are unit-length, so any extra length IS the scale)
+ROTATION     what's left after dividing each column by its scale — a clean
+             orthonormal 3×3 → turned back into a quaternion</pre>
+
+  <p>That last arrow needs a new tool: a quaternion <em>from</em> a rotation matrix, the inverse of the
+  <code>toMat4()</code> we wrote in Step 18. It lives in <code>Quat::fromRotationMatrix</code>, and it uses the
+  standard <strong>trace-based</strong> method — the naïve formula loses all precision near a 180° turn, so we solve
+  for whichever component is provably largest first. The whole decomposition is <code>Transform::fromMatrix</code>.</p>
+
+  <blockquote>
+    <p><strong>Why is decomposition always safe?</strong> In general a 4×4 matrix could contain <em>shear</em> (a
+    skew that no translation/rotation/scale can reproduce). The glTF spec <em>forbids</em> shear in node matrices —
+    they must be a clean translate·rotate·scale — so the decomposition above is always exact. One subtlety: a
+    <strong>mirrored</strong> node (a negative scale that flips handedness) can't be a rotation with all-positive
+    scale, so we detect the flipped determinant and fold the sign into one scale axis, leaving a proper rotation the
+    quaternion can represent. Both the round-trip and the mirror case are pinned down in
+    <code>tests/test_transform.cpp</code>.</p>
+  </blockquote>
+
+  <h2>5. Uploading each texture only once</h2>
+
+  <p>A scene's materials <strong>share</strong> textures — a tiling brick image might be the base colour of a dozen
+  wall materials. Our texture loader (<a href="07-textures-and-samplers.html">Step 6</a>) decodes and uploads a
+  <em>fresh</em> GPU texture every time it's called, so importing naïvely would upload that brick image a dozen times,
+  wasting decode time and — worse — VRAM, holding a dozen identical copies.</p>
+
+  <p>The fix is a small <strong>cache</strong> that lives for the duration of one import: a map from a glTF image to
+  the <code>Texture</code> we already made for it. The first material to reference an image decodes and uploads it;
+  every later material that names the same image gets the shared handle back. It's the seed of the
+  <em>asset manager</em> the <a href="../../ROADMAP.md">roadmap</a> plans — here, kept deliberately tiny and scoped to
+  a single file.</p>
+
+  <h2>6. In the engine</h2>
+
+  <p>All of this is additive — the simple single-mesh <code>loadModel</code> stays for assets like
+  <code>sphere.glb</code>, and a new entry point handles whole scenes. It all lives in
+  <a href="17-gltf-pbr-import.html"><code>src/renderer/ModelLoader.cpp</code></a>:</p>
+
+  <ul>
+    <li><strong><code>loadModelHierarchy(renderer, path)</code></strong> — the new public entry point. Parses the
+    glTF, picks the default <strong>scene</strong>, and returns a <code>std::unique_ptr&lt;Node&gt;</code> subtree
+    (wrapped in one group node) plus a per-import texture cache. The caller attaches it with
+    <code>sceneRoot_-&gt;addChild(...)</code>.</li>
+    <li><strong><code>buildGltfNode(...)</code></strong> — the recursion. One glTF node → a group
+    <code>koi::Node</code> (its local transform from <code>gltfNodeTransform</code>), one child draw-node per
+    primitive, then recurse into child nodes.</li>
+    <li><strong><code>loadPrimitiveMesh(...)</code></strong> — the per-primitive geometry read (positions, normals,
+    UVs, tangents, indices), <em>extracted</em> from the old single-mesh path so both loaders share one, well-tested
+    code path. Missing normals/tangents are still filled in as before.</li>
+    <li><strong><code>gltfNodeTransform</code> / <code>Transform::fromMatrix</code> /
+    <code>Quat::fromRotationMatrix</code></strong> — the transform plumbing from §4. The pure-math pieces live in
+    <code>src/scene/Transform.hpp</code> and <code>src/math/Quat.hpp</code>, unit-tested with no GPU.</li>
+  </ul>
+
+  <p>Notice what <em>didn't</em> change: <code>Node</code>, the render queue, the batching, the shaders. The engine
+  was already built to draw a deep tree of many-material objects — this step just fills that tree from a file.</p>
+
+  <h2>7. Honest limitations</h2>
+
+  <p>This step imports the <em>structure</em> faithfully, but a few glTF features are deliberately left for later —
+  most of them only start to matter for the big stress scene (Sponza) that comes next:</p>
+
+  <ul>
+    <li><strong>Samplers / wrap modes</strong> aren't read yet. Every texture uses the one renderer-owned sampler, so
+    a texture authored to <strong>tile</strong> (repeat) won't tile correctly until we import per-texture wrap modes —
+    the first thing Sponza will force.</li>
+    <li><strong>data-URI images</strong> (base64 pixels inlined in the JSON) are still skipped, as in Step 16; we
+    handle embedded-in-the-<code>.glb</code> and external-file images.</li>
+    <li><strong>Alpha mode</strong> from the material isn't imported — everything comes in opaque even though the
+    <a href="22-transparency-and-alpha-blending.html">material supports blending</a>.</li>
+    <li>Every primitive becomes its own node. For a huge scene that's a lot of small nodes — finer
+    <a href="21-render-queue-and-frustum-culling.html">culling</a> granularity (good) but more bookkeeping (a cost a
+    future asset manager will address).</li>
+  </ul>
+
+  <h2>8. Try it yourself</h2>
+
+  <ol>
+    <li><strong>Generate the test model.</strong> <code>uv run tools/gen_multimesh.py</code> writes
+    <code>assets/multimesh.glb</code> — a tiny scene built to exercise every path at once: a root
+    <em>pivot</em> (a 25° turn) parents a two-material <em>post</em> (one mesh, two primitives) and a <em>cap</em>
+    whose placement is a raw <strong>matrix</strong>, and the two post materials <strong>share</strong> one checker
+    texture.</li>
+    <li><strong>Run it.</strong> <code>cmake --build build &amp;&amp; ./build/koi-demo</code> — the model appears
+    front-left. The loader logs <code>Loaded model hierarchy '…multimesh.glb' (1 root node(s),
+    <strong>1 unique texture(s)</strong>)</code>: two textured materials, one upload — the cache at work.</li>
+    <li><strong>Capture it.</strong> <code>KOI_CAPTURE=out.bmp ./build/koi-demo</code> then
+    <code>sips -s format png out.bmp --out out.png</code>. You'll see the stacked, tinted, checker-textured post with
+    its wide flat cap correctly placed above it — proof the multi-primitive fan-out and the matrix decomposition both
+    landed.</li>
+  </ol>
+
+  <h2>9. What's next</h2>
+
+  <p>➡️ With hierarchies and multi-material meshes in hand, the loader is ready for a real environment:
+  <strong>Sponza</strong> — which will pull in glTF <strong>samplers/wrap modes</strong> (so its tiled textures read
+  right) and put the <a href="21-render-queue-and-frustum-culling.html">culling</a> and
+  <a href="12-multiple-lights.html">lighting</a> under genuine stress. From there the learning thread branches to
+  <strong>alpha-tested cutout</strong> (foliage), <strong>cascaded shadow maps</strong>, and — building on the
+  <a href="19-quaternions.html">quaternions</a> and this importer — <strong>skeletal animation</strong>. See the
+  <a href="../../ROADMAP.md">roadmap</a> for the sequenced plan.</p>
+</main>
+
+<footer class="site-footer">
+  Koi Engine · a learn-by-building 3D engine ·
+  <a href="../../README.md">README</a> ·
+  <a href="../../ARCHITECTURE.md">Architecture</a>
+</footer>
+
+</body>
+</html>

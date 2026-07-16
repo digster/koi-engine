@@ -309,6 +309,25 @@ bool DemoApp::buildScene(GpuRenderer& renderer) {
                  "(re-run CMake configure with network access to fetch the asset).");
         KOI_INFO("Scene built: ground + cube hierarchy + 2 loaded models (sphere.glb, torus.obj).");
     }
+
+    // Step 25: a small procedurally-generated model imported as a NODE HIERARCHY.
+    // Unlike loadModel (one mesh + one material), loadModelHierarchy walks the glTF scene
+    // graph and returns a Node SUBTREE: the file's "pivot" root (a 25° Y-turn) parents a
+    // two-material "post" — ONE glTF mesh of two primitives, so the loader fans it into
+    // two child draw-nodes — and a "cap" whose placement is a raw matrix the loader
+    // DECOMPOSES back to TRS. The two post materials share one checker texture, uploaded
+    // ONCE. We only position the returned subtree; its internal transforms and per-
+    // primitive materials come straight from the file (see tools/gen_multimesh.py). It is
+    // optional — if it wasn't generated we log and carry on.
+    if (std::unique_ptr<Node> multimesh =
+            loadModelHierarchy(renderer, (base + "assets/multimesh.glb").c_str())) {
+        multimesh->transform().position = {-4.7f, -2.0f, 2.4f};  // front-left, base on the floor
+        sceneRoot_->addChild(std::move(multimesh));
+        KOI_INFO("Scene: added multimesh.glb (Step 25 node-hierarchy import).");
+    } else {
+        KOI_WARN("buildScene: multimesh.glb not loaded — run 'uv run tools/gen_multimesh.py'.");
+    }
+
     return true;
 }
 

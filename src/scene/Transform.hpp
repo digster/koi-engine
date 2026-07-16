@@ -49,6 +49,43 @@ struct Transform {
                rotation.toMat4() *
                scaling(scale);
     }
+
+    // Recover a TRS from a baked model matrix — the inverse of localMatrix().
+    //
+    // Step 25 needs this because glTF may give a node's placement as a raw 4x4
+    // MATRIX instead of separate translation/rotation/scale, yet a Transform stores
+    // TRS. The glTF spec forbids shear/skew in node matrices, so the matrix is
+    // always a clean translation·rotation·scale and this decomposition is exact:
+    //   * TRANSLATION is the last column (indices 12,13,14).
+    //   * SCALE is the length of each basis column (rotation columns are unit-length,
+    //     so any remaining length IS the scale on that axis).
+    //   * ROTATION is what's left once each column is divided by its scale — an
+    //     orthonormal 3x3 we hand to Quat::fromRotationMatrix.
+    // A MIRRORED node (negative determinant, e.g. a left-hand copy) can't be a pure
+    // rotation·scale with all-positive scale, so we fold the flip into scale.x; that
+    // leaves a proper (det +1) rotation the quaternion path can represent.
+    [[nodiscard]] static Transform fromMatrix(const Mat4& m) {
+        Transform t;
+        t.position = {m.at(0, 3), m.at(1, 3), m.at(2, 3)};
+
+        const Vec3 c0{m.at(0, 0), m.at(1, 0), m.at(2, 0)};  // basis column 0
+        const Vec3 c1{m.at(0, 1), m.at(1, 1), m.at(2, 1)};  // basis column 1
+        const Vec3 c2{m.at(0, 2), m.at(1, 2), m.at(2, 2)};  // basis column 2
+        float sx = length(c0), sy = length(c1), sz = length(c2);
+        // Negative determinant → mirrored: absorb the sign into one axis' scale so
+        // the leftover basis is a right-handed rotation.
+        if (dot(cross(c0, c1), c2) < 0.0f) { sx = -sx; }
+        t.scale = {sx, sy, sz};
+
+        // Divide out the scale to get the pure-rotation basis (guarding a zero axis,
+        // which would otherwise divide by zero and produce NaNs).
+        Mat4 rot = Mat4::identity();
+        if (sx != 0.0f) { rot.at(0, 0) = c0.x / sx; rot.at(1, 0) = c0.y / sx; rot.at(2, 0) = c0.z / sx; }
+        if (sy != 0.0f) { rot.at(0, 1) = c1.x / sy; rot.at(1, 1) = c1.y / sy; rot.at(2, 1) = c1.z / sy; }
+        if (sz != 0.0f) { rot.at(0, 2) = c2.x / sz; rot.at(1, 2) = c2.y / sz; rot.at(2, 2) = c2.z / sz; }
+        t.rotation = Quat::fromRotationMatrix(rot);
+        return t;
+    }
 };
 
 }  // namespace koi

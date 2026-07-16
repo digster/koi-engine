@@ -24,12 +24,14 @@
 #include <vector>
 
 #include "core/Log.hpp"
+#include "math/Mat4.hpp"       // Step 25: decompose a glTF node's raw matrix to TRS
 #include "math/Vec.hpp"
 #include "renderer/GpuRenderer.hpp"
 #include "renderer/Mesh.hpp"
 #include "renderer/Tangents.hpp"
 #include "renderer/Vertex.hpp"
 #include "scene/Material.hpp"  // Step 16: glTF material import populates a koi::Material
+#include "scene/Node.hpp"      // Step 25: loadModelHierarchy builds a Node subtree
 
 namespace koi {
 namespace {
@@ -177,14 +179,30 @@ LoadedModel loadObj(GpuRenderer& renderer, const char* path) {
 }
 
 // --- glTF material import (Step 16) -----------------------------------------
+// One import's texture cache: maps a glTF image to the GPU Texture we decoded for it,
+// so an image referenced by several materials (very common — Step 25's Sponza target
+// reuses textures heavily) is decoded and uploaded ONCE. Keyed by the cgltf_image
+// pointer, which is stable for the lifetime of the parsed cgltf_data. The srgb flag is
+// folded into the key because the same image bytes could in principle be sampled both
+// as colour and as data (rare, but then they need different GPU formats).
+using TextureCache = std::unordered_map<const cgltf_image*, std::shared_ptr<Texture>>;
+
 // Decode one glTF image into a GPU Texture. A glTF image is either EMBEDDED in the
 // binary blob (a buffer_view — the .glb case, decoded straight from memory) or an
 // EXTERNAL file (a uri, resolved relative to the .gltf). `srgb` marks COLOUR images
 // (base-colour, emissive) so the GPU un-gammas them to linear when sampled; DATA maps
-// (metallic-roughness, normal, AO) stay linear.
+// (metallic-roughness, normal, AO) stay linear. `cache` dedups repeated images.
 std::shared_ptr<Texture> loadGltfImage(GpuRenderer& renderer, const cgltf_image* image,
-                                       const std::string& gltfDir, bool srgb) {
+                                       const std::string& gltfDir, bool srgb,
+                                       TextureCache& cache) {
     if (image == nullptr) { return nullptr; }
+
+    // Already uploaded this image? Hand back the shared Texture (no second GPU upload).
+    if (const auto it = cache.find(image); it != cache.end()) { return it->second; }
+
+    // Decode into `tex`, then remember it under `image` before returning so the next
+    // material that references the same image reuses it.
+    std::shared_ptr<Texture> tex;
 
     if (image->buffer_view != nullptr) {
         // Embedded: cgltf_buffer_view_data hands us a pointer that already accounts for
@@ -201,13 +219,10 @@ std::shared_ptr<Texture> loadGltfImage(GpuRenderer& renderer, const cgltf_image*
             KOI_WARN("loadGltfImage: embedded image decode failed: %s", stbi_failure_reason());
             return nullptr;
         }
-        std::shared_ptr<Texture> tex = renderer.createTextureFromRGBA(
+        tex = renderer.createTextureFromRGBA(
             pixels, static_cast<Uint32>(w), static_cast<Uint32>(h), srgb);
         stbi_image_free(pixels);
-        return tex;
-    }
-
-    if (image->uri != nullptr) {
+    } else if (image->uri != nullptr) {
         // base64 data: URIs are a documented deferral (the .glb verification asset uses
         // buffer_views, and real .gltf files ship external image files).
         if (std::strncmp(image->uri, "data:", 5) == 0) {
@@ -215,9 +230,13 @@ std::shared_ptr<Texture> loadGltfImage(GpuRenderer& renderer, const cgltf_image*
             return nullptr;
         }
         const std::string full = gltfDir + image->uri;  // resolve relative to the glTF
-        return renderer.loadTexture(full.c_str(), srgb);
+        tex = renderer.loadTexture(full.c_str(), srgb);
     }
-    return nullptr;
+
+    // Cache even a null result? No — a failed decode leaves `tex` null and we simply
+    // don't remember it (a retry is cheap and keeps the cache = "successfully uploaded").
+    if (tex) { cache.emplace(image, tex); }
+    return tex;
 }
 
 // Import a glTF PBR material into a koi::Material: the base-colour, metallic-roughness,
@@ -226,7 +245,7 @@ std::shared_ptr<Texture> loadGltfImage(GpuRenderer& renderer, const cgltf_image*
 // a material) — we still return a valid white material so downstream code (which always
 // samples an albedo map) has something to bind.
 std::shared_ptr<Material> loadGltfMaterial(GpuRenderer& renderer, const cgltf_material* mat,
-                                           const std::string& gltfDir) {
+                                           const std::string& gltfDir, TextureCache& texCache) {
     auto material = std::make_shared<Material>();
 
     // Base-colour factor (linear); tints the surface and, absent a base-colour texture,
@@ -238,7 +257,7 @@ std::shared_ptr<Material> loadGltfMaterial(GpuRenderer& renderer, const cgltf_ma
         for (int i = 0; i < 4; ++i) { baseColor[i] = pbr.base_color_factor[i]; }
         if (pbr.base_color_texture.texture != nullptr) {
             material->albedo = loadGltfImage(renderer, pbr.base_color_texture.texture->image,
-                                             gltfDir, /*srgb=*/true);
+                                             gltfDir, /*srgb=*/true, texCache);
         }
         // The scalars are FACTORS the shader multiplies by the MR map's B/G channels
         // (a white fallback map leaves them unchanged) — exactly the Step 13 convention.
@@ -246,22 +265,23 @@ std::shared_ptr<Material> loadGltfMaterial(GpuRenderer& renderer, const cgltf_ma
         material->roughness = pbr.roughness_factor;
         if (pbr.metallic_roughness_texture.texture != nullptr) {
             material->metalRough = loadGltfImage(
-                renderer, pbr.metallic_roughness_texture.texture->image, gltfDir, /*srgb=*/false);
+                renderer, pbr.metallic_roughness_texture.texture->image, gltfDir, /*srgb=*/false,
+                texCache);
         }
     }
 
     if (mat != nullptr) {
         if (mat->normal_texture.texture != nullptr) {
             material->normalMap = loadGltfImage(renderer, mat->normal_texture.texture->image,
-                                                gltfDir, /*srgb=*/false);
+                                                gltfDir, /*srgb=*/false, texCache);
         }
         if (mat->occlusion_texture.texture != nullptr) {
             material->ao = loadGltfImage(renderer, mat->occlusion_texture.texture->image,
-                                         gltfDir, /*srgb=*/false);
+                                         gltfDir, /*srgb=*/false, texCache);
         }
         if (mat->emissive_texture.texture != nullptr) {
             material->emissive = loadGltfImage(renderer, mat->emissive_texture.texture->image,
-                                               gltfDir, /*srgb=*/true);
+                                               gltfDir, /*srgb=*/true, texCache);
         }
         // Emissive factor (× the KHR_materials_emissive_strength extension when present).
         // Left at the Material default of 0 when the file has no emission.
@@ -287,28 +307,13 @@ std::shared_ptr<Material> loadGltfMaterial(GpuRenderer& renderer, const cgltf_ma
     return material;
 }
 
-LoadedModel loadGltf(GpuRenderer& renderer, const char* path) {
-    // cgltf parses .glb/.gltf into accessors (typed views into binary buffers). We
-    // read the first mesh's first primitive — glTF already stores ONE index per
-    // combined vertex, so no de-duplication is needed.
-    cgltf_options options = {};
-    cgltf_data* data = nullptr;
-    if (cgltf_parse_file(&options, path, &data) != cgltf_result_success) {
-        KOI_ERROR("loadModel: cgltf failed to parse '%s'.", path);
-        return {};
-    }
-    if (cgltf_load_buffers(&options, data, path) != cgltf_result_success) {
-        KOI_ERROR("loadModel: cgltf failed to load buffers for '%s'.", path);
-        cgltf_free(data);
-        return {};
-    }
-    if (data->meshes_count == 0 || data->meshes[0].primitives_count == 0) {
-        KOI_ERROR("loadModel: glTF '%s' has no mesh primitive.", path);
-        cgltf_free(data);
-        return {};
-    }
-
-    const cgltf_primitive& prim = data->meshes[0].primitives[0];
+// Assemble ONE glTF primitive into a GPU mesh: read its POSITION / NORMAL / TEXCOORD_0
+// / TANGENT accessors into our interleaved Vertex layout plus its index buffer, filling
+// in any missing normals/tangents. A glTF "mesh" is a BAG OF PRIMITIVES, so this per-
+// primitive unit is what both the single-mesh loadGltf and the hierarchy walk
+// (buildGltfNode) reuse. Returns nullptr (logged) if the primitive has no POSITION.
+// Reads live cgltf buffers — the caller must keep cgltf_data alive until this returns.
+std::shared_ptr<Mesh> loadPrimitiveMesh(GpuRenderer& renderer, const cgltf_primitive& prim) {
     cgltf_accessor* posAcc = nullptr;
     cgltf_accessor* nrmAcc = nullptr;
     cgltf_accessor* uvAcc = nullptr;
@@ -321,9 +326,8 @@ LoadedModel loadGltf(GpuRenderer& renderer, const char* path) {
         else if (a.type == cgltf_attribute_type_tangent) { tanAcc = a.data; }
     }
     if (posAcc == nullptr) {
-        KOI_ERROR("loadModel: glTF '%s' primitive has no POSITION.", path);
-        cgltf_free(data);
-        return {};
+        KOI_ERROR("loadModel: a glTF primitive has no POSITION; skipping it.");
+        return nullptr;
     }
 
     const size_t vcount = posAcc->count;
@@ -355,28 +359,111 @@ LoadedModel loadGltf(GpuRenderer& renderer, const char* path) {
         for (size_t i = 0; i < vcount; ++i) { indices[i] = static_cast<Uint32>(i); }
     }
 
-    const bool haveNormals  = (nrmAcc != nullptr);
-    const bool haveTangents = (tanAcc != nullptr);
+    // Fill anything the file omitted — normals first, since the tangent is
+    // orthonormalized against the normal and so needs it to already exist.
+    if (nrmAcc == nullptr) { computeSmoothNormals(vertices, indices); }
+    if (tanAcc == nullptr) { computeTangents(vertices, indices); }
 
-    // Import the file's PBR material (Step 16) BEFORE freeing cgltf's data — the image
-    // decode reads bytes straight out of the still-live glTF buffers. gltfDir lets an
-    // external-texture .gltf resolve its image URIs relative to the model file.
-    std::string gltfDir;
-    { const std::string sp = path;
-      const size_t slash = sp.find_last_of("/\\");
-      gltfDir = (slash == std::string::npos) ? std::string() : sp.substr(0, slash + 1); }
-    std::shared_ptr<Material> material = loadGltfMaterial(renderer, prim.material, gltfDir);
+    return renderer.createMesh(vertices, indices);
+}
+
+// The directory a glTF file lives in (trailing slash kept) so external image URIs
+// resolve relative to it. "" for a bare filename in the current directory.
+std::string gltfDirOf(const char* path) {
+    const std::string sp = path;
+    const size_t slash = sp.find_last_of("/\\");
+    return (slash == std::string::npos) ? std::string() : sp.substr(0, slash + 1);
+}
+
+LoadedModel loadGltf(GpuRenderer& renderer, const char* path) {
+    // cgltf parses .glb/.gltf into accessors (typed views into binary buffers). loadModel
+    // is the SIMPLE path — it reads the first mesh's first primitive + material. Whole
+    // scenes (multiple primitives/materials, a node hierarchy) go through
+    // loadModelHierarchy instead.
+    cgltf_options options = {};
+    cgltf_data* data = nullptr;
+    if (cgltf_parse_file(&options, path, &data) != cgltf_result_success) {
+        KOI_ERROR("loadModel: cgltf failed to parse '%s'.", path);
+        return {};
+    }
+    if (cgltf_load_buffers(&options, data, path) != cgltf_result_success) {
+        KOI_ERROR("loadModel: cgltf failed to load buffers for '%s'.", path);
+        cgltf_free(data);
+        return {};
+    }
+    if (data->meshes_count == 0 || data->meshes[0].primitives_count == 0) {
+        KOI_ERROR("loadModel: glTF '%s' has no mesh primitive.", path);
+        cgltf_free(data);
+        return {};
+    }
+
+    // Build geometry AND material BEFORE freeing cgltf — both read the still-live buffers.
+    const cgltf_primitive& prim = data->meshes[0].primitives[0];
+    std::shared_ptr<Mesh> mesh = loadPrimitiveMesh(renderer, prim);
+    TextureCache texCache;  // one material here, but the shared helper takes a cache
+    std::shared_ptr<Material> material =
+        mesh ? loadGltfMaterial(renderer, prim.material, gltfDirOf(path), texCache) : nullptr;
 
     cgltf_free(data);  // accessors read out + material imported; parsed data no longer needed
 
-    if (!haveNormals) { computeSmoothNormals(vertices, indices); }
-    // Derive tangents only when the file didn't ship them (they need valid normals to
-    // orthonormalize against, so this runs after the normals are settled).
-    if (!haveTangents) { computeTangents(vertices, indices); }
+    if (!mesh) {
+        KOI_ERROR("loadModel: glTF '%s' first primitive failed to load.", path);
+        return {};
+    }
+    KOI_INFO("Loaded model '%s' (first mesh/primitive).", path);
+    return LoadedModel{mesh, material};
+}
 
-    KOI_INFO("Loaded model '%s' (%zu verts, %zu tris).", path, vertices.size(),
-             indices.size() / 3);
-    return LoadedModel{renderer.createMesh(vertices, indices), material};
+// Read a glTF node's LOCAL placement into a koi::Transform. glTF gives it either as
+// explicit translation/rotation/scale — which drop straight in (the rotation's xyzw
+// order already matches our Quat) — OR as a single 4x4 matrix, which we decompose back
+// to TRS via Transform::fromMatrix. Any absent component defaults to no-translation /
+// identity-rotation / unit-scale, exactly matching a default-constructed Transform.
+Transform gltfNodeTransform(const cgltf_node& node) {
+    if (node.has_matrix) {
+        Mat4 m;  // glTF node matrices are column-major, same as our Mat4 — copy verbatim.
+        for (int i = 0; i < 16; ++i) { m.m[i] = node.matrix[i]; }
+        return Transform::fromMatrix(m);
+    }
+    Transform t;
+    if (node.has_translation) {
+        t.position = {node.translation[0], node.translation[1], node.translation[2]};
+    }
+    if (node.has_rotation) {
+        t.rotation = {node.rotation[0], node.rotation[1], node.rotation[2], node.rotation[3]};
+    }
+    if (node.has_scale) {
+        t.scale = {node.scale[0], node.scale[1], node.scale[2]};
+    }
+    return t;
+}
+
+// Recursively turn one glTF node into a koi::Node subtree. The node itself becomes a
+// GROUP node carrying its local transform. Because a glTF mesh is a bag of primitives
+// and each primitive owns its material — while a koi::Node draws exactly one
+// (mesh, material) — we add one CHILD draw-node per primitive. Real child nodes then
+// recurse; their transforms are relative to this node, which is exactly the parenting
+// the scene graph already implements. `texCache` dedups textures across the whole import.
+std::unique_ptr<Node> buildGltfNode(GpuRenderer& renderer, const cgltf_node& node,
+                                    const std::string& gltfDir, TextureCache& texCache) {
+    auto group = std::make_unique<Node>();
+    group->transform() = gltfNodeTransform(node);
+
+    if (node.mesh != nullptr) {
+        for (cgltf_size i = 0; i < node.mesh->primitives_count; ++i) {
+            const cgltf_primitive& prim = node.mesh->primitives[i];
+            std::shared_ptr<Mesh> mesh = loadPrimitiveMesh(renderer, prim);
+            if (!mesh) { continue; }  // logged inside; skip a malformed primitive
+            std::shared_ptr<Material> material =
+                loadGltfMaterial(renderer, prim.material, gltfDir, texCache);
+            group->addChild(std::make_unique<Node>(std::move(mesh), std::move(material)));
+        }
+    }
+
+    for (cgltf_size i = 0; i < node.children_count; ++i) {
+        group->addChild(buildGltfNode(renderer, *node.children[i], gltfDir, texCache));
+    }
+    return group;
 }
 
 bool endsWith(const std::string& s, const char* ext) {
@@ -392,6 +479,63 @@ LoadedModel loadModel(GpuRenderer& renderer, const char* path) {
     if (endsWith(p, ".glb") || endsWith(p, ".gltf")) { return loadGltf(renderer, path); }
     KOI_ERROR("loadModel: unsupported model extension for '%s' (want .obj/.glb/.gltf).", path);
     return {};
+}
+
+std::unique_ptr<Node> loadModelHierarchy(GpuRenderer& renderer, const char* path) {
+    const std::string p = path;
+    if (!(endsWith(p, ".glb") || endsWith(p, ".gltf"))) {
+        KOI_ERROR("loadModelHierarchy: '%s' is not glTF (want .glb/.gltf).", path);
+        return nullptr;
+    }
+
+    cgltf_options options = {};
+    cgltf_data* data = nullptr;
+    if (cgltf_parse_file(&options, path, &data) != cgltf_result_success) {
+        KOI_ERROR("loadModelHierarchy: cgltf failed to parse '%s'.", path);
+        return nullptr;
+    }
+    if (cgltf_load_buffers(&options, data, path) != cgltf_result_success) {
+        KOI_ERROR("loadModelHierarchy: cgltf failed to load buffers for '%s'.", path);
+        cgltf_free(data);
+        return nullptr;
+    }
+
+    const std::string gltfDir = gltfDirOf(path);
+    TextureCache texCache;  // one cache for the whole import → each image uploads once
+
+    // A glTF file names a default SCENE (a set of root nodes); fall back to scene 0, then
+    // to "every parentless node" for the rare file that declares nodes but no scene.
+    const cgltf_scene* scene = (data->scene != nullptr)     ? data->scene
+                             : (data->scenes_count > 0)     ? &data->scenes[0]
+                                                            : nullptr;
+
+    // Wrap the import in a single group node so the caller attaches ONE subtree,
+    // regardless of how many roots the scene has.
+    auto root = std::make_unique<Node>();
+    size_t roots = 0;
+    if (scene != nullptr) {
+        for (cgltf_size i = 0; i < scene->nodes_count; ++i) {
+            root->addChild(buildGltfNode(renderer, *scene->nodes[i], gltfDir, texCache));
+            ++roots;
+        }
+    } else {
+        for (cgltf_size i = 0; i < data->nodes_count; ++i) {
+            if (data->nodes[i].parent == nullptr) {
+                root->addChild(buildGltfNode(renderer, data->nodes[i], gltfDir, texCache));
+                ++roots;
+            }
+        }
+    }
+
+    cgltf_free(data);  // whole subtree built (meshes uploaded, materials imported)
+
+    if (roots == 0) {
+        KOI_ERROR("loadModelHierarchy: glTF '%s' has no scene nodes.", path);
+        return nullptr;
+    }
+    KOI_INFO("Loaded model hierarchy '%s' (%zu root node(s), %zu unique texture(s)).",
+             path, roots, texCache.size());
+    return root;
 }
 
 }  // namespace koi

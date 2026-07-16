@@ -84,6 +84,28 @@ TEST_CASE("fromEuler reproduces the old Z*Y*X Euler rotation (behaviour-preservi
     }
 }
 
+TEST_CASE("fromRotationMatrix inverts toMat4 (round-trip)") {
+    // Step 25 imports glTF nodes given as a raw matrix by decomposing them; the
+    // rotation is recovered with fromRotationMatrix, which must undo toMat4().
+    // Because q and -q are the SAME rotation we compare by EFFECT (the regenerated
+    // matrix). The samples are chosen to exercise all four code paths: the trace
+    // branch, plus each near-180° branch where a different axis dominates.
+    const Quat samples[] = {
+        Quat::identity(),
+        Quat::fromAxisAngle(Vec3{0, 1, 0}, radians(90.0f)),
+        Quat::fromAxisAngle(Vec3{1, 0, 0}, radians(180.0f)),   // x-dominant branch
+        Quat::fromAxisAngle(Vec3{0, 1, 0}, radians(180.0f)),   // y-dominant branch
+        Quat::fromAxisAngle(Vec3{0, 0, 1}, radians(180.0f)),   // z-dominant branch
+        Quat::fromEuler({radians(30.0f), radians(45.0f), radians(60.0f)}),
+        Quat::fromEuler({radians(-15.0f), radians(120.0f), radians(-80.0f)}),
+    };
+    for (const Quat q : samples) {
+        const Quat r = Quat::fromRotationMatrix(q.toMat4());
+        CHECK(length(r) == doctest::Approx(1.0f));   // stays a unit quaternion
+        checkMat4(r.toMat4(), q.toMat4());           // same rotation
+    }
+}
+
 TEST_CASE("the Hamilton product composes rotations like matrix multiply") {
     const Quat a = Quat::fromAxisAngle(Vec3{0, 1, 0}, radians(90.0f));
     const Quat b = Quat::fromAxisAngle(Vec3{1, 0, 0}, radians(45.0f));

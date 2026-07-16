@@ -38,6 +38,7 @@
     <a class="navlink" href="23-debug-draw.html">Debug Draw</a>
     <a class="navlink" href="24-hud-and-text.html">HUD &amp; Text</a>
     <a class="navlink" href="25-instancing-and-draw-call-sorting.html">Instancing &amp; Sorting</a>
+    <a class="navlink" href="26-gltf-node-hierarchy.html">glTF Node Hierarchy</a>
   </div>
 </nav>
 
@@ -202,6 +203,13 @@
       redundant state changes, then <strong>instance</strong> identical runs into one draw call — the per-object
       transform moving from a uniform into a per-<strong>instance</strong> vertex buffer, batched across both the
       colour and shadow passes.</p>
+    </a>
+    <a class="card" href="26-gltf-node-hierarchy.html">
+      <h3>glTF Node Hierarchy →</h3>
+      <p>Importing a whole glTF <em>scene</em>, not one mesh: the <strong>node tree</strong> mapped onto our scene
+      graph, a mesh as a <strong>bag of primitives</strong> (one material each) fanned into child nodes, node
+      transforms as <strong>TRS or a matrix</strong> (with the matrix <strong>decomposed</strong> back to a
+      quaternion), and a <strong>texture cache</strong> so shared images upload once.</p>
     </a>
   </div>
 

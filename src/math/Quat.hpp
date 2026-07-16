@@ -75,6 +75,17 @@ struct Quat {
     // Defined out-of-line below, once the quaternion operator* is in scope.
     [[nodiscard]] static Quat fromEuler(Vec3 radiansXYZ);
 
+    // Recover the rotation from a pure-rotation matrix — the INVERSE of toMat4().
+    // Step 25 needs this to import glTF nodes whose transform is given as a raw 4x4
+    // matrix (rather than explicit translation/rotation/scale): Transform::fromMatrix
+    // strips off translation + scale and hands the leftover orthonormal 3x3 here.
+    //
+    // We use the trace-based method: naively w = ½√(1+trace) loses all precision
+    // near a 180° turn (where the trace → -1 and that square root → 0), so we pick
+    // whichever of x/y/z/w is provably largest and solve for it first, then the
+    // rest. Reads only the upper-left 3x3 via at(r,c). Defined out-of-line below.
+    [[nodiscard]] static Quat fromRotationMatrix(const Mat4& m);
+
     // The conjugate negates the vector part. For a UNIT quaternion this is also
     // its inverse (the opposite rotation), which is why rotate() below can use it.
     [[nodiscard]] constexpr Quat conjugate() const { return {-x, -y, -z, w}; }
@@ -174,6 +185,47 @@ inline Quat Quat::fromEuler(Vec3 radiansXYZ) {
     const Quat qy = fromAxisAngle({0.0f, 1.0f, 0.0f}, radiansXYZ.y);
     const Quat qz = fromAxisAngle({0.0f, 0.0f, 1.0f}, radiansXYZ.z);
     return qz * qy * qx;
+}
+
+// Out-of-line so it can use normalize() (declared above) to shave off any drift
+// left by a not-quite-orthonormal input. The four branches mirror the four terms
+// of toMat4(): the trace branch solves for w, and each axis branch solves for the
+// one component whose squared term dominates the diagonal, so we never divide by a
+// vanishing quantity. Sign choices are pinned to toMat4() by test_quat.cpp.
+inline Quat Quat::fromRotationMatrix(const Mat4& m) {
+    const float m00 = m.at(0, 0), m11 = m.at(1, 1), m22 = m.at(2, 2);
+    const float trace = m00 + m11 + m22;
+    Quat q;
+    if (trace > 0.0f) {
+        // w is the largest component: 4w² = 1 + trace. Solve w, then x/y/z from the
+        // off-diagonal DIFFERENCES (e.g. m21 - m12 = 4wx).
+        const float s = 0.5f / std::sqrt(trace + 1.0f);  // = 1/(4w)
+        q.w = 0.25f / s;
+        q.x = (m.at(2, 1) - m.at(1, 2)) * s;
+        q.y = (m.at(0, 2) - m.at(2, 0)) * s;
+        q.z = (m.at(1, 0) - m.at(0, 1)) * s;
+    } else if (m00 > m11 && m00 > m22) {
+        // x dominates: 4x² = 1 + m00 - m11 - m22. Off-diagonal SUMS give y/z; the
+        // difference m21 - m12 gives w.
+        const float s = 2.0f * std::sqrt(1.0f + m00 - m11 - m22);  // = 4x
+        q.x = 0.25f * s;
+        q.y = (m.at(0, 1) + m.at(1, 0)) / s;
+        q.z = (m.at(0, 2) + m.at(2, 0)) / s;
+        q.w = (m.at(2, 1) - m.at(1, 2)) / s;
+    } else if (m11 > m22) {
+        const float s = 2.0f * std::sqrt(1.0f + m11 - m00 - m22);  // = 4y
+        q.x = (m.at(0, 1) + m.at(1, 0)) / s;
+        q.y = 0.25f * s;
+        q.z = (m.at(1, 2) + m.at(2, 1)) / s;
+        q.w = (m.at(0, 2) - m.at(2, 0)) / s;
+    } else {
+        const float s = 2.0f * std::sqrt(1.0f + m22 - m00 - m11);  // = 4z
+        q.x = (m.at(0, 2) + m.at(2, 0)) / s;
+        q.y = (m.at(1, 2) + m.at(2, 1)) / s;
+        q.z = 0.25f * s;
+        q.w = (m.at(1, 0) - m.at(0, 1)) / s;
+    }
+    return normalize(q);
 }
 
 // SLERP — spherical linear interpolation, the reason quaternions matter for

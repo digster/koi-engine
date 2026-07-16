@@ -20,6 +20,14 @@
 //  koi::Material. So loadModel returns geometry AND appearance together (a
 //  LoadedModel), the natural "a model is a mesh + a material" shape. OBJ still
 //  returns geometry only (material == nullptr); the caller supplies its own.
+//
+//  Step 25: loadModel still reads ONE mesh/primitive/material — the right shape
+//  for simple assets (sphere.glb, the single-mesh helmet). Real glTF scenes are a
+//  TREE of nodes, and a glTF "mesh" is a bag of PRIMITIVES each with its own
+//  material. loadModelHierarchy imports that faithfully into a koi::Node subtree
+//  (see below), while sharing textures so an image used by many materials uploads
+//  only once. loadModel is kept for the single-mesh case (and callers that supply
+//  their own material).
 // ============================================================================
 #pragma once
 
@@ -30,6 +38,7 @@ namespace koi {
 class Mesh;
 struct Material;
 class GpuRenderer;
+class Node;  // loadModelHierarchy returns a scene-graph subtree; full def in scene/Node.hpp
 
 // A model loaded from a file: its geometry, plus the material imported from the
 // file when the format carries one. `mesh == nullptr` means the load failed (the
@@ -43,6 +52,17 @@ struct LoadedModel {
 
 // Load `path` (.obj → tinyobjloader, .glb/.gltf → cgltf). Returns a LoadedModel with
 // a null mesh (after logging) on an unsupported extension or a load/parse failure.
+// Reads only the FIRST mesh's FIRST primitive (single mesh + single material).
 [[nodiscard]] LoadedModel loadModel(GpuRenderer& renderer, const char* path);
+
+// Load a glTF file (.glb/.gltf) and build a scene-graph SUBTREE mirroring its node
+// hierarchy: one group Node per glTF node (carrying that node's local transform —
+// read from its translation/rotation/scale, or DECOMPOSED from a raw matrix), with one
+// child draw-Node per mesh primitive (that primitive's geometry + its imported PBR
+// material). Textures shared across materials are uploaded once (per-import dedup).
+// Returns nullptr (after logging) on a non-glTF extension, a parse/load failure, or an
+// empty scene. Attach the result to your scene with Node::addChild. This is the
+// multi-primitive / multi-material / node-hierarchy path (Step 25) that loadModel omits.
+[[nodiscard]] std::unique_ptr<Node> loadModelHierarchy(GpuRenderer& renderer, const char* path);
 
 }  // namespace koi

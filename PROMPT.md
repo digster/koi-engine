@@ -577,3 +577,21 @@ the macOS linchpin: it lets clangd interrogate `/usr/bin/c++` for the Apple SDK/
 "file not found" on system/SDL3 headers. Verified headlessly: `git add -n` tracks exactly the 4 files, all JSONC
 parses, `cmake --build --preset debug` succeeds, and `clangd --check src/core/Engine.cpp` reports **0 errors** with the
 Xcode `-isysroot`, libc++, `/opt/homebrew/include` (SDL3) and `src/` all resolved.
+
+> Show me options from the roadmap to work on next.
+
+Surveyed [ROADMAP.md](ROADMAP.md) and presented the Step 25 candidates branching off Step 24 (glTF node hierarchy
+/ Sponza — the marked `◀── next`; cascaded shadows; GPU-driven culling; skeletal animation; alpha-tested cutout;
+shader hot-reload). User picked **glTF hierarchy + Sponza**, then chose to **split** it — do the **loader extension
+now** and defer Sponza ("we are not loading the sponza for now"). Implemented **Step 25 — glTF node hierarchy &
+multi-material meshes**: a new `loadModelHierarchy(path)` that walks the glTF scene tree and returns a `Node` subtree
+(group node per glTF node; one child draw-node per mesh **primitive**/material), honouring node **TRS or a decomposed
+matrix**, with a per-import `cgltf_image*`→`Texture` **dedup cache**. Added the pure-math inverses it needs —
+`Quat::fromRotationMatrix` (trace-based) and `Transform::fromMatrix` (TRS decomposition, mirror-safe) — with
+round-trip unit tests (127 cases pass). Extracted the per-primitive read into a shared `loadPrimitiveMesh`; kept
+`loadModel` for the single-mesh path. No `Node`/`RenderQueue`/`GpuRenderer` changes — the engine already draws such a
+tree (Step 24 instancing included). Generated a `tools/gen_multimesh.py` → `assets/multimesh.glb` test model (pivot +
+two-primitive/two-material post sharing one texture + a matrix-transform cap) and dropped it into the demo; verified
+via `KOI_CAPTURE` (log confirmed "1 unique texture"). Wrote `docs/tuts/26-gltf-node-hierarchy.html`; updated
+index/README/ROADMAP/ARCHITECTURE + memory. **Deferred to the Sponza step:** samplers/wrap modes, data-URI images,
+material alpha-mode import.
